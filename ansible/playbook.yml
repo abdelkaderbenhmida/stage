@@ -1,0 +1,41 @@
+---
+- name: Apply Docker and containerd on all nodes
+  hosts: all
+  become: true
+  roles:
+    - docker
+  tags:
+    - docker
+
+- name: Apply Kubernetes common prerequisites on all nodes
+  hosts: all
+  become: true
+  roles:
+    - k8s_common
+  tags:
+    - k8s
+
+- name: Bootstrap Kubernetes master
+  hosts: masters
+  become: true
+  roles:
+    - k8s_master
+  tags:
+    - master
+
+- name: Join Kubernetes workers to cluster
+  hosts: workers
+  become: true
+  serial: 1
+  roles:
+    - k8s_worker
+  tags:
+    - worker
+
+- name: Reset Kubernetes cluster — OPT-IN, run with --tags reset
+  hosts: all
+  become: true
+  roles:
+    - k8s_reset
+  tags:
+    - reset
