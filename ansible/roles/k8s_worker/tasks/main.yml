@@ -1,0 +1,48 @@
+---
+- name: Fetch join command from master node
+  ansible.builtin.slurp:
+    src: /tmp/kubeadm-join.txt
+  delegate_to: "{{ groups['masters'][0] }}"
+  register: slurp_join_command
+  tags: worker
+
+- name: Decode join command
+  ansible.builtin.set_fact:
+    join_command_decoded: "{{ slurp_join_command.content | b64decode }}"
+  tags: worker
+
+- name: Validate join command contains kubeadm join
+  ansible.builtin.assert:
+    that:
+      - "'kubeadm join' in join_command_decoded"
+    fail_msg: "Join command not valid. Master may not have completed kubeadm init."
+  tags: worker
+
+- name: Join worker to Kubernetes cluster
+  ansible.builtin.command:
+    cmd: "{{ join_command_decoded }}"
+  args:
+    creates: /etc/kubernetes/kubelet.conf
+  register: join_result
+  tags: worker
+
+- name: Restart kubelet on worker after join
+  ansible.builtin.systemd:
+    name: kubelet
+    state: restarted
+    daemon_reload: true
+  changed_when: false
+  tags: worker
+
+- name: Wait for worker node to become Ready
+  ansible.builtin.command:
+    cmd: "kubectl get node {{ inventory_hostname }} -o jsonpath='{.status.conditions[?(@.type==\"Ready\")].status}'"
+  environment:
+    KUBECONFIG: /home/devops/.kube/config
+  delegate_to: "{{ groups['masters'][0] }}"
+  register: node_ready_state
+  retries: 24
+  delay: 10
+  until: node_ready_state.stdout == "True"
+  changed_when: false
+  tags: worker

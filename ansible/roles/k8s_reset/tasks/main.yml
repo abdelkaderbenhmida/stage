@@ -1,0 +1,98 @@
+---
+# k8s_reset role — run ONLY via tags: ansible-playbook playbook.yml --tags reset
+# This role DOES NOT run automatically. It is opt-in.
+
+- name: Confirm reset action with user
+  ansible.builtin.pause:
+    prompt: |
+      WARNING: This will DESTROY the Kubernetes cluster on ALL nodes.
+      - kubeadm reset -f
+      - Remove /etc/kubernetes, /var/lib/etcd, /var/lib/kubelet, /var/lib/cni
+      - Remove devops ~/.kube config
+      - Flush iptables
+      Press ENTER to continue or Ctrl+C to abort
+  when: ansible_play_hosts | length > 0
+  tags: reset
+
+- name: Run kubeadm reset on all nodes
+  ansible.builtin.command:
+    cmd: kubeadm reset -f
+  register: reset_result
+  changed_when: "'reset completed' in reset_result.stdout"
+  ignore_errors: true
+  tags: reset
+
+- name: Remove Kubernetes directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /etc/kubernetes
+    - /etc/cni
+    - /var/lib/etcd
+    - /var/lib/kubelet
+    - /var/lib/cni
+    - /var/lib/dockershim
+    - /var/run/kubernetes
+    - /opt/cni/bin
+  tags: reset
+
+- name: Remove devops user kubeconfig
+  ansible.builtin.file:
+    path: /home/devops/.kube
+    state: absent
+  tags: reset
+
+- name: Flush iptables rules
+  ansible.builtin.command:
+    cmd: "{{ item }}"
+  loop:
+    - iptables -F
+    - iptables -t nat -F
+    - iptables -t mangle -F
+    - iptables -X
+  changed_when: false
+  ignore_errors: true
+  tags: reset
+
+- name: Clear ipvsadm rules if installed
+  ansible.builtin.command:
+    cmd: ipvsadm --clear
+  changed_when: false
+  ignore_errors: true
+  tags: reset
+
+- name: Remove Calico interface if present
+  ansible.builtin.command:
+    cmd: ip link delete tunl0
+  changed_when: false
+  ignore_errors: true
+  tags: reset
+
+- name: Stop kubelet and containerd services
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    state: stopped
+  loop:
+    - kubelet
+    - containerd
+  ignore_errors: true
+  tags: reset
+
+- name: Remove Kubernetes network configuration
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /etc/cni/net.d
+    - /var/lib/calico
+  tags: reset
+
+- name: Print reset status
+  ansible.builtin.debug:
+    msg: |
+      Reset complete on {{ inventory_hostname }}.
+      /etc/kubernetes removed.
+      iptables flushed.
+      Ready for fresh kubeadm init.
+  tags: reset
