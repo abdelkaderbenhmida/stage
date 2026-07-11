@@ -1,0 +1,10 @@
+---
+galaxy_info:
+  author: DevOps Platform Team
+  description: Reset Kubernetes — kubeadm reset + iptables/ipvs flush + CNI cleanup.
+  license: MIT
+  min_ansible_version: "2.14"
+  platforms:
+    - name: Ubuntu
+      versions: ["jammy", "noble"]
+dependencies: []

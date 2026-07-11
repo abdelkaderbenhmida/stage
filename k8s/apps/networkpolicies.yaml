@@ -1,0 +1,137 @@
+# NetworkPolicies — default-deny + least-privilege allow-list.
+#
+# devops-analysis-report.md P1: previously zero NetworkPolicies in the repo
+# => namespace fully open internally. Now: default-deny ingress+egress on the
+# `devops-platform` namespace, then explicit allow rules.
+
+---
+# Default deny all ingress + egress in devops-platform.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: devops-platform
+  labels:
+    app.kubernetes.io/name: default-deny
+    app.kubernetes.io/part-of: devops-platform
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+  ingress: []
+  egress: []
+---
+# Allow apps → Vault (vault-service.vault.svc:8200).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-to-vault
+  namespace: devops-platform
+  labels:
+    app.kubernetes.io/name: allow-egress-to-vault
+    app.kubernetes.io/part-of: devops-platform
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/part-of: devops-platform
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: vault
+      ports:
+        - port: 8200
+          protocol: TCP
+---
+# Allow apps → DNS (kube-dns in kube-system).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-dns
+  namespace: devops-platform
+  labels:
+    app.kubernetes.io/name: allow-egress-dns
+    app.kubernetes.io/part-of: devops-platform
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/part-of: devops-platform
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+---
+# Allow apps → postgres (a future postgres.devops-platform.svc on 5432).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-to-postgres
+  namespace: devops-platform
+  labels:
+    app.kubernetes.io/name: allow-egress-to-postgres
+    app.kubernetes.io/part-of: devops-platform
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/part-of: devops-platform
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: postgres
+      ports:
+        - port: 5432
+          protocol: TCP
+---
+# Allow Prometheus → /metrics scrape from monitoring namespace (optional).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-prometheus-scrape
+  namespace: devops-platform
+  labels:
+    app.kubernetes.io/name: allow-prometheus-scrape
+    app.kubernetes.io/part-of: devops-platform
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/part-of: devops-platform
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - port: 8000
+          protocol: TCP
+---
+# Allow intra-namespace traffic between the three apps (for service-to-service
+# calls; safe in this monolithic app group).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-intra-namespace
+  namespace: devops-platform
+  labels:
+    app.kubernetes.io/name: allow-intra-namespace
+    app.kubernetes.io/part-of: devops-platform
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/part-of: devops-platform
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector: {}
+      ports:
+        - port: 8000
+          protocol: TCP
