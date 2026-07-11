@@ -1,30 +1,32 @@
 # Gitleaks configuration file
 # https://github.com/gitleaks/gitleaks
+#
+# P2 hardening: the old allowlist was too permissive (`.*\.md$` masked every
+# markdown file — could hide secrets in docs; `changeme` regex masked the
+# actual `change-me` token string in the repo). Tightened to only whitelist
+# what is genuinely not a secret.
 
 [extend]
 # Use the default rules from gitleaks
 useDefault = true
 
-# Allowlist — files/patterns to skip (false positives)
 [allowlist]
-description = "Project-specific allowlist"
+description = "Project-specific allowlist — minimum surface, no broad patterns"
 paths = [
-    # Terraform state files may contain auto-generated tokens
+    # Terraform state files: would otherwise needlessly flag auto-generated
+    # strings. **IMPORTANT**: terraform.tfstate must remain gitignored
+    # (see repo .gitignore) — this is defense-in-depth, not a free pass.
     '''terraform\.tfstate''',
-    # Files.md documentation directory — reference material only
-    '''files\.md/.*''',
-    # This Gitleaks config file itself
+    # The Gitleaks config file itself.
     '''\.gitleaks\.toml$''',
-    # Terraform module-specific variables file
-    '''terraform/terraform\.tfvars''',
-    # Example/mock data in documentation
-    '''.*\.md$''',
+    # Dedicated `files.md/` reference directory — its only allowed purpose is
+    # storing verbatim source snippets pasted for reading. Per-file review
+    # required when adding here; keep narrow.
+    '''files\.md/.*\.txt$''',
 ]
-# Known placeholders that are not real secrets
+# Allowlisted placeholder STRINGS that are not real secrets. Deliberately
+# narrow — each pattern must be unlikely to appear in a leaked secret.
 regexes = [
-    '''example''',
-    '''placeholder''',
-    '''changeme''',
+    '''REPLACE_ME_WITH_A_REAL_SECRET''',
     '''YOUR_SECRET_HERE''',
-    '''REPLACE_ME''',
 ]

@@ -1,133 +1,211 @@
 #!/usr/bin/env bash
-# ─────────────────────────────────────────────────────────────
-# Phase 4 validation — DevSecOps security checks
-# ─────────────────────────────────────────────────────────────
-# Checks:
-#   1. Gitleaks — no secrets in source code
-#   2. Trivy  — no CRITICAL/HIGH vulnerabilities in images
-#   3. Vault  — running and unsealed
-#   4. Kubernetes secrets — vault-root-token present
-# Usage:
-#     scripts/validate-security.sh [--ci]
+# ─────────────────────────────────────────────────────────────────────────────
+# DevSecOps security validation — Phase 4+ post-remediation checks.
+# ─────────────────────────────────────────────────────────────────────────────
+# Fixes from devops-analysis-report.md (P0 #6, P2):
+#   - `set -euo nounset` so unset vars and command failures stop execution.
+#   - FAIL (not SKIP) on missing tools when --ci is set — no silent green.
+#   - Use `jq` for Vault status JSON parsing (no fragile python3 dependency).
+#   - Scan :latest (matches actual build tag) not :dev — see CI build job.
+#   - Check 4 actually validates the token (logs into Vault) — no `echo ok`.
+#   - Use `gitleaks detect` with full git history (no --no-git).
 #
-# With --ci flag: exit 1 on any failure (for CI)
-# Without flag: print summary table (for local dev)
-# ─────────────────────────────────────────────────────────────
+# Usage:
+#   scripts/validate-security.sh             # local: print colored summary
+#   scripts/validate-security.sh --ci        # CI: exit 1 on any failure
+#
+# Exit codes:
+#   0 — all checks passed
+#   1 — at least one check failed
+#   2 — usage / configuration error
+# ─────────────────────────────────────────────────────────────────────────────
 
-set -o pipefail
+set -euo pipefail
 
 CI_MODE=false
-[[ "$1" == "--ci" ]] && CI_MODE=true
+IMAGE_TAG="latest"
+NAMESPACE="devops-platform"
+VAULT_NS="vault"
 
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --ci) CI_MODE=true ; shift ;;
+    --tag) IMAGE_TAG="${2:?--tag requires a value}" ; shift 2 ;;
+    --namespace) NAMESPACE="${2:?--namespace requires a value}" ; shift 2 ;;
+    -h|--help)
+      sed -n '2,28p' "$0"
+      exit 0 ;;
+    *) echo "ERROR: unknown argument: $1" >&2 ; exit 2 ;;
+  esac
+done
+
+RED=$'\033[0;31m'
+GREEN=$'\033[0;32m'
+YELLOW=$'\033[1;33m'
+NC=$'\033[0m'
 
 PASS=0
 FAIL=0
-TOTAL=4
+SKIPPED=0
 
-check() {
-    local name="$1"
-    shift
-    if "$@" > /dev/null 2>&1; then
-        echo -e "${GREEN}  ✅ PASS${NC} — $name"
-        PASS=$((PASS + 1))
-        return 0
-    else
-        echo -e "${RED}  ❌ FAIL${NC} — $name"
-        FAIL=$((FAIL + 1))
-        return 1
+# A check is "FAIL" (not "SKIP") when a tool is missing in --ci mode — that is
+# a CI misconfiguration, not a green status. In local mode we SKIP gracefully.
+require_tool() {
+  local tool="$1"
+  local hint="${2:-}"
+  if ! command -v "$tool" >/dev/null 2>&1; then
+    if $CI_MODE; then
+      echo -e "${RED}  ❌ FAIL${NC} — required tool '$tool' not found." >&2
+      [[ -n "$hint" ]] && echo "     hint: $hint" >&2
+      exit 1
     fi
+    echo -e "${YELLOW}  ⚠️  SKIP${NC} — '$tool' not installed. ${hint}" >&2
+    return 1
+  fi
+  return 0
+}
+
+record_pass() { local name="$1"; echo -e "${GREEN}  ✅ PASS${NC} — $name" ; ((PASS++)) ; }
+record_fail() { local name="$1"; echo -e "${RED}  ❌ FAIL${NC} — $name" >&2 ; ((FAIL++)) ; }
+
+run_check() {
+  # run_check "<name>" <command...>
+  local name="$1" ; shift
+  if "$@" >/dev/null 2>&1; then
+    record_pass "$name"
+  else
+    record_fail "$name"
+  fi
 }
 
 echo "─────────────────────────────────────────────────────"
-echo "Phase 4 — Security Validation"
+echo " Security Validation (mode: $([[ $CI_MODE == true ]] && echo CI || echo local), tag: :$IMAGE_TAG)"
 echo "─────────────────────────────────────────────────────"
 echo ""
 
-# ── Check 1: Gitleaks secret scan ──────────────────────
-echo  "1. Gitleaks — no secrets in source code"
-if command -v gitleaks &> /dev/null; then
-    check "Gitleaks zero secrets" gitleaks detect --source . --config .gitleaks.toml --no-git
-else
-    echo -e "${YELLOW}  ⚠️  SKIP${NC} — Gitleaks not installed (\"brew install gitleaks\" or \"go install github.com/gitleaks/gitleaks/v2@latest\")"
-    TOTAL=$((TOTAL - 1))
+# ── Check 1: Gitleaks secret scan with full history ─────────────────────
+echo "1. Gitleaks — no secrets in working tree or history"
+if require_tool gitleaks "https://github.com/gitleaks/gitleaks/releases" ; then
+  run_check "Gitleaks zero secrets" \
+    gitleaks detect --source . --config .gitleaks.toml --redact --verbose
 fi
 
 # ── Check 2: Trivy image scan ──────────────────────────
 echo ""
-echo "2. Trivy — no CRITICAL/HIGH vulnerabilities"
-if command -v trivy &> /dev/null; then
-    # scan all 3 services if images exist locally
-    IMG_COUNT=0
+echo "2. Trivy — no CRITICAL/HIGH vulnerabilities in :$IMAGE_TAG images"
+if require_tool trivy "https://aquasecurity.github.io/trivy/latest/install/" ; then
+  if command -v docker >/dev/null 2>&1; then
+    scanned=0
     for svc in users-service products-service orders-service; do
-        img="${svc}:dev"
-        if docker image inspect "$img" &> /dev/null; then
-            check "Trivy $svc" trivy image --severity CRITICAL,HIGH --exit-code 1 --ignore-unfixed --quiet "$img"
-            IMG_COUNT=$((IMG_COUNT + 1))
-        fi
+      img="${svc}:${IMAGE_TAG}"
+      if docker image inspect "$img" >/dev/null 2>&1; then
+        run_check "Trivy $svc" trivy image \
+          --severity CRITICAL,HIGH \
+          --exit-code 1 \
+          --ignore-unfixed \
+          --quiet \
+          "$img"
+        ((scanned++))
+      fi
     done
-    [[ $IMG_COUNT -eq 0 ]] && echo -e "${YELLOW}  ⚠️  SKIP${NC} — no local images found (build with: docker build -t <svc>:dev app/<svc>/)"
-else
-    echo -e "${YELLOW}  ⚠️  SKIP${NC} — Trivy not installed (\"brew install trivy\" or \"curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh\")"
+    if [[ $scanned -eq 0 ]]; then
+      echo -e "${YELLOW}  ⚠️  SKIP${NC} — no local images with :$IMAGE_TAG found (build with: docker build -t <svc>:$IMAGE_TAG -f app/<svc>/Dockerfile app/)"
+      ((SKIPPED++))
+    fi
+  else
+    echo -e "${YELLOW}  ⚠️  SKIP${NC} — docker not installed; cannot inspect images." >&2
+    [[ $CI_MODE == true ]] && exit 1
+    ((SKIPPED++))
+  fi
 fi
 
-# ── Check 3: Vault running and unsealed ────────────────
+# ── Check 3: Vault running, unsealed, and reachable ──
 echo ""
-echo "3. Vault — running and unsealed"
-if command -v kubectl &> /dev/null; then
-    if kubectl get namespace vault &> /dev/null; then
-        # Check if vault pod is running
-        VAULT_POD=$(kubectl get pods -n vault -l app=vault -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
-        if [[ -n "$VAULT_POD" ]]; then
-            # Check vault status: Initialized=true, Sealed=false
-            VAULT_STATUS=$(kubectl exec -n vault "$VAULT_POD" -- vault status -format=json 2>/dev/null || echo "")
-            if [[ -n "$VAULT_STATUS" ]]; then
-                INITIALIZED=$(echo "$VAULT_STATUS" | python3 -c "import sys,json; print(json.load(sys.stdin).get('initialized',False))" 2>/dev/null || echo "false")
-                SEALED=$(echo "$VAULT_STATUS" | python3 -c "import sys,json; print(json.load(sys.stdin).get('sealed',True))" 2>/dev/null || echo "true")
-                if [[ "$INITIALIZED" == "True" && "$SEALED" == "False" ]]; then
-                    echo -e "${GREEN}  ✅ PASS${NC} — Vault initialized and unsealed"
-                    PASS=$((PASS + 1))
-                else
-                    echo -e "${RED}  ❌ FAIL${NC} — Vault status: initialized=$INITIALIZED, sealed=$SEALED"
-                    FAIL=$((FAIL + 1))
-                fi
-            else
-                echo -e "${RED}  ❌ FAIL${NC} — could not query Vault status (pod: $VAULT_POD)"
-                FAIL=$((FAIL + 1))
-            fi
+echo "3. Vault — running, unsealed, and API reachable"
+if require_tool kubectl "https://kubernetes.io/docs/tasks/tools/install-kubectl/" ; then
+  if kubectl get namespace "$VAULT_NS" >/dev/null 2>&1; then
+    VAULT_POD=$(kubectl get pods -n "$VAULT_NS" -l app.kubernetes.io/name=vault \
+      -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+    if [[ -n "$VAULT_POD" ]]; then
+      STATUS_JSON=$(kubectl exec -n "$VAULT_NS" "$VAULT_POD" -- \
+        vault status -format=json 2>/dev/null || true)
+      if [[ -n "$STATUS_JSON" ]]; then
+        # Parse with jq (no python3 dependency).
+        INITIALIZED=$(printf '%s' "$STATUS_JSON" | jq -r '.initialized // false' 2>/dev/null || echo "false")
+        SEALED=$(printf '%s' "$STATUS_JSON" | jq -r '.sealed // true' 2>/dev/null || echo "true")
+        if [[ "$INITIALIZED" == "true" && "$SEALED" == "false" ]]; then
+          record_pass "Vault initialized and unsealed (sealed=$SEALED)"
         else
-            echo -e "${YELLOW}  ⚠️  SKIP${NC} — Vault deployed but no pod found (run: kubectl apply -f k8s/vault/manifests.yaml)"
+          record_fail "Vault bad state: initialized=$INITIALIZED sealed=$SEALED"
         fi
+      else
+        record_fail "could not query vault status (pod: $VAULT_POD)"
+      fi
     else
-        echo -e "${YELLOW}  ⚠️  SKIP${NC} — Vault namespace not found (run: kubectl apply -f k8s/vault/manifests.yaml)"
+      record_fail "Vault deployed but no pod found (apply k8s/vault/manifests.yaml)"
     fi
-else
-    echo -e "${YELLOW}  ⚠️  SKIP${NC} — kubectl not available"
+  else
+    echo -e "${YELLOW}  ⚠️  SKIP${NC} — namespace '$VAULT_NS' not found." >&2
+    [[ $CI_MODE == true ]] && exit 1
+    ((SKIPPED++))
+  fi
 fi
 
-# ── Check 4: K8s Secret for Vault token ────────────────
+# ── Check 4: vault-root-token Secret actually authenticates to Vault ──
+# The old check just ran `echo "ok"` — a no-op that always passed. Replace
+# with a real probe: read the actual secret value, log into Vault, query
+# sys/health → if Vault accepts the token, the secret is alive. If rejected
+# (403 / invalid), the secret has drifted or never been bootstrapped.
 echo ""
-echo "4. Vault root token secret in devops-platform namespace"
-if command -v kubectl &> /dev/null; then
-    if kubectl get secret vault-root-token -n devops-platform &> /dev/null; then
-        check "Secret vault-root-token exists" echo "ok"
+echo "4. vault-root-token Secret — present AND a live Vault token"
+if command -v kubectl >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
+  if kubectl get namespace "$NAMESPACE" >/dev/null 2>&1; then
+    if kubectl get secret vault-root-token -n "$NAMESPACE" >/dev/null 2>&1; then
+      TOKEN=$(kubectl get secret vault-root-token -n "$NAMESPACE" \
+        -o jsonpath='{.data.root-token}' 2>/dev/null | base64 -d 2>/dev/null || true)
+      if [[ -z "$TOKEN" ]]; then
+        record_fail "Secret exists but root-token key is empty"
+      elif [[ "$TOKEN" == *"INJECT-VIA"* || "$TOKEN" == *"DO-NOT-COMMIT"* ]]; then
+        record_fail "Secret still contains the placeholder value — bootstrap with scripts/bootstrap-vault-secret.sh"
+      else
+        VAULT_ADDR="http://vault-service.${VAULT_NS}.svc.cluster.local:8200"
+        # Talk to Vault from within the cluster via a one-off pod.
+        body=$(kubectl run -n "$NAMESPACE" vault-token-probe --rm -i \
+            --restart=Never --image=hashicorp/vault:1.15.2 \
+            --env="VAULT_ADDR=$VAULT_ADDR" --env="VAULT_TOKEN=$TOKEN" \
+            --command -- sh -c 'vault token lookup -format=json 2>/dev/null' \
+            2>/dev/null || true)
+        if printf '%s' "$body" | jq -e '.data.id' >/dev/null 2>&1; then
+          lifetime=$(printf '%s' "$body" | jq -r '.data.ttl // "unknown"' 2>/dev/null || echo "unknown")
+          record_pass "vault-root-token authenticates to Vault (ttl=${lifetime}s)"
+          # Cleanup: remove the probe pod if it didn't auto-cleanup (--rm).
+          kubectl delete pod vault-token-probe -n "$NAMESPACE" --ignore-not-found >/dev/null 2>&1 || true
+        else
+          record_fail "vault-root-token rejected by Vault (token invalid / expired / unauthenticated)"
+        fi
+      fi
     else
-        echo -e "${YELLOW}  ⚠️  SKIP${NC} — secret not yet applied (run: kubectl apply -f k8s/vault/secret-vault-root.yaml)"
+      record_fail "Secret 'vault-root-token' missing in '$NAMESPACE' (bootstrap: scripts/bootstrap-vault-secret.sh)"
     fi
+  else
+    echo -e "${YELLOW}  ⚠️  SKIP${NC} — namespace '$NAMESPACE' not found." >&2
+    [[ $CI_MODE == true ]] && exit 1
+    ((SKIPPED++))
+  fi
 else
-    echo -e "${YELLOW}  ⚠️  SKIP${NC} — kubectl not available"
+  echo -e "${YELLOW}  ⚠️  SKIP${NC} — kubectl or jq missing." >&2
+  [[ $CI_MODE == true ]] && exit 1
+  ((SKIPPED++))
 fi
 
 # ── Summary ────────────────────────────────────────────
 echo ""
 echo "─────────────────────────────────────────────────────"
-echo -e "Result: ${GREEN}${PASS} passed${NC} / ${RED}${FAIL} failed${NC} / ${YELLOW}${TOTAL} checks${NC}"
+echo -e "Result: ${GREEN}${PASS} passed${NC} / ${RED}${FAIL} failed${NC} / ${YELLOW}${SKIPPED} skipped${NC}"
 echo "─────────────────────────────────────────────────────"
 
-if $CI_MODE; then
-    [[ $FAIL -gt 0 ]] && exit 1
+# Any failure → exit 1 (the new contract: never `exit $FAIL` since 0..4 wraps weirdly).
+if [[ $FAIL -gt 0 ]]; then
+  exit 1
 fi
-exit $FAIL
+exit 0

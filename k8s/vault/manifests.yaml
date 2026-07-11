@@ -7,6 +7,10 @@ metadata:
   labels:
     app.kubernetes.io/name: vault
     app.kubernetes.io/part-of: devops-platform
+    # Pod Security Admission: enforce restricted baseline so runAsNonRoot
+    # / allowPrivilegeEscalation:false / seccomp are required, not optional.
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
 ---
 # Service — exposes Vault server inside the cluster
 # Pods access Vault at: http://vault-service.vault.svc.cluster.local:8200
@@ -17,22 +21,31 @@ metadata:
   namespace: vault
   labels:
     app.kubernetes.io/name: vault
+    app.kubernetes.io/part-of: devops-platform
 spec:
   selector:
-    app: vault
+    app.kubernetes.io/name: vault
   ports:
     - name: vault-api
       port: 8200
-      targetPort: 8200
+      targetPort: vault-api
       protocol: TCP
-    - name: vault-ui
+    - name: vault-metrics
       port: 8201
-      targetPort: 8200
+      targetPort: vault-api
       protocol: TCP
   type: ClusterIP
 ---
 # Vault Deployment — dev mode (dev server, auto-unsealed)
-# In production: use statefulset + raft storage
+# In production: use statefulset + raft storage, manual/auto unseal, TLS,
+# and the Kubernetes auth method (see k8s/vault/README.md).
+#
+# The dev root token is NOT hardcoded here. It is sourced from the
+# `vault-root-token` Secret in the `devops-platform` namespace (created
+# out-of-band with scripts/bootstrap-vault-secret.sh) so no secret ships
+# in git. The same Secret value is passed both to the Vault server args
+# (`-dev-root-token-id`) and to the setup Job, keeping them consistent
+# without any committed value.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -42,30 +55,47 @@ metadata:
     app: vault
     app.kubernetes.io/name: vault
     app.kubernetes.io/part-of: devops-platform
+    app.kubernetes.io/managed-by: kubectl
 spec:
   replicas: 1
   strategy:
     type: Recreate  # Dev server cannot have parallel instances
   selector:
     matchLabels:
-      app: vault
+      app.kubernetes.io/name: vault
   template:
     metadata:
       labels:
         app: vault
         app.kubernetes.io/name: vault
+        app.kubernetes.io/part-of: devops-platform
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8200"
+        prometheus.io/path: "/v1/sys/metrics"
     spec:
+      serviceAccountName: vault-sa  # Wire the SA that was previously unused.
+      automountServiceAccountToken: true  # Needed for Kubernetes auth method.
       securityContext:
         runAsNonRoot: true
+        runAsUser: 100          # HashiCorp Vault image default non-root user.
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      terminationGracePeriodSeconds: 10
       containers:
         - name: vault
           image: hashicorp/vault:1.15.2
           imagePullPolicy: IfNotPresent
-          # Dev mode flags — auto-unsealed, in-memory storage, root token set
+          # Dev mode flags — auto-unsealed, in-memory storage.
+          # Root token value comes from the Secret by env substitution so
+          # no secret is committed; Vault dev mode startup must see a non-
+          # empty VAULT_DEV_ROOT_TOKEN_ID env var.
           args:
             - "server"
             - "-dev"
-            - "-dev-root-token-id=root-token-change-me"
+            - "-dev-root-token-id=$(VAULT_DEV_ROOT_TOKEN_ID)"
             - "-dev-listen-address=0.0.0.0:8200"
           ports:
             - name: vault-api
@@ -74,8 +104,17 @@ spec:
           env:
             - name: VAULT_ADDR
               value: "http://0.0.0.0:8200"
+            # Real token injected from Secret. `optional: false` (default)
+            # so the pod refuses to start if the Secret is missing — fail
+            # closed instead of silently starting with an empty token.
             - name: VAULT_DEV_ROOT_TOKEN_ID
-              value: "root-token-change-me"
+              valueFrom:
+                secretKeyRef:
+                  name: vault-root-token
+                  key: root-token
+            # Enable Prometheus exposition at /v1/sys/metrics.
+            - name: VAULT_METRIC_ENABLE
+              value: "true"
           resources:
             requests:
               cpu: "100m"
@@ -85,8 +124,10 @@ spec:
               memory: "512Mi"
           securityContext:
             allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false  # Vault writes to /vault/data.
             capabilities:
-              add: ["IPC_LOCK"]  # Allows mlock syscall (prevents secrets swap to disk)
+              drop: ["ALL"]
+              add: ["IPC_LOCK"]  # mlock syscall — prevents secrets swapping to disk.
           livenessProbe:
             httpGet:
               path: /v1/sys/health?standbyok=true
@@ -94,33 +135,46 @@ spec:
             initialDelaySeconds: 10
             periodSeconds: 10
             failureThreshold: 2
+            timeoutSeconds: 5
           readinessProbe:
             httpGet:
-              path: /v1/sys/health?standbyok=true
+              path: /v1/sys/health?standbyok=true&standbyok=true
               port: 8200
             initialDelaySeconds: 5
             periodSeconds: 5
             failureThreshold: 2
+            timeoutSeconds: 5
           volumeMounts:
             - name: vault-data
               mountPath: /vault/data
+            - name: vault-tmp
+              mountPath: /tmp
       volumes:
         - name: vault-data
           emptyDir: {}
+        - name: vault-tmp
+          emptyDir: {}  # readOnlyRootFilesystem is false above, but /tmp
+                        # gets its own writable volume to limit blast radius.
 ---
-# ConfigMap — Vault setup job script: enables KV v2 engine and seeds secrets
-# Microservices fetch these at startup.
+# ConfigMap — Vault setup job script: enables KV v2 engine + Kubernetes auth
+# method + per-service policies + seeds secrets.
+# Configuration references only the `VAULT_TOKEN` env injected from the
+# cross-namespace `vault-root-token` Secret — no committed token string.
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: vault-setup
   namespace: vault
+  labels:
+    app.kubernetes.io/name: vault-setup
+    app.kubernetes.io/part-of: devops-platform
 data:
   setup.sh: |
     #!/bin/sh
     set -e
 
-    export VAULT_ADDR="http://vault-service.vault.svc.cluster.local:8200"
+    : "${VAULT_ADDR:?"VAULT_ADDR must be set"}"
+    : "${VAULT_TOKEN:?"VAULT_TOKEN must be set (from cross-namespace Secret ref)"}"
 
     echo "Wait for Vault to be ready..."
     for i in $(seq 1 60); do
@@ -131,30 +185,57 @@ data:
       sleep 2
     done
 
-    # In dev mode, root token is pre-set
-    export VAULT_TOKEN="root-token-change-me"
-
     # Enable KV v2 secrets engine at path "secret/"
     echo "Enable KV v2 secrets engine at secret/ ..."
     vault secrets enable -path=secret kv-v2 || true
 
-    # Seed secrets for microservices — each service has its own path
-    echo "Seeding devops_platform secrets..."
+    # Enable the Kubernetes auth method so microservices can authenticate
+    # with their own ServiceAccount JWT — no shared root token at runtime.
+    echo "Enable kubernetes auth method..."
+    vault auth enable kubernetes || true
+    vault write auth/kubernetes/config \
+      kubernetes_host="https://kubernetes.default.svc.cluster.local" \
+      kubernetes_ca_cert=@/var/run/secrets/kubernetes.io/serviceaccount/ca.crt || true
 
-    # Users service secrets
+    # ── Per-service policies ───────────────────────────────────────────────
+    for svc in users-service products-service orders-service; do
+      cat <<EOF | vault policy write "devops-platform-${svc}" -
+    path "secret/data/devops-platform/${svc}" {
+      capabilities = ["read"]
+    }
+    path "secret/metadata/devops-platform/${svc}" {
+      capabilities = ["read", "list"]
+    }
+    EOF
+    done
+
+    # Bind each app ServiceAccount to its Vault policy via Kubernetes auth.
+    for svc in users-service products-service orders-service; do
+      vault write "auth/kubernetes/role/${svc}" \
+        bound_service_account_names="${svc}-sa" \
+        bound_service_account_namespaces="devops-platform" \
+        policies="devops-platform-${svc}" \
+        ttl="1h" || true
+    done
+
+    # ── Seed dev secrets (overridable via Vault in production) ─────────────
+    # NOTE: these are development-only seed values. They are not routes to
+    # production secrets — the real values should be written to Vault out of
+    # band (via SOPS, SealedSecrets, or an operator) and these seed lines
+    # deleted in production environments.
+    echo "Seeding devops_platform dev secrets..."
+
     vault kv put secret/devops-platform/users-service \
-      DATABASE_URL="postgresql://users_user:users_pass@postgres.devops-platform.svc.cluster.local:5432/users_db" \
-      JWT_SECRET_KEY="jwt-secret-for-users-service"
+      DATABASE_URL="postgresql://users_user:dev-users-pass@postgres.devops-platform.svc.cluster.local:5432/users_db" \
+      JWT_SECRET_KEY="dev-jwt-secret-users-service"
 
-    # Products service secrets
     vault kv put secret/devops-platform/products-service \
-      DATABASE_URL="postgresql://products_user:products_pass@postgres.devops-platform.svc.cluster.local:5432/products_db" \
-      API_KEY="products-api-key-12345"
+      DATABASE_URL="postgresql://products_user:dev-products-pass@postgres.devops-platform.svc.cluster.local:5432/products_db" \
+      API_KEY="dev-products-api-key-12345"
 
-    # Orders service secrets
     vault kv put secret/devops-platform/orders-service \
-      DATABASE_URL="postgresql://orders_user:orders_pass@postgres.devops-platform.svc.cluster.local:5432/orders_db" \
-      PAYMENT_GATEWAY_KEY="payment-gw-key-67890"
+      DATABASE_URL="postgresql://orders_user:dev-orders-pass@postgres.devops-platform.svc.cluster.local:5432/orders_db" \
+      PAYMENT_GATEWAY_KEY="dev-payment-gw-key-67890"
 
     echo "Vault setup complete. Sealed: $(vault status | grep Sealed | awk '{print $2}')"
 ---
@@ -164,52 +245,88 @@ kind: Job
 metadata:
   name: vault-setup-job
   namespace: vault
+  labels:
+    app.kubernetes.io/name: vault-setup-job
+    app.kubernetes.io/part-of: devops-platform
 spec:
   ttlSecondsAfterFinished: 300
   template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: vault-setup-job
+        app.kubernetes.io/part-of: devops-platform
     spec:
+      serviceAccountName: vault-sa
       securityContext:
         runAsNonRoot: true
+        runAsUser: 100
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
       restartPolicy: OnFailure
       containers:
         - name: vault-setup
           image: hashicorp/vault:1.15.2
+          imagePullPolicy: IfNotPresent
           command: ["/bin/sh", "/scripts/setup.sh"]
           securityContext:
             allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
           env:
             - name: VAULT_ADDR
               value: "http://vault-service.vault.svc.cluster.local:8200"
+            # Real token injected from the cross-namespace `vault-root-token`
+            # Secret via a cross-namespace reference (apps namespace → vault).
+            # Requires the Role/RoleBinding below (already present).
             - name: VAULT_TOKEN
-              value: "root-token-change-me"
+              valueFrom:
+                secretKeyRef:
+                  name: vault-root-token
+                  key: root-token
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "200m"
+              memory: "256Mi"
           volumeMounts:
             - name: setup-script
               mountPath: /scripts
               readOnly: true
+            - name: tmp
+              mountPath: /tmp
       volumes:
         - name: setup-script
           configMap:
             name: vault-setup
             defaultMode: 0755
+        - name: tmp
+          emptyDir: {}
 ---
-# ServiceAccount — Vault uses Kubernetes service account for auth
+# ServiceAccount — Vault uses this SA for Kubernetes auth + setup Job.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: vault-sa
   namespace: vault
   labels:
-    app.kubernetes.io/name: vault
-  annotations:
-    # Token audience for Vault Kubernetes auth method
-    eks.amazonaws.com/role-arn: ""
+    app.kubernetes.io/name: vault-sa
+    app.kubernetes.io/part-of: devops-platform
 ---
-# Kubernetes auth policy — Vault uses this SA to authenticate microservices
+# Vault needs to read secrets (own dev setup) + mint SA tokens per service
+# for the Kubernetes auth method.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: vault-auth-role
   namespace: vault
+  labels:
+    app.kubernetes.io/name: vault-auth-role
+    app.kubernetes.io/part-of: devops-platform
 rules:
   - apiGroups: [""]
     resources: ["secrets"]
@@ -217,12 +334,18 @@ rules:
   - apiGroups: [""]
     resources: ["serviceaccounts/token"]
     verbs: ["create"]
+  - apiGroups: [""]
+    resources: ["serviceaccounts"]
+    verbs: ["get"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: vault-auth-rolebinding
   namespace: vault
+  labels:
+    app.kubernetes.io/name: vault-auth-rolebinding
+    app.kubernetes.io/part-of: devops-platform
 subjects:
   - kind: ServiceAccount
     name: vault-sa
@@ -230,4 +353,39 @@ subjects:
 roleRef:
   kind: Role
   name: vault-auth-role
+  apiGroup: rbac.authorization.k8s.io
+---
+# Cross-namespace secret access: the vault-setup Job runs in the `vault`
+# namespace but reads the root token from the `vault-root-token` Secret in
+# `devops-platform`. A RoleBinding there grants vault-sa get/list/watch on
+# that specific Secret.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: vault-token-reader
+  namespace: devops-platform
+  labels:
+    app.kubernetes.io/name: vault-token-reader
+    app.kubernetes.io/part-of: devops-platform
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get"]
+    resourceNames: ["vault-root-token"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: vault-token-reader-binding
+  namespace: devops-platform
+  labels:
+    app.kubernetes.io/name: vault-token-reader-binding
+    app.kubernetes.io/part-of: devops-platform
+subjects:
+  - kind: ServiceAccount
+    name: vault-sa
+    namespace: vault
+roleRef:
+  kind: Role
+  name: vault-token-reader
   apiGroup: rbac.authorization.k8s.io

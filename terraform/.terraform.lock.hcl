@@ -3,7 +3,7 @@
 
 provider "registry.terraform.io/dmacvicar/libvirt" {
   version     = "0.9.8"
-  constraints = "~> 0.7"
+  constraints = "~> 0.9"
   hashes = [
     "h1:yqZeKoJ+EZc3687/+ZBqBmtwzvBPLNwaEHW74+bSc6Y=",
     "zh:061e5187853729e1d8ba20938402ad6e778b4097436925d0bef7741c8aa26ee1",

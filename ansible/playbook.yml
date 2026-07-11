@@ -32,10 +32,16 @@
   tags:
     - worker
 
-- name: Reset Kubernetes cluster — OPT-IN, run with --tags reset
+- name: Reset Kubernetes cluster — OPT-IN
+  # devops-analysis-report.md P2: the reset play was guarded only by a tag,
+  # so a careless `ansible-playbook playbook.yml` would wipe the cluster.
+  # Now it requires BOTH an explicit tag (--tags reset) AND
+  # `-e reset_confirmed=true` on the command line.
   hosts: all
   become: true
   roles:
-    - k8s_reset
+    - role: k8s_reset
+      when: reset_confirmed | default(false) | bool
   tags:
     - reset
+    - never
