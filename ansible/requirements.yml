@@ -1,0 +1,9 @@
+---
+# Collection dependencies — install before running playbooks:
+#   ansible-galaxy collection install -r requirements.yml
+# devops-analysis-report.md P2: `community.general.modprobe` is used in
+# `k8s_common/tasks/main.yml` but the collection was never declared, so a
+# fresh workstation install would break.
+collections:
+  - name: community.general
+    version: ">=8.0.0"

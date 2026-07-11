@@ -1,0 +1,12 @@
+---
+# Default variables for the `docker` role — make role reusable standalone.
+# Overrides come from group_vars/all.yml or host_vars/.
+docker_packages:
+  - docker-ce
+  - docker-ce-cli
+  - containerd.io
+docker_keyring_dir: /etc/apt/keyrings
+docker_gpg_key_path: /etc/apt/keyrings/docker.gpg
+containerd_config_path: /etc/containerd/config.toml
+# Hardcoded group the devops user is added to.
+docker_user: devops

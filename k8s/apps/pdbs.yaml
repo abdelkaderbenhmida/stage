@@ -1,0 +1,48 @@
+# PodDisruptionBudgets — protect min-available during voluntary disruptions.
+#
+# devops-analysis-report.md P1: previously zero PDBs while HPA scaled 2→5 →
+# node drain could evict all replicas at once. Now each service has a PDB
+# guaranteeing at least 1 pod survives voluntary eviction (maxUnavailable: 1).
+
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: users-service-pdb
+  namespace: devops-platform
+  labels:
+    app.kubernetes.io/name: users-service
+    app.kubernetes.io/part-of: devops-platform
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: users-service
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: products-service-pdb
+  namespace: devops-platform
+  labels:
+    app.kubernetes.io/name: products-service
+    app.kubernetes.io/part-of: devops-platform
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: products-service
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: orders-service-pdb
+  namespace: devops-platform
+  labels:
+    app.kubernetes.io/name: orders-service
+    app.kubernetes.io/part-of: devops-platform
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: orders-service

@@ -1,0 +1,4 @@
+---
+# Defaults for `k8s_reset` — kubeadm reset + cleanup.
+# Must be opted-in explicitly via `reset_confirmed: true` (see playbook.yml).
+k8s_reset_force: false
