@@ -17,9 +17,23 @@ server:
 
   # Dev mode — auto-unsealed. For production, switch to "standalone" and configure unseal keys.
   # Dev mode stores everything in memory; for production use file or raft storage.
+  #
+  # The dev root token is NOT committed here. It is supplied via the
+  # `vault-root-token` Secret (see scripts/bootstrap-vault-secret.sh) and
+  # referenced through the chart's existing `--set server.dev.devRootToken`
+  # mechanism at install time:
+  #
+  #   helm install vault hashicorp/vault -n vault \
+  #     -f k8s/vault/values.yaml \
+  #     --set server.dev.devRootToken="$(kubectl get secret vault-root-token \
+  #       -n devops-platform -o jsonpath='{.data.root-token}' | base64 -d)"
+  #
+  # The committed `devRootToken` value below is an empty-on-purpose marker —
+  # Helm 3 will fail the release install if the value is unset, alerting the
+  # operator that they must inject the token. Never commit a real token.
   devMode:
     enabled: true
-    devRootToken: "root-token-change-me"
+    devRootToken: "INJECT-VIA-HELM-SET-OR-SECRET-DO-NOT-COMMIT"
     devListenAddress: "0.0.0.0:8200"
 
   # Resource limits — Vault is lightweight in dev mode
@@ -37,9 +51,20 @@ server:
     port: 8200
     targetPort: 8200
 
-  # Enable the Vault injector for Kubernetes authentication
+  # Enable the Vault Agent Injector so microservices authenticate to Vault
+  # with their own ServiceAccount JWT (Kubernetes auth method) and receive
+  # short-lived, per-service tokens. No app needs the shared root token at
+  # runtime. Disable only for local-only debugging.
   injector:
-    enabled: false  # Static secrets fetched at startup for simplicity in this phase
+    enabled: true
+    replicas: 1
+    resources:
+      requests:
+        cpu: "100m"
+        memory: "128Mi"
+      limits:
+        cpu: "250m"
+        memory: "256Mi"
 
   # Data persistence (disabled in dev mode, enabled in production)
   dataStorage:

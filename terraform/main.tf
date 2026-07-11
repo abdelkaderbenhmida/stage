@@ -1,5 +1,5 @@
 terraform {
-  required_version = ">= 1.5.0"
+  required_version = "~> 1.5" # P2: upper-bound to avoid surprise breaking jumps.
 
   required_providers {
     libvirt = {
@@ -24,6 +24,10 @@ locals {
       can(file(pathexpand("~/.ssh/id_rsa.pub"))) ? trimspace(file(pathexpand("~/.ssh/id_rsa.pub"))) : ""
     )
   )
+
+  network_prefix = var.network_prefix != null ? var.network_prefix : tonumber(split("/", var.network_cidr)[1])
+  gateway_ip     = var.gateway_ip != null ? var.gateway_ip : cidrhost(var.network_cidr, 1)
+
 
   master_node = {
     name = var.master_name
@@ -59,7 +63,7 @@ resource "libvirt_network" "platform" {
   ips = [
     {
       address = cidrhost(var.network_cidr, 1)
-      netmask = "255.255.255.0"
+      netmask = cidrnetmask(var.network_cidr)
       dhcp = {
         ranges = [
           {
@@ -74,8 +78,7 @@ resource "libvirt_network" "platform" {
   dns = {
     enable = "yes"
     forwarders = [
-      { addr = "1.1.1.1" },
-      { addr = "8.8.8.8" },
+      for dns in var.dns_servers : { addr = dns }
     ]
   }
 }
@@ -111,8 +114,8 @@ resource "libvirt_volume" "node" {
   target = {
     format = { type = "qcow2" }
     permissions = {
-      owner = "64055"
-      group = "993"
+      owner = var.libvirt_volume_owner_uid
+      group = var.libvirt_volume_group_gid
       mode  = "0600"
     }
   }
@@ -139,8 +142,8 @@ resource "libvirt_cloudinit_disk" "init" {
   network_config = templatefile("${path.module}/network-config.tpl", {
     interface_name = var.network_interface
     ip             = each.value.ip
-    prefix         = var.network_prefix
-    gateway        = var.gateway_ip
+    prefix         = local.network_prefix
+    gateway        = local.gateway_ip
     dns_servers    = var.dns_servers
   })
 }
@@ -172,11 +175,11 @@ resource "terraform_data" "ssh_key_guard" {
 resource "libvirt_domain" "node" {
   for_each = local.nodes
 
-  name   = each.key
-  type   = "kvm"
-  memory = var.vm_memory_mb
+  name        = each.key
+  type        = "kvm"
+  memory      = var.vm_memory_mb
   memory_unit = "MiB"
-  vcpu   = var.vm_vcpu
+  vcpu        = var.vm_vcpu
 
   os = {
     type         = "hvm"
