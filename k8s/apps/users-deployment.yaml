@@ -13,12 +13,28 @@ spec:
       labels:
         app: users-service
     spec:
+      serviceAccountName: devops-platform-sa
+      securityContext:
+        runAsNonRoot: true
       containers:
       - name: users-service
         image: users-service:latest
         imagePullPolicy: Never
         ports:
         - containerPort: 8000
+        securityContext:
+          allowPrivilegeEscalation: false
+        env:
+        - name: SERVICE_NAME
+          value: "users-service"
+        - name: VAULT_ADDR
+          value: "http://vault-service.vault.svc.cluster.local:8200"
+        - name: VAULT_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: vault-root-token
+              key: root-token
+              optional: true
         resources:
           requests:
             cpu: "100m"
