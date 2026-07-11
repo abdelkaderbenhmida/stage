@@ -1,0 +1,30 @@
+# Gitleaks configuration file
+# https://github.com/gitleaks/gitleaks
+
+[extend]
+# Use the default rules from gitleaks
+useDefault = true
+
+# Allowlist — files/patterns to skip (false positives)
+[allowlist]
+description = "Project-specific allowlist"
+paths = [
+    # Terraform state files may contain auto-generated tokens
+    '''terraform\.tfstate''',
+    # Files.md documentation directory — reference material only
+    '''files\.md/.*''',
+    # This Gitleaks config file itself
+    '''\.gitleaks\.toml$''',
+    # Terraform module-specific variables file
+    '''terraform/terraform\.tfvars''',
+    # Example/mock data in documentation
+    '''.*\.md$''',
+]
+# Known placeholders that are not real secrets
+regexes = [
+    '''example''',
+    '''placeholder''',
+    '''changeme''',
+    '''YOUR_SECRET_HERE''',
+    '''REPLACE_ME''',
+]

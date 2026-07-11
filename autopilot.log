@@ -1,0 +1,12 @@
+[32m▶[0m [1m[94mAutopilot Configuration[0m
+  [38;2;211;134;155m◆[0m Provider: [38;2;254;128;25mopenai-compatible[0m | Model: [38;2;254;128;25mnvidia/llama-3.3-nemotron-super-49b-v1[0m
+  [38;2;211;134;155m◆[0m Project: [38;5;44m00000000-0000-0000-defa-c01001000001[0m
+  [38;2;211;134;155m◆[0m Source: [38;5;44m~/Desktop/stage[0m
+  [38;2;211;134;155m◆[0m Intensity: [38;5;44mquick[0m [38;2;146;131;116m(max-cmds=[94m150[0m | wall=[94m1h0m0s[0m)[0m
+  [38;2;211;134;155m◆[0m Audit: audit=[38;2;254;128;25mlite[0m | piolium=[38;2;254;128;25moff[0m
+  [38;2;211;134;155m◆[0m Browser: [38;2;254;128;25menabled[0m | Pre-scan: [38;2;254;128;25mn/a (audit replaces)[0m
+  [38;2;211;134;155m◆[0m Session: [38;2;146;131;116m~/.vigolium/agent-sessions/86cf1a55-2d71-492f-9937-a7d095bbac78[0m
+  [38;2;211;134;155m◆[0m Transcript: [38;2;146;131;116m~/.vigolium/agent-sessions/86cf1a55-2d71-492f-9937-a7d095bbac78/transcript.jsonl[0m
+  [33m◇[0m [90mtail logs with[0m [36mvigolium log 86cf1a55-2d71-492f-9937-a7d095bbac78[0m
+
+✖ Error: autopilot session failed: autopilot preflight failed and no target is available for a native fallback scan: preflight: provider "openai-compatible" failed (model="nvidia/llama-3.3-nemotron-super-49b-v1"): olium: openai-compatible: Post "https://integrate.api.nvidia.com/v1/chat/completions": context deadline exceeded
