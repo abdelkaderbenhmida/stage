@@ -1,4 +1,5 @@
 import os
+import secrets
 
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse, PlainTextResponse
@@ -34,8 +35,8 @@ def _load_secrets() -> None:
             )
     if not JWT_SECRET_KEY:
         if is_dev:
-            JWT_SECRET_KEY = "dev-jwt-key-INSECURE-LOCAL-ONLY"
-            _LOG.warning("secret.default_used", extra={"event": "secret.default_used", "name": "JWT_SECRET_KEY"})
+            JWT_SECRET_KEY = secrets.token_hex(32)
+            _LOG.warning("secret.dev_ephemeral", extra={"event": "secret.dev_ephemeral", "name": "JWT_SECRET_KEY", "reason": "generated_per_process"})
         else:
             raise SystemExit("JWT_SECRET_KEY missing in Vault; refusing to start.")
 

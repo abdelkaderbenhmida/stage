@@ -218,26 +218,27 @@ data:
         ttl="1h" || true
     done
 
-    # ── Seed dev secrets (overridable via Vault in production) ─────────────
-    # NOTE: these are development-only seed values. They are not routes to
-    # production secrets — the real values should be written to Vault out of
-    # band (via SOPS, SealedSecrets, or an operator) and these seed lines
-    # deleted in production environments.
-    echo "Seeding devops_platform dev secrets..."
+    # ── Vault KV paths initialized — no secrets committed in git ─────────────
+    # Real secrets MUST be written to Vault out-of-band by an operator
+    # (via the Vault CLI, SOPS + vault write, or SealedSecrets).
+    # The paths below are created empty so policies match; services will
+    # fail-closed on startup until secrets are injected.
+    echo "Creating empty Vault KV paths for per-service secrets..."
 
     vault kv put secret/devops-platform/users-service \
-      DATABASE_URL="postgresql://users_user:dev-users-pass@postgres.devops-platform.svc.cluster.local:5432/users_db" \
-      JWT_SECRET_KEY="dev-jwt-secret-users-service"
+      DATABASE_URL="" \
+      JWT_SECRET_KEY=""
 
     vault kv put secret/devops-platform/products-service \
-      DATABASE_URL="postgresql://products_user:dev-products-pass@postgres.devops-platform.svc.cluster.local:5432/products_db" \
-      API_KEY="dev-products-api-key-12345"
+      DATABASE_URL="" \
+      API_KEY=""
 
     vault kv put secret/devops-platform/orders-service \
-      DATABASE_URL="postgresql://orders_user:dev-orders-pass@postgres.devops-platform.svc.cluster.local:5432/orders_db" \
-      PAYMENT_GATEWAY_KEY="dev-payment-gw-key-67890"
+      DATABASE_URL="" \
+      PAYMENT_GATEWAY_KEY=""
 
     echo "Vault setup complete. Sealed: $(vault status | grep Sealed | awk '{print $2}')"
+    echo "!! Secrets are EMPTY — inject real values out-of-band before deploying services."
 ---
 # Job — Runs the setup script once Vault is running
 apiVersion: batch/v1
