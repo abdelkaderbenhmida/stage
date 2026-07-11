@@ -1,4 +1,5 @@
 import os
+import secrets
 
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse, PlainTextResponse
@@ -26,8 +27,8 @@ def _load_secrets() -> None:
             raise SystemExit("DATABASE_URL missing in Vault; refusing to start in production.")
     if not API_KEY:
         if is_dev:
-            API_KEY = "dev-api-key-INSECURE-LOCAL-ONLY"
-            _LOG.warning("secret.default_used", extra={"event": "secret.default_used", "name": "API_KEY"})
+            API_KEY = secrets.token_hex(16)
+            _LOG.warning("secret.dev_ephemeral", extra={"event": "secret.dev_ephemeral", "name": "API_KEY", "reason": "generated_per_process"})
         else:
             raise SystemExit("API_KEY missing in Vault; refusing to start.")
 

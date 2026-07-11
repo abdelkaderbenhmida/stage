@@ -1,4 +1,5 @@
 import os
+import secrets
 
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse, PlainTextResponse
@@ -26,8 +27,8 @@ def _load_secrets() -> None:
             raise SystemExit("DATABASE_URL missing in Vault; refusing to start in production.")
     if not PAYMENT_GATEWAY_KEY:
         if is_dev:
-            PAYMENT_GATEWAY_KEY = "dev-payment-key-INSECURE-LOCAL-ONLY"
-            _LOG.warning("secret.default_used", extra={"event": "secret.default_used", "name": "PAYMENT_GATEWAY_KEY"})
+            PAYMENT_GATEWAY_KEY = secrets.token_hex(16)
+            _LOG.warning("secret.dev_ephemeral", extra={"event": "secret.dev_ephemeral", "name": "PAYMENT_GATEWAY_KEY", "reason": "generated_per_process"})
         else:
             raise SystemExit("PAYMENT_GATEWAY_KEY missing in Vault; refusing to start.")
 

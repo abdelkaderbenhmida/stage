@@ -10,8 +10,9 @@ users:
   - name: ${ssh_user}
     groups: [sudo]
     shell: /bin/bash
-    # Restricted sudo: only kubeadm/kubelet/containerd commands (least privilege).
-    sudo: ALL=(ALL) NOPASSWD: /usr/bin/kubeadm, /usr/bin/kubelet, /usr/bin/systemctl restart kubelet, /usr/bin/systemctl restart containerd, /usr/bin/systemctl restart docker
+    # Restricted sudo: kubeadm/kubelet/containerd commands. Password-required
+    # for privilege escalation — NOPASSWD removed per security audit.
+    sudo: ALL=(ALL) PASSWD: /usr/bin/kubeadm, /usr/bin/kubelet, /usr/bin/systemctl restart kubelet, /usr/bin/systemctl restart containerd, /usr/bin/systemctl restart docker
     lock_passwd: false        # password auth disabled above; account still usable via key.
     ssh_authorized_keys:
       - ${ssh_public_key}
