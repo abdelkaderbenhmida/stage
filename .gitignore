@@ -61,3 +61,6 @@ sbom-*.json
 .envrc
 .env.*
 !.env.example
+istio-*.tar.gz
+flagger-*.tar.gz
+helm-*.tar.gz
