@@ -1,0 +1,34 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: flagger
+  namespace: argocd
+  labels:
+    app.kubernetes.io/name: flagger
+    app.kubernetes.io/part-of: devops-platform
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: devops-platform
+  source:
+    repoURL: https://github.com/abdelkaderbenhmida/stage.git
+    targetRevision: main
+    path: k8s/istio-flagger/flagger
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: istio-system
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+      allowEmpty: false
+    syncOptions:
+      - CreateNamespace=true
+      - PrunePropagationPolicy=foreground
+      - ServerSideApply=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m
