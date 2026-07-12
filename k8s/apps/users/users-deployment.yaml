@@ -54,9 +54,9 @@ spec:
                 topologyKey: kubernetes.io/hostname
       containers:
         - name: users-service
-          # P1: pinned semver instead of `latest`. Replace with digest pin
-          # in production: <registry>/users-service:1.0.0@sha256:...
-          image: ghcr.io/abdelkaderbenhmida/users-service:1.0.0
+          # Local image built + imported on each worker (offline dev cluster).
+          # For production, replace with registry image pinned by digest.
+          image: users-service:latest
           imagePullPolicy: IfNotPresent
           ports:
             - name: http

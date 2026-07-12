@@ -54,7 +54,7 @@ spec:
                 topologyKey: kubernetes.io/hostname
       containers:
         - name: products-service
-          image: ghcr.io/abdelkaderbenhmida/products-service:1.0.0
+          image: products-service:latest
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
