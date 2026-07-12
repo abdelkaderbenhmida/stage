@@ -1,0 +1,29 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: devops-platform
+  namespace: argocd
+  labels:
+    app.kubernetes.io/name: devops-platform
+    app.kubernetes.io/part-of: devops-platform
+spec:
+  description: DevOps Central Platform — FastAPI microservices.
+  sourceRepos:
+    - https://github.com/abdelkaderbenhmida/stage.git
+  destinations:
+    - namespace: devops-platform
+      server: https://kubernetes.default.svc
+    - namespace: istio-system
+      server: https://kubernetes.default.svc
+    - namespace: flagger-system
+      server: https://kubernetes.default.svc
+  clusterResourceWhitelist:
+    - group: ""
+      kind: Namespace
+    - group: ""
+      kind: Service
+    - group: ""
+      kind: ConfigMap
+  namespaceResourceWhitelist:
+    - group: "*"
+      kind: "*"
