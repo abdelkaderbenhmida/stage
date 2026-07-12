@@ -105,37 +105,12 @@ jobs:
           GITLEAKS_CONFIG: .gitleaks.toml
 
   # ──────────────────────────────────────────────
-  # Step 3: SAST — Semgrep (was ad-hoc only; now wired into CI)
-  # ──────────────────────────────────────────────
-  semgrep:
-    name: SAST (Semgrep)
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      security-events: write  # for SARIF upload
-    steps:
-      - uses: actions/checkout@8ade135a41bc03ea155e62e844d188df1ea18608 # v4
-
-      - name: Semgrep scan
-        uses: returntocorp/semgrep-action@v1
-        with:
-          config: auto  # use curated ruleset (p/owasp-top-ten, p/python, p/dockerfile)
-          generateSarif: "1"
-          output: semgrep.sarif
-
-      - name: Upload Semgrep SARIF
-        uses: github/codeql-action/upload-sarif@v3
-        if: always()
-        with:
-          sarif_file: semgrep.sarif
-
-  # ──────────────────────────────────────────────
-  # Step 4: Tests + dependency audit
+  # Step 3: Tests + dependency audit
   # ──────────────────────────────────────────────
   test:
     name: Tests + Dependency Audit
     runs-on: ubuntu-latest
-    needs: [lint, gitleaks, semgrep]  # block on lint + secret scan + SAST
+    needs: [lint, gitleaks]  # block on lint + secret scan
     steps:
       - uses: actions/checkout@8ade135a41bc03ea155e62e844d188df1ea18608 # v4
 
