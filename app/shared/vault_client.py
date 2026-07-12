@@ -147,13 +147,13 @@ def get_secret(name: str, default: Optional[str] = None) -> str:
         if env_value is not None:
             _LOG.warning(
                 "secret.from_env",
-                extra={"event": "secret.from_env", "name": name, "reason": "vault_unreachable"},
+                extra={"event": "secret.from_env", "secret_name": name, "reason": "vault_unreachable"},
             )
             return env_value
         if default is not None:
             _LOG.warning(
                 "secret.default_used",
-                extra={"event": "secret.default_used", "name": name},
+                extra={"event": "secret.default_used", "secret_name": name},
             )
             return default
         raise
@@ -168,7 +168,7 @@ def get_secret(name: str, default: Optional[str] = None) -> str:
     if default is not None:
         _LOG.warning(
             "secret.default_used",
-            extra={"event": "secret.default_used", "name": name},
+            extra={"event": "secret.default_used", "secret_name": name},
         )
         return default
 

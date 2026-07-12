@@ -5,7 +5,7 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse, PlainTextResponse
 from prometheus_client import Counter, generate_latest
 
-from shared.logging import setup_logging
+from shared.log_config import setup_logging
 from shared.vault_client import get_secret, SecretUnavailable, vault_health
 
 # Structured logs from the start. Log format honors LOG_FORMAT (json|plain).
@@ -27,7 +27,7 @@ def _load_secrets() -> None:
     if not DATABASE_URL:
         if is_dev:
             DATABASE_URL = "sqlite:///./users.db"
-            _LOG.warning("secret.default_used", extra={"event": "secret.default_used", "name": "DATABASE_URL"})
+            _LOG.warning("secret.default_used", extra={"event": "secret.default_used", "secret_name": "DATABASE_URL"})
         else:
             raise SystemExit(
                 "DATABASE_URL is missing in Vault and no env override is set; "
@@ -36,7 +36,7 @@ def _load_secrets() -> None:
     if not JWT_SECRET_KEY:
         if is_dev:
             JWT_SECRET_KEY = secrets.token_hex(32)
-            _LOG.warning("secret.dev_ephemeral", extra={"event": "secret.dev_ephemeral", "name": "JWT_SECRET_KEY", "reason": "generated_per_process"})
+            _LOG.warning("secret.dev_ephemeral", extra={"event": "secret.dev_ephemeral", "secret_name": "JWT_SECRET_KEY", "reason": "generated_per_process"})
         else:
             raise SystemExit("JWT_SECRET_KEY missing in Vault; refusing to start.")
 

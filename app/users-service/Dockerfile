@@ -18,18 +18,22 @@ WORKDIR /build
 ENV PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 COPY shared/requirements.txt ./shared-requirements.txt
-RUN pip install --user -r shared-requirements.txt
+COPY users-service/requirements.txt ./service-requirements.txt
+RUN pip install -r shared-requirements.txt -r service-requirements.txt
 COPY shared/ ./shared/
-RUN pip install --user ./shared
+RUN pip install ./shared
 
 FROM ${BASE_IMAGE}
 WORKDIR /app/users-service
 ENV PYTHONUNBUFFERED=1 \
-    PATH=/root/.local/bin:$PATH \
-    LOG_FORMAT=json
-COPY --from=builder /root/.local /root/.local
-COPY --chown=appuser:appuser users-service/main.py ./
+    PATH=/usr/local/bin:$PATH \
+    LOG_FORMAT=json \
+    PYTHONPATH=/app
+COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
+COPY --from=builder /usr/local/bin /usr/local/bin
+COPY --from=builder /build/shared /app/shared
 RUN groupadd -r appuser && useradd -r -g appuser appuser --home-dir /app --no-create-home
+COPY --chown=appuser:appuser users-service/main.py ./
 EXPOSE 8000
 USER appuser
 HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
