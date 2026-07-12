@@ -2,7 +2,7 @@
 
 Import from services as:
     from shared.vault_client import get_secret, vault_health
-    from shared.logging import setup_logging
+    from shared.log_config import setup_logging
     from shared.config import AppConfig
 """
 

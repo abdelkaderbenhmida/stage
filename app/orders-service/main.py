@@ -5,7 +5,7 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse, PlainTextResponse
 from prometheus_client import Counter, generate_latest
 
-from shared.logging import setup_logging
+from shared.log_config import setup_logging
 from shared.vault_client import get_secret, SecretUnavailable, vault_health
 
 _LOG = setup_logging("orders-service")
@@ -22,13 +22,13 @@ def _load_secrets() -> None:
     if not DATABASE_URL:
         if is_dev:
             DATABASE_URL = "sqlite:///./orders.db"
-            _LOG.warning("secret.default_used", extra={"event": "secret.default_used", "name": "DATABASE_URL"})
+            _LOG.warning("secret.default_used", extra={"event": "secret.default_used", "secret_name": "DATABASE_URL"})
         else:
             raise SystemExit("DATABASE_URL missing in Vault; refusing to start in production.")
     if not PAYMENT_GATEWAY_KEY:
         if is_dev:
             PAYMENT_GATEWAY_KEY = secrets.token_hex(16)
-            _LOG.warning("secret.dev_ephemeral", extra={"event": "secret.dev_ephemeral", "name": "PAYMENT_GATEWAY_KEY", "reason": "generated_per_process"})
+            _LOG.warning("secret.dev_ephemeral", extra={"event": "secret.dev_ephemeral", "secret_name": "PAYMENT_GATEWAY_KEY", "reason": "generated_per_process"})
         else:
             raise SystemExit("PAYMENT_GATEWAY_KEY missing in Vault; refusing to start.")
 
