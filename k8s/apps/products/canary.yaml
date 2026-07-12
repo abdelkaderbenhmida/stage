@@ -1,0 +1,50 @@
+apiVersion: flagger.app/v1beta1
+kind: Canary
+metadata:
+  name: products-service
+  namespace: devops-platform
+  labels:
+    app.kubernetes.io/name: products-service
+    app.kubernetes.io/part-of: devops-platform
+spec:
+  provider: istio
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: products-service
+  service:
+    name: products-service
+    port: 80
+    targetPort: http
+    matchLabels:
+      app.kubernetes.io/name: products-service
+      app.kubernetes.io/version: primary
+  metrics:
+    - name: request-success-rate
+      interval: 60s
+      threshold: 99
+      providerRef:
+        name: products-service-prom
+    - name: request-duration
+      interval: 60s
+      threshold: 500
+      providerRef:
+        name: products-service-prom
+    - name: rollback
+      interval: 30s
+      providerRef:
+        name: products-service-prom
+  analysis:
+    metricsCheck: false
+    webhooks:
+      - name: load-test
+        url: http://flagger-loadtester.devops-platform/
+        timeout: 5s
+        metadata:
+          cmd: "hey -z 1m -q 10 -c 2 http://products-service-canary.devops-platform/"
+    canaryWeight: 10
+    stepWeight: 10
+    interval: 30s
+    iterations: 5
+    threshold: 2
+  progressDeadlineSeconds: 300
