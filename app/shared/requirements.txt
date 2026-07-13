@@ -6,4 +6,4 @@
 # in production Dockerfiles via a compiled lockfile (see ../requirements.lock).
 hvac==2.1.0
 prometheus-client==0.17.1
-python-json-logger==2.0.7
+python-json-logger==4.1.0
