@@ -18,6 +18,7 @@ RUN pip install -r shared-requirements.txt -r service-requirements.txt \
  && pip install --upgrade "jaraco.context>=6.1.0" "wheel>=0.46.2"
 COPY shared/ ./shared/
 RUN pip install ./shared
+RUN pip uninstall -y wheel jaraco.context
 
 FROM ${BASE_IMAGE}
 WORKDIR /app/orders-service
