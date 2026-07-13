@@ -174,10 +174,10 @@ jobs:
       - uses: actions/checkout@8ade135a41bc03ea155e62e844d188df1ea18608 # v4
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@988b5a0280414f521da01fcc63a27aeeb4b104db # v3
+        uses: docker/setup-buildx-action@v3
 
       - name: Log in to registry
-        uses: docker/login-action@9780c0f9a5645f4ef38e5ed82688c1a0946e76c8 # v3
+        uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -185,7 +185,7 @@ jobs:
 
       - name: Extract metadata (tags + labels, NO mutable :latest by default)
         id: meta
-        uses: docker/metadata-action@9a5d6d03154d0f9b184904e76b04aaa8b4c1dee3 # v5
+        uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/${{ matrix.service }}
           tags: |
@@ -195,7 +195,7 @@ jobs:
             type=semver,pattern={{version}}
 
       - name: Build and push (digest-pinned output via metadata)
-        uses: docker/build-push-action@4a0d4d0b6f0db1b1a83d50d75b3b8c5b3d5ce2c1 # v5
+        uses: docker/build-push-action@v5
         id: build
         with:
           context: app/  # context is app/ so shared/ is visible — see app/*/Dockerfile.
@@ -251,7 +251,7 @@ jobs:
           echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
 
       - name: Log in to registry
-        uses: docker/login-action@9780c0f9a5645f4ef38e5ed82688c1a0946e76c8 # v3
+        uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
