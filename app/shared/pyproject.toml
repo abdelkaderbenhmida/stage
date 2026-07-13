@@ -10,7 +10,7 @@ requires-python = ">=3.11"
 license = "MIT"
 authors = [{ name = "DevOps Platform Team" }]
 dependencies = [
-    "hvac==2.1.0",
+    "hvac==2.4.0",
     "prometheus-client==0.17.1",
     "python-json-logger==2.0.7",
 ]
