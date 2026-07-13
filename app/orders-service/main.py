@@ -17,8 +17,14 @@ REQUEST_COUNT = Counter("orders_requests_total", "Total requests")
 def _load_secrets() -> None:
     global DATABASE_URL, PAYMENT_GATEWAY_KEY
     is_dev = os.environ.get("ENVIRONMENT", "production").lower() in ("dev", "development", "local")
-    DATABASE_URL = get_secret("DATABASE_URL", default=os.environ.get("DATABASE_URL"))
-    PAYMENT_GATEWAY_KEY = get_secret("PAYMENT_GATEWAY_KEY", default=os.environ.get("PAYMENT_GATEWAY_KEY"))
+    try:
+        DATABASE_URL = get_secret("DATABASE_URL")
+    except SecretUnavailable:
+        DATABASE_URL = None
+    try:
+        PAYMENT_GATEWAY_KEY = get_secret("PAYMENT_GATEWAY_KEY")
+    except SecretUnavailable:
+        PAYMENT_GATEWAY_KEY = None
     if not DATABASE_URL:
         if is_dev:
             DATABASE_URL = "sqlite:///./orders.db"

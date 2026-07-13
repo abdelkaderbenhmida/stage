@@ -22,8 +22,14 @@ def _load_secrets() -> None:
     """Resolve required secrets at startup. Raises on missing — fail closed."""
     global DATABASE_URL, JWT_SECRET_KEY
     is_dev = os.environ.get("ENVIRONMENT", "production").lower() in ("dev", "development", "local")
-    DATABASE_URL = get_secret("DATABASE_URL", default=os.environ.get("DATABASE_URL"))
-    JWT_SECRET_KEY = get_secret("JWT_SECRET_KEY", default=os.environ.get("JWT_SECRET_KEY"))
+    try:
+        DATABASE_URL = get_secret("DATABASE_URL")
+    except SecretUnavailable:
+        DATABASE_URL = None
+    try:
+        JWT_SECRET_KEY = get_secret("JWT_SECRET_KEY")
+    except SecretUnavailable:
+        JWT_SECRET_KEY = None
     if not DATABASE_URL:
         if is_dev:
             DATABASE_URL = "sqlite:///./users.db"
