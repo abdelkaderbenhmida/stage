@@ -6,9 +6,8 @@ build-backend = "setuptools.build_meta"
 name = "devops-platform-shared"
 version = "1.0.0"
 description = "Shared library for the DevOps Central Platform microservices (Vault client, logging, config)."
-readme = "README.md"
 requires-python = ">=3.11"
-license = { text = "MIT" }
+license = "MIT"
 authors = [{ name = "DevOps Platform Team" }]
 dependencies = [
     "hvac==2.1.0",
@@ -16,7 +15,8 @@ dependencies = [
     "python-json-logger==2.0.7",
 ]
 
-[tool.setuptools.packages.find]
-where = ["."]
-include = ["shared*"]
-exclude = ["tests*"]
+[tool.setuptools]
+packages = ["shared"]
+
+[tool.setuptools.package-dir]
+shared = "."
