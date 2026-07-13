@@ -32,6 +32,8 @@ COPY --from=builder /build/shared /app/shared
 RUN apt-get update && apt-get upgrade -y --no-install-recommends && rm -rf /var/lib/apt/lists/* \
  && rm -rf /usr/local/lib/python3.11/site-packages/wheel* \
  && rm -rf /usr/local/lib/python3.11/site-packages/jaraco* \
+ && rm -rf /usr/local/lib/python3.11/site-packages/setuptools/_vendor/wheel* \
+ && rm -rf /usr/local/lib/python3.11/site-packages/setuptools/_vendor/jaraco* \
  && groupadd -r appuser && useradd -r -g appuser appuser --home-dir /app --no-create-home
 COPY --chown=appuser:appuser products-service/main.py ./
 EXPOSE 8000
