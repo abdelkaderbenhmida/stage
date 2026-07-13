@@ -7,4 +7,4 @@ Import from services as:
 """
 
 __version__ = "1.0.0"
-__all__ = ["vault_client", "config", "logging"]
+__all__ = ["vault_client", "config", "log_config"]
