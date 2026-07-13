@@ -233,6 +233,7 @@ jobs:
       contents: read
       packages: read
       security-events: write  # for SARIF upload
+      actions: read  # for codeql upload-sarif telemetry
     strategy:
       fail-fast: false
       matrix:
