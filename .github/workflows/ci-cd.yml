@@ -257,6 +257,9 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Pull image (trivy container doesn't inherit host docker creds)
+        run: docker pull ${{ steps.resolve.outputs.image }}
+
       - name: Trivy vulnerability scan — fail on CRITICAL/HIGH
         uses: aquasecurity/trivy-action@v0.24.0
         with:
