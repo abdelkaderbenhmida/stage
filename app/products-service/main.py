@@ -17,8 +17,14 @@ REQUEST_COUNT = Counter("products_requests_total", "Total requests")
 def _load_secrets() -> None:
     global DATABASE_URL, API_KEY
     is_dev = os.environ.get("ENVIRONMENT", "production").lower() in ("dev", "development", "local")
-    DATABASE_URL = get_secret("DATABASE_URL", default=os.environ.get("DATABASE_URL"))
-    API_KEY = get_secret("API_KEY", default=os.environ.get("API_KEY"))
+    try:
+        DATABASE_URL = get_secret("DATABASE_URL")
+    except SecretUnavailable:
+        DATABASE_URL = None
+    try:
+        API_KEY = get_secret("API_KEY")
+    except SecretUnavailable:
+        API_KEY = None
     if not DATABASE_URL:
         if is_dev:
             DATABASE_URL = "sqlite:///./products.db"
