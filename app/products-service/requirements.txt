@@ -1,4 +1,4 @@
 fastapi==0.139.0
 uvicorn[standard]>=0.24.0
 prometheus-client==0.17.1
-hvac==2.1.0
+hvac==2.4.0
