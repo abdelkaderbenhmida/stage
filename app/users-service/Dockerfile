@@ -19,11 +19,11 @@ ENV PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 COPY shared/requirements.txt ./shared-requirements.txt
 COPY users-service/requirements.txt ./service-requirements.txt
-RUN pip install -r shared-requirements.txt -r service-requirements.txt \
- && pip install --upgrade "jaraco.context>=6.1.0" "wheel>=0.46.2"
+RUN pip install -r shared-requirements.txt -r service-requirements.txt
 COPY shared/ ./shared/
-RUN pip install ./shared
-RUN pip uninstall -y wheel jaraco.context
+RUN pip install ./shared \
+ && rm -rf /usr/local/lib/python3.11/site-packages/wheel* \
+ && rm -rf /usr/local/lib/python3.11/site-packages/jaraco*
 
 FROM ${BASE_IMAGE}
 WORKDIR /app/users-service
