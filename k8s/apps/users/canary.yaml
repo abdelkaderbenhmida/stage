@@ -12,54 +12,27 @@ spec:
     apiVersion: apps/v1
     kind: Deployment
     name: users-service
-  # Track service changes — Flagger keeps Service + primary Deployment in sync.
   service:
     name: users-service
     port: 80
     targetPort: http
-    # matchLabels — pods matching this are considered "primary".
-    matchLabels:
-      app.kubernetes.io/name: users-service
-      app.kubernetes.io/version: primary
-  # Canary metrics — defaults to Prometheus; we keep disabled in dev cluster
-  # because Prometheus isn't deployed (phase 6). Flagger still rolls forward
-  # on label changes; only `triggers`/`metrics` checks are skipped.
-  metrics:
-    - name: request-success-rate
-      interval: 60s
-      threshold: 99
-      providerRef:
-        name: users-service-prom
-    - name: request-duration
-      interval: 60s
-      threshold: 500
-      providerRef:
-        name: users-service-prom
-    - name: rollback
-      interval: 30s
-      providerRef:
-        name: users-service-prom
-      templateRef:
-        name: rollback
-  # Traffic shifting — start at 10%, advance after each analysis step.
   analysis:
-    # If analysis metrics are not available (no Prometheus), default to
-    # passing the canary so the rollout completes. Replace with strict
-    # SLOs once Prometheus is wired in phase 6.
-    metricsCheck: false
+    # No Prometheus available (phase 6) → keep strict SLOs opt-in.
+    interval: 30s
+    threshold: 2
+    maxWeight: 50
+    stepWeights:
+      - 10
+      - 20
+      - 30
+      - 40
+      - 50
+    primaryReadyThreshold: 30
+    canaryReadyThreshold: 30
     webhooks:
       - name: load-test
         url: http://flagger-loadtester.devops-platform/
         timeout: 5s
         metadata:
           cmd: "hey -z 1m -q 10 -c 2 http://users-service-canary.devops-platform/"
-    # Starting traffic share + step increments.
-    canaryWeight: 10
-    stepWeight: 10
-    # Wait between steps.
-    interval: 30s
-    # Roll out fully after N passed iterations.
-    iterations: 5
-    # Max failed checks before rollback.
-    threshold: 2
   progressDeadlineSeconds: 300

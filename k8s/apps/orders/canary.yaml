@@ -16,35 +16,22 @@ spec:
     name: orders-service
     port: 80
     targetPort: http
-    matchLabels:
-      app.kubernetes.io/name: orders-service
-      app.kubernetes.io/version: primary
-  metrics:
-    - name: request-success-rate
-      interval: 60s
-      threshold: 99
-      providerRef:
-        name: orders-service-prom
-    - name: request-duration
-      interval: 60s
-      threshold: 500
-      providerRef:
-        name: orders-service-prom
-    - name: rollback
-      interval: 30s
-      providerRef:
-        name: orders-service-prom
   analysis:
-    metricsCheck: false
+    interval: 30s
+    threshold: 2
+    maxWeight: 50
+    stepWeights:
+      - 10
+      - 20
+      - 30
+      - 40
+      - 50
+    primaryReadyThreshold: 30
+    canaryReadyThreshold: 30
     webhooks:
       - name: load-test
         url: http://flagger-loadtester.devops-platform/
         timeout: 5s
         metadata:
           cmd: "hey -z 1m -q 10 -c 2 http://orders-service-canary.devops-platform/"
-    canaryWeight: 10
-    stepWeight: 10
-    interval: 30s
-    iterations: 5
-    threshold: 2
   progressDeadlineSeconds: 300
