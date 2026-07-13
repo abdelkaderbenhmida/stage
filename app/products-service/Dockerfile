@@ -27,7 +27,8 @@ ENV PYTHONUNBUFFERED=1 \
 COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
 COPY --from=builder /usr/local/bin /usr/local/bin
 COPY --from=builder /build/shared /app/shared
-RUN groupadd -r appuser && useradd -r -g appuser appuser --home-dir /app --no-create-home
+RUN apt-get update && apt-get upgrade -y --no-install-recommends && rm -rf /var/lib/apt/lists/* \
+ && groupadd -r appuser && useradd -r -g appuser appuser --home-dir /app --no-create-home
 COPY --chown=appuser:appuser products-service/main.py ./
 EXPOSE 8000
 USER appuser
