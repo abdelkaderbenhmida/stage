@@ -279,8 +279,9 @@ jobs:
           vuln-type: os,library
 
       - name: Upload Trivy SARIF
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         if: always()
+        continue-on-error: true  # informational upload to GitHub Security tab
         with:
           sarif_file: trivy-${{ matrix.service }}.sarif
 
