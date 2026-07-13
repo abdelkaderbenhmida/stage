@@ -42,7 +42,7 @@ jobs:
     name: Lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-python@v5
         with:
@@ -93,7 +93,7 @@ jobs:
       contents: read
       pull-requests: write  # to comment on PRs
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0  # full history for comprehensive scan
 
@@ -113,7 +113,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: [lint, gitleaks]  # block on lint + secret scan
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-python@v5 # v5
         with:
@@ -171,7 +171,7 @@ jobs:
       matrix:
         service: [users-service, products-service, orders-service]
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -238,7 +238,7 @@ jobs:
       matrix:
         service: [users-service, products-service, orders-service]
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Resolve built image at digest (P1 fix — no :latest race)
         id: resolve
@@ -304,7 +304,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: [lint, gitleaks]
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - uses: hashicorp/setup-terraform@v3
         with:
@@ -335,7 +335,7 @@ jobs:
       contents: read
       packages: read
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Install kubectl
         uses: azure/setup-kubectl@v3
