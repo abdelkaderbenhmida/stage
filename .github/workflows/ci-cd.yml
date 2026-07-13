@@ -260,6 +260,13 @@ jobs:
       - name: Pull image (trivy container doesn't inherit host docker creds)
         run: docker pull ${{ steps.resolve.outputs.image }}
 
+      - name: Trivy SARIF (non-blocking — always runs first so file exists)
+        uses: aquasecurity/trivy-action@v0.24.0
+        with:
+          image-ref: ${{ steps.resolve.outputs.image }}
+          format: sarif
+          output: trivy-${{ matrix.service }}.sarif
+
       - name: Trivy vulnerability scan — fail on CRITICAL/HIGH
         uses: aquasecurity/trivy-action@v0.24.0
         with:
@@ -269,13 +276,6 @@ jobs:
           exit-code: 1
           ignore-unfixed: true
           vuln-type: os,library
-
-      - name: Trivy SARIF upload (non-blocking)
-        uses: aquasecurity/trivy-action@v0.24.0
-        with:
-          image-ref: ${{ steps.resolve.outputs.image }}
-          format: sarif
-          output: trivy-${{ matrix.service }}.sarif
 
       - name: Upload Trivy SARIF
         uses: github/codeql-action/upload-sarif@v3
