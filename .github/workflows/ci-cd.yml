@@ -44,7 +44,7 @@ jobs:
     steps:
       - uses: actions/checkout@8ade135a41bc03ea155e62e844d188df1ea18608 # v4
 
-      - uses: actions/setup-python@0a5c61591373683505ea898e09a3ea4f39ef2d9c # v5
+      - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
@@ -66,7 +66,7 @@ jobs:
           done
 
       - name: Validate Terraform format
-        uses: hashicorp/setup-terraform@6330de41d5b18e9b2025e9af8c3d3d4e9c3a8b46 # v3
+        uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: ${{ env.TERRAFORM_VERSION }}
       - run: terraform fmt -check -recursive terraform/
@@ -97,7 +97,7 @@ jobs:
           fetch-depth: 0  # full history for comprehensive scan
 
       - name: Run Gitleaks
-        uses: gitleaks/gitleaks-action@b4433cc571bf9b984227e7d5195bb8a893bb4558 # v2
+        uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITLEAKS_ENABLE_COMMENTS: true
@@ -114,7 +114,7 @@ jobs:
     steps:
       - uses: actions/checkout@8ade135a41bc03ea155e62e844d188df1ea18608 # v4
 
-      - uses: actions/setup-python@0a5c61591373683505ea898e09a3ea4f39ef2d9c # v5
+      - uses: actions/setup-python@v5 # v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
@@ -305,7 +305,7 @@ jobs:
     steps:
       - uses: actions/checkout@8ade135a41bc03ea155e62e844d188df1ea18608 # v4
 
-      - uses: hashicorp/setup-terraform@6330de41d5b18e9b2025e9af8c3d3d4e9c3a8b46 # v3
+      - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: ${{ env.TERRAFORM_VERSION }}
 
