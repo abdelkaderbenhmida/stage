@@ -1,0 +1,42 @@
+# RBAC for Promtail DaemonSet: service account + ClusterRole to
+# list/watch pods across all namespaces (kubernetes_sd_config role=pod).
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: promtail
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: promtail
+    app.kubernetes.io/part-of: devops-platform
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: promtail
+  labels:
+    app.kubernetes.io/name: promtail
+    app.kubernetes.io/part-of: devops-platform
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "pods/log"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: promtail
+  labels:
+    app.kubernetes.io/name: promtail
+    app.kubernetes.io/part-of: devops-platform
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: promtail
+subjects:
+  - kind: ServiceAccount
+    name: promtail
+    namespace: monitoring

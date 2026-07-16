@@ -1,0 +1,22 @@
+# Grafana Service - ClusterIP port 3000 within monitoring ns.
+# Dual purpose: (1) in-cluster access for datasources/perf queries when
+# future components need scraping Grafana metrics; (2) UI access via
+# kubectl port-forward svc/grafana -n monitoring 3000:3000.
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: grafana
+    app.kubernetes.io/part-of: devops-platform
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 3000
+      targetPort: http
+      protocol: TCP
+  selector:
+    app.kubernetes.io/name: grafana

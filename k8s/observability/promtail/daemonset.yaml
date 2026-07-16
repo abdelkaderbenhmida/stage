@@ -1,0 +1,84 @@
+# Promtail DaemonSet — 1 pod per node, tails container logs.
+# PSA restricted allows hostPath /var/log ONLY if runAsUser=0 with
+# capabilities dropped and readOnlyRootFilesystem=false (loki writes positions.yaml
+# to tmp). We use runAsUser:0 (root required for hostPath read) but drop ALL
+# caps + set seccomp=RuntimeDefault — this is the minimal privilege needed.
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: promtail
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: promtail
+    app.kubernetes.io/part-of: devops-platform
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: promtail
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: promtail
+    spec:
+      serviceAccountName: promtail
+      securityContext:
+        runAsUser: 0
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: promtail
+          image: grafana/promtail:3.1.1
+          args:
+            - -config.file=/etc/promtail/promtail.yaml
+          ports:
+            - name: http
+              containerPort: 9080
+              protocol: TCP
+          volumeMounts:
+            - name: config
+              mountPath: /etc/promtail
+              readOnly: true
+            - name: varlog
+              mountPath: /var/log
+              readOnly: true
+            - name: docker-containers
+              mountPath: /var/lib/docker/containers
+              readOnly: true
+            - name: machine-id
+              mountPath: /etc/machine-id
+              readOnly: true
+            - name: positions
+              mountPath: /tmp
+          env:
+            - name: HOSTNAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+            readOnlyRootFilesystem: false
+      volumes:
+        - name: config
+          configMap:
+            name: promtail-config
+        - name: varlog
+          hostPath:
+            path: /var/log
+        - name: docker-containers
+          hostPath:
+            path: /var/lib/docker/containers
+        - name: machine-id
+          hostPath:
+            path: /etc/machine-id
+        - name: positions
+          emptyDir: {}

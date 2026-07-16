@@ -1,0 +1,25 @@
+# AlertmanagerConfig — routing rules for the Alertmanager instance (commit 3).
+# Default receiver = webhook placeholder (replace with real Slack/Vault webhook).
+# Group alerts by alertname + service label, send in batches every 5m.
+---
+apiVersion: monitoring.coreos.com/v1alpha1
+kind: AlertmanagerConfig
+metadata:
+  name: alertmanager
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: alertmanager
+    app.kubernetes.io/part-of: devops-platform
+spec:
+  route:
+    receiver: default
+    groupBy:
+      - alertname
+      - service
+    groupWait: 30s
+    groupInterval: 5m
+    repeatInterval: 4h
+  receivers:
+    - name: default
+      webhookConfigs:
+        - url: http://alertlogger.monitoring.svc.cluster.local/alert

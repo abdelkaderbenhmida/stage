@@ -2,8 +2,8 @@ import os
 import secrets
 
 from fastapi import FastAPI
-from fastapi.responses import JSONResponse, PlainTextResponse
-from prometheus_client import Counter, generate_latest
+from fastapi.responses import JSONResponse
+from prometheus_fastapi_instrumentator import Instrumentator
 
 from shared.log_config import setup_logging
 from shared.vault_client import get_secret, SecretUnavailable, vault_health
@@ -12,7 +12,13 @@ from shared.vault_client import get_secret, SecretUnavailable, vault_health
 _LOG = setup_logging("users-service")
 
 app = FastAPI(title="Users Service", version="1.0.0")
-REQUEST_COUNT = Counter("users_requests_total", "Total requests")
+
+Instrumentator(
+    should_group_status_codes=True,
+    should_ignore_untemplated=True,
+    should_respect_env_var=False,
+    excluded_handlers=["/healthz", "/readyz", "/metrics"],
+).instrument(app).expose(app, endpoint="/metrics", include_in_schema=False)
 
 # Fail-fast secrets: refuse to start with placeholder values in production.
 # Developers may opt into a local SQLite path by setting DATABASE_URL or
@@ -59,7 +65,6 @@ VAULT_CONFIGURED = bool(os.environ.get("VAULT_ADDR"))
 
 @app.get("/")
 def root():
-    REQUEST_COUNT.inc()
     return {
         "service": "users",
         "version": "1.0.0",
@@ -70,7 +75,6 @@ def root():
 @app.get("/livez")
 def livez():
     """Liveness — process is running. Never checks deps."""
-    REQUEST_COUNT.inc()
     return {"status": "alive"}
 
 
@@ -82,7 +86,6 @@ def readyz():
     list when the process is alive but Vault is unreachable, preventing
     broken-secret-fallback than silent-degraded serving.
     """
-    REQUEST_COUNT.inc()
     health = vault_health()
     return JSONResponse(
         status_code=200 if health.get("reachable") else 503,
@@ -102,10 +105,4 @@ def health():
 
 @app.get("/users")
 def list_users():
-    REQUEST_COUNT.inc()
     return [{"id": 1, "name": "Alice"}, {"id": 2, "name": "Bob"}]
-
-
-@app.get("/metrics")
-def metrics():
-    return PlainTextResponse(generate_latest(), media_type="text/plain")

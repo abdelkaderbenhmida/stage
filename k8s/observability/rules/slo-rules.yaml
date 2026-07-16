@@ -1,0 +1,65 @@
+# SLO PrometheusRules matching Phase 6 spec (files.md:162-165).
+# 3 rules: availability < 99.9% over 30d, P95 latency > 200ms, 5xx rate > 1%.
+# Namespace=monitoring, picked up by Prometheus ruleSelector={}.
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: slo-rules
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: slo-rules
+    app.kubernetes.io/part-of: devops-platform
+spec:
+  groups:
+    # ── Availability: up metric < 99.9% over 30 days ──
+    # Recording rule pre-computes avg_over_time to keep raw eval cheap.
+    - name: slo-availability-recording
+      interval: 5m
+      rules:
+        - record: service:availability_30d:ratio
+          expr: avg_over_time(up{job=~"users-service|products-service|orders-service"}[30d])
+    - name: slo-availability
+      interval: 5m
+      rules:
+        - alert: SLOAvailabilityBreach
+          expr: (1 - service:availability_30d:ratio) * 100 > 0.1
+          for: 10m
+          labels:
+            severity: critical
+            slo: availability
+          annotations:
+            summary: "Availability < 99.9% over 30d on {{ $labels.job }}"
+            description: "{{ $labels.job }} availability is {{ printf \"%.4f\" (1 - $value / 100) }} (target 99.9%) over the last 30 days."
+    # ── Latency: P95 > 200ms ──
+    - name: slo-latency
+      interval: 5m
+      rules:
+        - alert: SLOLatencyP95Breach
+          expr: |
+            histogram_quantile(0.95,
+              sum by(le, handler) (rate(http_request_duration_seconds_bucket[5m]))
+            ) > 0.2
+          for: 5m
+          labels:
+            severity: warning
+            slo: latency
+          annotations:
+            summary: "P95 latency > 200ms on {{ $labels.handler }}"
+            description: "Endpoint {{ $labels.handler }} P95 latency is {{ printf \"%.3f\" $value }}s (SLO ≤ 200ms)."
+    # ── Error rate: 5xx > 1% ──
+    - name: slo-error-rate
+      interval: 5m
+      rules:
+        - alert: SLO5xxErrorRateBreach
+          expr: |
+            sum by(handler) (rate(http_requests_total{status_code=~"5.."}[5m]))
+              / sum by(handler) (rate(http_requests_total[5m]))
+              * 100 > 1
+          for: 2m
+          labels:
+            severity: critical
+            slo: error-rate
+          annotations:
+            summary: "5xx error rate > 1% on {{ $labels.handler }}"
+            description: "Endpoint {{ $labels.handler }} is returning {{ printf \"%.2f\" $value }}% 5xx errors (SLO ≤ 1%)."
