@@ -387,7 +387,7 @@ spec:
           - ./flagger
           - -log-level=info
           - -mesh-provider=istio
-          - -metrics-server=http://prometheus:9090
+          - -metrics-server=http://prometheus.monitoring.svc.cluster.local:9090
           - -enable-config-tracking=true
           - -slack-user=flagger
           livenessProbe:

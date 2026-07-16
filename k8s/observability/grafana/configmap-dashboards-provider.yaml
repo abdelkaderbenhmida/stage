@@ -1,0 +1,26 @@
+# Grafana dashboard provider: tells Grafana to read dashboard JSON files from
+# /var/lib/grafana/dashboards/ (the emptyDir the sidecar writes to) every 30s.
+# Without this ConfigMap dashboards never load even with the sidecar working.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboards-provider
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: grafana-dashboards-provider
+    app.kubernetes.io/part-of: devops-platform
+data:
+  dashboards.yaml: |
+    apiVersion: 1
+    providers:
+      - name: sidecar
+        orgId: 1
+        folder: "DevOps Platform"
+        type: file
+        disableDeletion: false
+        updateIntervalSeconds: 30
+        allowUiUpdates: true
+        options:
+          path: /var/lib/grafana/dashboards
+          foldersFromFilesStructure: false

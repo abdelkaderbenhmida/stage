@@ -1,0 +1,40 @@
+# RBAC for grafana-sidecar (separate SA from grafana itself, since grafana only
+# needs ns-none access whereas sidecar must list/watch ConfigMaps across all
+# namespaces to discover dashboard ConfigMaps regardless of which ns they land in).
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: grafana-sidecar
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: grafana-sidecar
+    app.kubernetes.io/part-of: devops-platform
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: grafana-sidecar
+  labels:
+    app.kubernetes.io/name: grafana-sidecar
+    app.kubernetes.io/part-of: devops-platform
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: grafana-sidecar
+  labels:
+    app.kubernetes.io/name: grafana-sidecar
+    app.kubernetes.io/part-of: devops-platform
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: grafana-sidecar
+subjects:
+  - kind: ServiceAccount
+    name: grafana-sidecar
+    namespace: monitoring

@@ -1,0 +1,21 @@
+# Service exposing Prometheus on port 9090 (http) within monitoring ns.
+# Name `prometheus` matches the DNS FQDN `prometheus.monitoring.svc.cluster.local`
+# referenced by Flagger (see commit 4) and by Grafana datasource config.
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: prometheus
+    app.kubernetes.io/part-of: devops-platform
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 9090
+      targetPort: 9090
+      protocol: TCP
+  selector:
+    prometheus: prometheus
