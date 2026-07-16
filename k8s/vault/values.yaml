@@ -1,0 +1,55 @@
+---
+# Source: hashicorp-vault Helm chart customized config
+# Deploy HashiCorp Vault in standalone (dev) mode for this platform.
+# In production, use raft storage with 3+ nodes and auto-unseal.
+#
+# Install via Helm:
+#   helm repo add hashicorp https://helm.releases.hashicorp.com
+#   helm install vault hashicorp/vault -n vault -f k8s/vault/values.yaml --create-namespace
+#
+
+# Use the official HashiCorp Vault image
+server:
+  image:
+    repository: hashicorp/vault
+    tag: "1.15.2"
+    pullPolicy: IfNotPresent
+
+  # Dev mode — auto-unsealed. For production, switch to "standalone" and configure unseal keys.
+  # Dev mode stores everything in memory; for production use file or raft storage.
+  devMode:
+    enabled: true
+    devRootToken: "root-token-change-me"
+    devListenAddress: "0.0.0.0:8200"
+
+  # Resource limits — Vault is lightweight in dev mode
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "256Mi"
+    limits:
+      cpu: "500m"
+      memory: "512Mi"
+
+  # Expose Vault inside the cluster
+  service:
+    type: ClusterIP
+    port: 8200
+    targetPort: 8200
+
+  # Enable the Vault injector for Kubernetes authentication
+  injector:
+    enabled: false  # Static secrets fetched at startup for simplicity in this phase
+
+  # Data persistence (disabled in dev mode, enabled in production)
+  dataStorage:
+    enabled: false
+    size: 10Gi
+    mountPath: "/vault/data"
+    storageClass: ""
+
+# UI — useful for manual inspection and debugging
+ui:
+  enabled: true
+  serviceType: ClusterIP
+  port: 8200
