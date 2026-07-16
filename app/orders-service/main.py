@@ -2,8 +2,8 @@ import os
 import secrets
 
 from fastapi import FastAPI
-from fastapi.responses import JSONResponse, PlainTextResponse
-from prometheus_client import Counter, generate_latest
+from fastapi.responses import JSONResponse
+from prometheus_fastapi_instrumentator import Instrumentator
 
 from shared.log_config import setup_logging
 from shared.vault_client import get_secret, SecretUnavailable, vault_health
@@ -11,7 +11,13 @@ from shared.vault_client import get_secret, SecretUnavailable, vault_health
 _LOG = setup_logging("orders-service")
 
 app = FastAPI(title="Orders Service", version="1.0.0")
-REQUEST_COUNT = Counter("orders_requests_total", "Total requests")
+
+Instrumentator(
+    should_group_status_codes=True,
+    should_ignore_untemplated=True,
+    should_respect_env_var=False,
+    excluded_handlers=["/healthz", "/readyz", "/metrics"],
+).instrument(app).expose(app, endpoint="/metrics", include_in_schema=False)
 
 
 def _load_secrets() -> None:
@@ -51,7 +57,6 @@ VAULT_CONFIGURED = bool(os.environ.get("VAULT_ADDR"))
 
 @app.get("/")
 def root():
-    REQUEST_COUNT.inc()
     return {
         "service": "orders",
         "version": "1.0.0",
@@ -61,13 +66,11 @@ def root():
 
 @app.get("/livez")
 def livez():
-    REQUEST_COUNT.inc()
     return {"status": "alive"}
 
 
 @app.get("/readyz")
 def readyz():
-    REQUEST_COUNT.inc()
     health = vault_health()
     return JSONResponse(
         status_code=200 if health.get("reachable") else 503,
@@ -82,10 +85,4 @@ def health():
 
 @app.get("/orders")
 def list_orders():
-    REQUEST_COUNT.inc()
     return [{"id": 1, "user_id": 1, "product_id": 2}, {"id": 2, "user_id": 2, "product_id": 1}]
-
-
-@app.get("/metrics")
-def metrics():
-    return PlainTextResponse(generate_latest(), media_type="text/plain")

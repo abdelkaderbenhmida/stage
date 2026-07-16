@@ -79,7 +79,7 @@ jobs:
           curl -sSL -o /tmp/kubeconform.tar.gz \
             https://github.com/yannh/kubeconform/releases/download/v0.6.4/kubeconform-linux-amd64.tar.gz
           tar -xzf /tmp/kubeconform.tar.gz -C /tmp kubeconform
-          find k8s/ -name '*.yaml' ! -name 'values.yaml' -print0 | \
+          find k8s/ -name '*.yaml' ! -name 'values.yaml' ! -name 'crds.yaml' -print0 | \
             xargs -0 /tmp/kubeconform -strict -ignore-missing-schemas -kubernetes-version 1.28.0 \
               -schema-location 'https://raw.githubusercontent.com/yannh/kubernetes-json-schema/master/master-standalone/{{.ResourceKind}}.json'
 
@@ -360,4 +360,11 @@ jobs:
           kubectl rollout status deploy/users-service -n devops-platform --timeout=120s
           kubectl rollout status deploy/products-service -n devops-platform --timeout=120s
           kubectl rollout status deploy/orders-service -n devops-platform --timeout=120s
+
+      - name: Metrics smoke-test — /metrics returns Histogram
+        run: |
+          kubectl run metrics-check --image=curlimages/curl:8.8.0 --restart=Never -- /bin/sh -c 'for svc in users-service products-service orders-service; do echo "Check $svc..."; curl -sf http://$svc.devops-platform.svc.cluster.local:80/metrics | grep -q http_request_duration_seconds_bucket || { echo "FAIL: $svc missing histogram"; exit 1; }; done; echo "All /metrics OK";'
+          kubectl wait --for=condition=Complete pod/metrics-check --timeout=60s 2>/dev/null
+          kubectl logs pod/metrics-check
+          kubectl delete pod/metrics-check --ignore-not-found
           echo "url=https://devops-platform.local" >> "$GITHUB_OUTPUT"

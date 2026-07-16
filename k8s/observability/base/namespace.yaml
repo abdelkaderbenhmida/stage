@@ -1,0 +1,55 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: monitoring
+  labels:
+    app.kubernetes.io/name: monitoring
+    app.kubernetes.io/part-of: devops-platform
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: monitoring-limits
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: monitoring-limits
+    app.kubernetes.io/part-of: devops-platform
+spec:
+  limits:
+    - type: Container
+      default:
+        cpu: "500m"
+        memory: "512Mi"
+      defaultRequest:
+        cpu: "100m"
+        memory: "128Mi"
+      max:
+        cpu: "4"
+        memory: "4Gi"
+      min:
+        cpu: "10m"
+        memory: "32Mi"
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: monitoring-quota
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: monitoring-quota
+    app.kubernetes.io/part-of: devops-platform
+spec:
+  hard:
+    requests.cpu: "6"
+    requests.memory: "8Gi"
+    limits.cpu: "12"
+    limits.memory: "12Gi"
+    pods: "30"
+    services: "20"
+    configmaps: "40"
+    secrets: "30"
+    persistentvolumeclaims: "10"

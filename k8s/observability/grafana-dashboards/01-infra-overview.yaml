@@ -1,0 +1,91 @@
+# Grafana dashboard: Infrastructure Overview — nodes, CPU, memory, pods.
+# Data source: Prometheus (default). Format: YAML ConfigMap → sidecar → Grafana.
+# Label grafana_dashboard=1 triggers k8s-sidecar watch + import.
+# Queries use cAdvisor metrics (no node_exporter needed — bare-metal friendly).
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dashboard-infra-overview
+  namespace: monitoring
+  labels:
+    grafana_dashboard: "1"
+    app.kubernetes.io/name: dashboard-infra-overview
+    app.kubernetes.io/part-of: devops-platform
+data:
+  "01-infra-overview.json": |
+    {
+      "title": "Infrastructure Overview",
+      "uid": "devops-platform-infra",
+      "schemaVersion": 39,
+      "version": 1,
+      "panels": [
+        {
+          "id": 1,
+          "title": "Nodes Ready",
+          "type": "stat",
+          "gridPos": {"h": 4, "w": 6, "x": 0, "y": 0},
+          "fieldConfig": {
+            "defaults": {"thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}]}}
+          },
+          "targets": [
+            {"expr": "count(kube_node_status_condition{condition=\"Ready\",status=\"true\"})", "datasource": {"type": "prometheus"}}
+          ]
+        },
+        {
+          "id": 2,
+          "title": "Total Pods",
+          "type": "stat",
+          "gridPos": {"h": 4, "w": 6, "x": 6, "y": 0},
+          "fieldConfig": {
+            "defaults": {"thresholds": {"mode": "absolute", "steps": [{"color": "blue", "value": null}]}}
+          },
+          "targets": [
+            {"expr": "count(kube_pod_info)", "datasource": {"type": "prometheus"}}
+          ]
+        },
+        {
+          "id": 3,
+          "title": "Cluster CPU Usage (%)",
+          "type": "timeseries",
+          "gridPos": {"h": 12, "w": 12, "x": 0, "y": 4},
+          "fieldConfig": {"defaults": {"unit": "percent", "decimals": 1}},
+          "targets": [
+            {"expr": "sum(rate(container_cpu_usage_seconds_total[5m])) / sum(machine_cpu_cores) * 100", "legendFormat": "Usage %", "datasource": {"type": "prometheus"}}
+          ]
+        },
+        {
+          "id": 4,
+          "title": "Cluster Memory Usage (GiB)",
+          "type": "timeseries",
+          "gridPos": {"h": 12, "w": 12, "x": 12, "y": 4},
+          "fieldConfig": {"defaults": {"unit": "gbytes", "decimals": 2}},
+          "targets": [
+            {"expr": "sum(container_memory_working_set_bytes) / 1024 / 1024 / 1024", "legendFormat": "WorkingSet", "datasource": {"type": "prometheus"}},
+            {"expr": "sum(container_memory_rss) / 1024 / 1024 / 1024", "legendFormat": "RSS", "datasource": {"type": "prometheus"}}
+          ]
+        },
+        {
+          "id": 5,
+          "title": "CPU by Namespace",
+          "type": "timeseries",
+          "gridPos": {"h": 10, "w": 12, "x": 0, "y": 16},
+          "fieldConfig": {"defaults": {"unit": "millicore", "decimals": 0}},
+          "targets": [
+            {"expr": "sum by(namespace)(rate(container_cpu_usage_seconds_total[5m])) * 1000", "legendFormat": "{{namespace}}", "datasource": {"type": "prometheus"}}
+          ]
+        },
+        {
+          "id": 6,
+          "title": "Memory by Namespace",
+          "type": "timeseries",
+          "gridPos": {"h": 10, "w": 12, "x": 12, "y": 16},
+          "fieldConfig": {"defaults": {"unit": "mbytes", "decimals": 0}},
+          "targets": [
+            {"expr": "sum by(namespace)(container_memory_working_set_bytes) / 1048576", "legendFormat": "{{namespace}}", "datasource": {"type": "prometheus"}}
+          ]
+        }
+      ],
+      "editable": true,
+      "refresh": "30s"
+    }

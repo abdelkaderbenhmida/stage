@@ -1,0 +1,33 @@
+# Grafana datasources provisioning (auto-loaded at startup, no UI clicks).
+# Prometheus is default datasource (used by all dashboards in commit 8).
+# Loki datasource registered now so commit 8 dashboards can also use it,
+# even though Loki itself arrives in commit 9.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-datasources
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: grafana-datasources
+    app.kubernetes.io/part-of: devops-platform
+data:
+  prometheus.yaml: |
+    apiVersion: 1
+    datasources:
+      - name: Prometheus
+        type: prometheus
+        access: proxy
+        url: http://prometheus.monitoring.svc.cluster.local:9090
+        isDefault: true
+        jsonData:
+          timeInterval: "15s"
+  loki.yaml: |
+    apiVersion: 1
+    datasources:
+      - name: Loki
+        type: loki
+        access: proxy
+        url: http://loki.monitoring.svc.cluster.local:3100
+        jsonData:
+          maxLines: 1000
