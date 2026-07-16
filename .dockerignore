@@ -1,0 +1,36 @@
+# Exclude everything not needed by the Docker build of the FastAPI services.
+# Reduces build context size + prevents accidental secret leakage into images
+# (devops-analysis-report.md P2 — no .dockerignore previously meant .git and
+# __pycache__ shipped with every build).
+**/.git
+**/.git/**
+**/.github
+**/.github/**
+**/__pycache__
+**/__pycache__/**
+**/*.pyc
+**/*.pyo
+**/.pytest_cache
+**/.ruff_cache
+**/.venv
+**/.venv/**
+**/venv
+**/venv/**
+**/.env
+**/.envrc
+**/*.tfstate
+**/*.tfstate.*
+**/terraform.tfstate*
+**/*.log
+**/ansible.log
+**/autopilot.log
+**/vigolium-report.html
+**/semgrep-findings-report.md
+**/findings.md
+**/devops-analysis-report.md
+**/k8s/
+**/terraform/
+**/ansible/
+**/scripts/
+**/.gitleaks.toml
+**/files.md/

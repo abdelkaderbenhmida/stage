@@ -1,0 +1,11 @@
+---
+# Default variables for the `docker` role metadata — Galaxy-compatible.
+galaxy_info:
+  author: DevOps Platform Team
+  description: Install Docker CE and containerd on Ubuntu nodes.
+  license: MIT
+  min_ansible_version: "2.14"
+  platforms:
+    - name: Ubuntu
+      versions: ["jammy", "noble"]
+dependencies: []

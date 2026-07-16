@@ -1,0 +1,66 @@
+# Repo-wide ignore rules. The most security-relevant entry is
+# terraform.tfstate — see devops-analysis-report.md P0 #4: a previous commit
+# tracked a state file containing a cleartext SSH public key.
+
+# Terraform state (NEVER commit)
+terraform/terraform.tfstate
+terraform/terraform.tfstate.backup
+**/*.tfstate
+**/*.tfstate.backup
+*.tfvars
+!terraform/terraform.tfvars.example
+**/override.tf
+**/override.tf.json
+**/*_override.tf
+**/*_override.tf.json
+.terraform/
+**/.terraform/
+destroy_*
+crash.log
+crash.*.log
+
+# Ansible
+ansible/*.retry
+ansible/retries/
+ansible/.vault-pass
+ansible/.vault_pass
+
+# Python / tooling caches
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/.pytest_cache/
+**/.ruff_cache/
+**/.coverage
+**/htmlcov/
+**/.venv/
+**/venv/
+**/dist/
+**/build/
+*.egg-info/
+**/*.egg-info/
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Reports / generated artifacts — regenerated, not versioned
+autopilot.log
+vigolium-report.html
+semgrep-findings-report.md
+findings.md
+trivy-*.json
+sbom-*.json
+
+# Local env files
+.env
+.envrc
+.env.*
+!.env.example
+istio-*.tar.gz
+flagger-*.tar.gz
+helm-*.tar.gz

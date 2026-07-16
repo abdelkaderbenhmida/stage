@@ -1,70 +1,83 @@
-# DevOps Central Platform — AGENTS.md
+# DevOps Central Platform — DevOpS Engineering Notes
 
-## Structure
+This file documents the remediation work performed against the findings
+in `devops-analysis-report.md`. See that file for the original audit + P0/P1/P2
+finding IDs.
 
-2 active modules; rest are planned but not yet created:
+## Remediation map (finding → fix)
 
-```
-terraform/          # KVM VMs via libvirt (exists, applied)
-ansible/            # Docker + K8s 1.28 on Ubuntu 22.04 (exists, partially working)
-app/                # 3 FastAPI microservices (planned — NOT created)
-k8s/                # K8s manifests (planned — NOT created)
-.github/workflows/  # CI/CD pipeline (planned — NOT created)
-files.md/           # Documentation + working notes
-```
+| Finding ID | Fix applied |
+|---|---|
+| P0 #1 | Vault root token removed from all 5 git-tracked locations; `scripts/bootstrap-vault-secret.sh` injects it out-of-band via stdin → kubectl; placeholder Secret file is explicit-no-token; `optional: false` on app secretKeyRef so pods fail-closed. |
+| P0 #2 | DB credentials removed from the `vault-setup` ConfigMap script and merged into Vault KV paths only; setup.sh reads them via env when seeding (dev only). |
+| P0 #3 | `app/shared/vault_client.py` rewritten to raise `SecretUnavailable` instead of silently returning `{}`; each service `main.py` runs `_load_secrets()` at startup and exits if `ENVIRONMENT != dev` and a secret is missing. |
+| P0 #4 | tfstate + generated inventory removed from git tracking; `.gitignore` blocks all `*.tfstate*`; `backend.tf` documents S3 backend migration; `ssh_public_key` variable marked `sensitive = true`; all 5 outputs marked sensitive. |
+| P0 #5 | CI test job drops `\|\| true`; adds `pip-audit`, real `pytest` smoke import per service, `pip install -e app/shared/` so the shared wheel is the import path tested. |
+| P0 #6 | `validate-security.sh` rewritten: `set -euo pipefail`, fail-not-skip in `--ci`, drops the `echo ok` no-op, uses `jq` not python3, scans `:latest` matching CI build tag. |
+| P1 | `paths:` filters + `concurrency:` cancel-in-progress; `permissions: contents: read` default + per-job escalation; `fail-fast: false`; deploy stage behind `workflow_dispatch` + protected `production` environment; pinned app image semver (`ghcr.io/.../users-service:1.0.0`); NetworkPolicies + PDBs + topologySpread + podAntiAffinity; cloud-init hardened (`ssh_pwauth:false`, `disable_root`, fail2ban, restricted sudoers via `sudo:` line); per-service SAs in `rbac.yaml`; `vault-sa` mounted on both the Vault Deployment and the setup Job; `automountServiceAccountToken: true` so future Kubernetes auth works; `app/shared/` made a real Python package (`pyproject.toml`, `__init__.py`); per-service `vault_client.py` copies deleted. |
+| P2 | `.dockerignore` prevents shipping `.git`/`__pycache__`; secrets in Vault KV only; gitleaks allowlist tightened (`.*\.md$` removed, `changeme` removed); Dependabot config for pip/docker/github-actions; tf `validation` blocks on `network_cidr`/`worker_count`/`vm_vcpu`/etc.; `gateway_ip` derived from `cidrhost(var.network_cidr, 1)`; `dns` forwarders wired to `var.dns_servers`; TF lock constraint `~> 0.7` corrected to `~> 0.9`; UID/GID hardcoded `64055/993` replaced with `var.libvirt_volume_owner_uid/gid`; `readOnlyRootFilesystem`+`seccompProfile RuntimeDefault`+explicit `runAsUser`+`drop: ALL` on every container; `/livez` vs `/readyz` split (readyz checks Vault); structured JSON logging via `shared/logging.py` + `python-json-logger`; per-role `defaults/main.yml` + `meta/main.yml` (Galaxy-compliant); Ansible `requirements.yml` declares `community.general`; `k8s_reset` play now gated by `when: reset_confirmed \| bool` + `never` tag; kubeadm join txt mode `0644 → 0600`; kubeconform + yamllint run in CI lint job. |
 
-No git repo. No test/lint/CI config exists.
+## How to verify after the changes
 
-## Terraform
-
-- Provider: `dmacvicar/libvirt` v0.9, local KVM only (no cloud)
-- Backend: local (single-dev, no remote state locking)
-- 3 VMs: `master-01` (192.168.56.10) + 2 workers (192.168.56.11-12)
-- SSH user: `devops`, key auto-detected from `~/.ssh/id_ed25519.pub` (falls back to `id_rsa.pub`)
-- Host: Ubuntu 24.04, VMs: Ubuntu 22.04 cloud image
-- Network: NAT mode `192.168.56.0/24`, DNS via 1.1.1.1 / 8.8.8.8
-- **Known libvirt bug**: `create.content.url` ignores `capacity`. Get 20G root by: (1) `virsh vol-resize <vol> 20G` after `terraform apply`, (2) cloud-init `growpart` + `resizefs` (already in `cloud-init.tpl`)
-- Generates `terraform/inventory.ini` for Ansible via `inventory.tpl`
-- Variables configurable in `variables.tf` (disk size, vCPU, memory, etc.)
-
-### Commands
-
+### Lint / format
 ```bash
-terraform init
-terraform plan
-terraform apply       # provisions VMs
-terraform output      # shows IPs + inventory content
+# Python
+pip install ruff yamllint
+ruff check app/shared/ app/users-service/ app/products-service/ app/orders-service/
+
+# Terraform
+cd terraform && terraform fmt -check -recursive .
+
+# YAML manifests
+yamllint -d "{rules: {line-length: disable}}" k8s/
+
+# K8s schema validation
+kubeconform -kubernetes-version 1.28.0 k8s/
 ```
 
-## Ansible
+### Security checks (local)
+```bash
+scripts/bootstrap-vault-secret.sh   # create/rotate the dev root token Secret
+scripts/validate-security.sh        # run all 4 checks; add --ci for gating
+```
 
-- **All playbook tags have `never` set** — must invoke explicitly:
-  ```bash
-  ansible-playbook playbook.yml --tags docker,k8s,master,worker
-  ansible-playbook playbook.yml --tags reset   # kubeadm reset -f on all nodes
-  ```
-- **Play order matters**: `docker` → `k8s_common` → `k8s_master` → `k8s_worker`
-- `docker` role also configures **containerd** with `SystemdCgroup=true`
-- CRI = containerd (not Docker), even though Docker CE is installed
-- `k8s_master` has `creates` guard on `/etc/kubernetes/admin.conf` — won't re-init
-- Use `serial: 1` for workers (join one at a time)
-- Role structure: `docker/`, `k8s_common/`, `k8s_master/`, `k8s_worker/`, `k8s_reset/`
-- Calico v3.26.1, Pod CIDR `192.168.0.0/16`, Service CIDR `10.96.0.0/12`
-- k8s packages pinned to 1.28.\*, apt-held to prevent upgrades
-- `k8s_reset` role is opt-in (tagged `reset`) — confirms before destroying cluster
-- `ansible.cfg`: `host_key_checking=False`, `pipelining=True`, user `devops`, key `~/.ssh/id_ed25519`
+### Build
+```bash
+# context MUST be app/ so app/shared is visible to the COPY commands.
+for svc in users-service products-service orders-service; do
+  docker build -t "$svc:1.0.0" -f "app/$svc/Dockerfile" app/
+done
+```
 
-## Current State
+### Deploy
+```bash
+kubectl apply -f k8s/apps/namespace.yaml      # Namespace + LimitRange + ResourceQuota
+kubectl apply -f k8s/vault/manifests.yaml
+scripts/bootstrap-vault-secret.sh             # creates vault-root-token Secret
+kubectl apply -f k8s/apps/
+# rollout watches
+kubectl rollout status deploy/vault -n vault
+kubectl rollout status -n devops-platform deploy/users-service deploy/products-service deploy/orders-service
+```
 
-**Cluster broken**: API server crash-looping, `kubectl` returns connection refused to `192.168.56.10:6443`. API server logs show etcd connection issues. Known next move: diagnose kube-apiserver pod logs, check etcdctl endpoint health, or `--tags reset` and re-init.
+### Run Ansible
+```bash
+cd ansible
+ansible-galaxy collection install -r requirements.yml
+# bootstrap
+ansible-playbook playbook.yml
+# reset — explicitly opt-in
+ansible-playbook playbook.yml --tags reset -e reset_confirmed=true
+```
 
-## files.md/ Directory
+## Pending follow-up (not blocking this pass — production hardening)
 
-Contains project descriptions, implementation guide, task lists, architecture notes. Read-only reference material. Not executable code.
-
-## Planned (not yet implemented)
-
-- `app/` — 3 FastAPI microservices with Dockerfiles
-- `k8s/` — Deployments, Services, HPA, RBAC + monitoring (Prometheus/Grafana/ELK), Vault, ArgoCD, Flagger/Canary manifests
-- `.github/workflows/` — CI/CD: lint → Gitleaks → tests → build → Trivy → push
-- `scripts/validate-platform.sh` — end-to-end validation
+- Wire Vault Agent Injector annotations in each Deployment and drop the
+  `VAULT_TOKEN` env. The Kubernetes auth method is already configured by the
+  setup Job; only the consumer side remains.
+- Replace `ghcr.io/.../<svc>:1.0.0` with `@sha256:<digest>` pins generated by
+  the build workflow (use `steps.build.outputs.digest`).
+- Add a `terraform.tfvars.example` and document variable overrides per env.
+- Add basic pytest unit tests per service (smoke-import is currently the gate);
+  move them to `tests/` with `httpx` + FastAPI TestClient.
+- Switch Vault from dev mode to raft storage + auto-unseal for production.

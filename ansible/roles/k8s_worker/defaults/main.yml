@@ -1,0 +1,4 @@
+---
+# Defaults for `k8s_worker` — join workers to the master via kubeadm.
+# No vars specific to workers — kubeadm join command is fetched from master.
+cri_endpoint: "unix:///run/containerd/containerd.sock"

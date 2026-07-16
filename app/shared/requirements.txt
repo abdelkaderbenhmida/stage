@@ -1,4 +1,9 @@
-fastapi==0.104.1
-uvicorn[standard]==0.24.0
-prometheus-client==0.17.1
+# Shared dependencies for the devops-platform microservices.
+# Installed as the `devops-platform-shared` package (see pyproject.toml) and
+# imported by each service via `from shared.<module> import <name>`.
+#
+# Kept exact-pinned (==) for reproducible installs. Add `--require-hashes`
+# in production Dockerfiles via a compiled lockfile (see ../requirements.lock).
 hvac==2.1.0
+prometheus-client==0.17.1
+python-json-logger==2.0.7

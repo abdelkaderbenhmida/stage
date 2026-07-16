@@ -1,0 +1,382 @@
+{
+  ".opencode/opencode.json": {
+    "mtime": 1783834701.6855032,
+    "ast_hash": "e5f74d14a81702b55bdf53b33ec991d7",
+    "semantic_hash": "e5f74d14a81702b55bdf53b33ec991d7"
+  },
+  ".opencode/package.json": {
+    "mtime": 1783834715.4188497,
+    "ast_hash": "b597387321616f5d7d7680f907bfaec0",
+    "semantic_hash": "b597387321616f5d7d7680f907bfaec0"
+  },
+  ".opencode/plugins/graphify.js": {
+    "mtime": 1783834696.2901485,
+    "ast_hash": "3ea725724bc8ebe483c9f13d6aa1124f",
+    "semantic_hash": "3ea725724bc8ebe483c9f13d6aa1124f"
+  },
+  "app/orders-service/main.py": {
+    "mtime": 1783805206.7173357,
+    "ast_hash": "a1a2cbd4dd9481051e8c806a5f4c0662",
+    "semantic_hash": "a1a2cbd4dd9481051e8c806a5f4c0662"
+  },
+  "app/products-service/main.py": {
+    "mtime": 1783805163.944167,
+    "ast_hash": "70d671739b469150eb315b45707c24b6",
+    "semantic_hash": "70d671739b469150eb315b45707c24b6"
+  },
+  "app/shared/__init__.py": {
+    "mtime": 1783786751.765566,
+    "ast_hash": "8f7f79fa626b167af813eaedda4759ff",
+    "semantic_hash": "8f7f79fa626b167af813eaedda4759ff"
+  },
+  "app/shared/config.py": {
+    "mtime": 1783786867.883303,
+    "ast_hash": "30c24b30c46d3f00d02067205ac13889",
+    "semantic_hash": "30c24b30c46d3f00d02067205ac13889"
+  },
+  "app/shared/logging.py": {
+    "mtime": 1783793506.4614723,
+    "ast_hash": "2f0af0952938204625b4aa3053053812",
+    "semantic_hash": "2f0af0952938204625b4aa3053053812"
+  },
+  "app/shared/pyproject.toml": {
+    "mtime": 1783786750.9345315,
+    "ast_hash": "ee4eb80fa94d0be3b6bf2d69c3089c90",
+    "semantic_hash": "ee4eb80fa94d0be3b6bf2d69c3089c90"
+  },
+  "app/shared/vault_client.py": {
+    "mtime": 1783786990.1720998,
+    "ast_hash": "75f03818d6f769f8d34a37657ceb619a",
+    "semantic_hash": "75f03818d6f769f8d34a37657ceb619a"
+  },
+  "app/users-service/main.py": {
+    "mtime": 1783805145.6120996,
+    "ast_hash": "790645be4a52c536a58a4d863fab12a6",
+    "semantic_hash": "790645be4a52c536a58a4d863fab12a6"
+  },
+  "scripts/bootstrap-vault-secret.sh": {
+    "mtime": 1783786151.254953,
+    "ast_hash": "20fdc65be57c4eea98c7e80356ca4e54",
+    "semantic_hash": "20fdc65be57c4eea98c7e80356ca4e54"
+  },
+  "scripts/validate-security.sh": {
+    "mtime": 1783789964.0278592,
+    "ast_hash": "0c63b4e316d499ebd755869ffcf21105",
+    "semantic_hash": "0c63b4e316d499ebd755869ffcf21105"
+  },
+  "terraform/.terraform.lock.hcl": {
+    "mtime": 1783789167.8477392,
+    "ast_hash": "086fbfaf55fc9dda994050dde3df6372",
+    "semantic_hash": "086fbfaf55fc9dda994050dde3df6372"
+  },
+  "terraform/backend.tf": {
+    "mtime": 1783787833.7506418,
+    "ast_hash": "8d0957ca1d61f0560a465b6bcf2f3aba",
+    "semantic_hash": "8d0957ca1d61f0560a465b6bcf2f3aba"
+  },
+  "terraform/main.tf": {
+    "mtime": 1783793062.0849745,
+    "ast_hash": "511c197fd630d111cfe227c2cf3466a0",
+    "semantic_hash": "511c197fd630d111cfe227c2cf3466a0"
+  },
+  "terraform/outputs.tf": {
+    "mtime": 1783789104.4584272,
+    "ast_hash": "b7d967202279f67ebb6f0fee69e0baaa",
+    "semantic_hash": "b7d967202279f67ebb6f0fee69e0baaa"
+  },
+  "terraform/variables.tf": {
+    "mtime": 1783788045.233467,
+    "ast_hash": "e5099e3eaba1b055c2d888266a4a2fb1",
+    "semantic_hash": "e5099e3eaba1b055c2d888266a4a2fb1"
+  },
+  ".github/dependabot.yml": {
+    "mtime": 1783789784.4098394,
+    "ast_hash": "51bb2dd2bd3e617cf656ef29b3be06a9",
+    "semantic_hash": "51bb2dd2bd3e617cf656ef29b3be06a9"
+  },
+  ".github/workflows/ci-cd.yml": {
+    "mtime": 1783792977.6655598,
+    "ast_hash": "57b2cd0e4bc14dfa74b3d9dec2ef8c69",
+    "semantic_hash": "57b2cd0e4bc14dfa74b3d9dec2ef8c69"
+  },
+  "AGENTS.md": {
+    "mtime": 1783792807.2460983,
+    "ast_hash": "68a4a887fc3cce32cfc03a8c4b65c888",
+    "semantic_hash": "68a4a887fc3cce32cfc03a8c4b65c888"
+  },
+  "ansible/group_vars/all.yml": {
+    "mtime": 1783793005.3146837,
+    "ast_hash": "3b6e01aa016fa2674dba16e0e84fa448",
+    "semantic_hash": "3b6e01aa016fa2674dba16e0e84fa448"
+  },
+  "ansible/playbook.yml": {
+    "mtime": 1783792641.1792872,
+    "ast_hash": "b09721d85b9d0a3f1a00e93e8fa2f555",
+    "semantic_hash": "b09721d85b9d0a3f1a00e93e8fa2f555"
+  },
+  "ansible/requirements.yml": {
+    "mtime": 1783792581.6845527,
+    "ast_hash": "36b79be7ade601e27033ff400c6602a9",
+    "semantic_hash": "36b79be7ade601e27033ff400c6602a9"
+  },
+  "ansible/roles/docker/defaults/main.yml": {
+    "mtime": 1783792534.3788521,
+    "ast_hash": "bbf160842eb631fbcb3fc503ee17aad8",
+    "semantic_hash": "bbf160842eb631fbcb3fc503ee17aad8"
+  },
+  "ansible/roles/docker/handlers/main.yml": {
+    "mtime": 1783793005.3076837,
+    "ast_hash": "e1d9b8d5c82af59ff05d7c9ea68d8b1f",
+    "semantic_hash": "e1d9b8d5c82af59ff05d7c9ea68d8b1f"
+  },
+  "ansible/roles/docker/meta/main.yml": {
+    "mtime": 1783792535.4038446,
+    "ast_hash": "964cbc2743fe98f1d3d26bd3207ea9dc",
+    "semantic_hash": "964cbc2743fe98f1d3d26bd3207ea9dc"
+  },
+  "ansible/roles/docker/tasks/main.yml": {
+    "mtime": 1783793005.3116837,
+    "ast_hash": "bcfd0fb4747f34fbfc713825723b61ce",
+    "semantic_hash": "bcfd0fb4747f34fbfc713825723b61ce"
+  },
+  "ansible/roles/k8s_common/defaults/main.yml": {
+    "mtime": 1783792542.3637958,
+    "ast_hash": "aa8a41538b1299e33f6ae67846dd3232",
+    "semantic_hash": "aa8a41538b1299e33f6ae67846dd3232"
+  },
+  "ansible/roles/k8s_common/meta/main.yml": {
+    "mtime": 1783792543.899785,
+    "ast_hash": "661c7293a07feb76d8140f7bad222f17",
+    "semantic_hash": "661c7293a07feb76d8140f7bad222f17"
+  },
+  "ansible/roles/k8s_common/tasks/main.yml": {
+    "mtime": 1783793005.3016837,
+    "ast_hash": "7592e1b867286cf9ec30d0d55d47292d",
+    "semantic_hash": "7592e1b867286cf9ec30d0d55d47292d"
+  },
+  "ansible/roles/k8s_master/defaults/main.yml": {
+    "mtime": 1783792551.6837287,
+    "ast_hash": "83056c934bd91bcb43910d355ffb2010",
+    "semantic_hash": "83056c934bd91bcb43910d355ffb2010"
+  },
+  "ansible/roles/k8s_master/meta/main.yml": {
+    "mtime": 1783792552.7069645,
+    "ast_hash": "f13bd2950b5955dcb5bb16a5554e28df",
+    "semantic_hash": "f13bd2950b5955dcb5bb16a5554e28df"
+  },
+  "ansible/roles/k8s_master/tasks/main.yml": {
+    "mtime": 1783793005.2956836,
+    "ast_hash": "bb581869dbefdca69060d7509a16c688",
+    "semantic_hash": "bb581869dbefdca69060d7509a16c688"
+  },
+  "ansible/roles/k8s_reset/defaults/main.yml": {
+    "mtime": 1783792555.8637059,
+    "ast_hash": "3f5a0e6e975ad607a7422cb34f1582c7",
+    "semantic_hash": "3f5a0e6e975ad607a7422cb34f1582c7"
+  },
+  "ansible/roles/k8s_reset/meta/main.yml": {
+    "mtime": 1783792557.9096928,
+    "ast_hash": "4a2caf701c38ac678a5b3909be27096c",
+    "semantic_hash": "4a2caf701c38ac678a5b3909be27096c"
+  },
+  "ansible/roles/k8s_reset/tasks/main.yml": {
+    "mtime": 1783793005.2996836,
+    "ast_hash": "4257021086d54309f814e6368a119383",
+    "semantic_hash": "4257021086d54309f814e6368a119383"
+  },
+  "ansible/roles/k8s_worker/defaults/main.yml": {
+    "mtime": 1783792553.7297196,
+    "ast_hash": "b3bc433c9352fbedf409f23ac5638b8b",
+    "semantic_hash": "b3bc433c9352fbedf409f23ac5638b8b"
+  },
+  "ansible/roles/k8s_worker/meta/main.yml": {
+    "mtime": 1783792951.9624557,
+    "ast_hash": "473c5e594f8e24c28cdedb14021758dd",
+    "semantic_hash": "473c5e594f8e24c28cdedb14021758dd"
+  },
+  "ansible/roles/k8s_worker/tasks/main.yml": {
+    "mtime": 1783793005.3046837,
+    "ast_hash": "99bd0ab7cc65211845d8bc9d4cd66ddc",
+    "semantic_hash": "99bd0ab7cc65211845d8bc9d4cd66ddc"
+  },
+  "app/orders-service/requirements.txt": {
+    "mtime": 1783682486.5854087,
+    "ast_hash": "031952476422c86ce0200a3cba265a8f",
+    "semantic_hash": "031952476422c86ce0200a3cba265a8f"
+  },
+  "app/products-service/requirements.txt": {
+    "mtime": 1783682180.1961172,
+    "ast_hash": "031952476422c86ce0200a3cba265a8f",
+    "semantic_hash": "031952476422c86ce0200a3cba265a8f"
+  },
+  "app/shared/requirements.txt": {
+    "mtime": 1783786755.5757248,
+    "ast_hash": "20dcdcd240c6797a169c8a924e5d7ca2",
+    "semantic_hash": "20dcdcd240c6797a169c8a924e5d7ca2"
+  },
+  "app/users-service/requirements.txt": {
+    "mtime": 1783682156.1420696,
+    "ast_hash": "031952476422c86ce0200a3cba265a8f",
+    "semantic_hash": "031952476422c86ce0200a3cba265a8f"
+  },
+  "files.md/DevOps_Central_Platform_Description.md": {
+    "mtime": 1783093874.5302057,
+    "ast_hash": "620df7b67ae321e3afc87499327ca741",
+    "semantic_hash": "620df7b67ae321e3afc87499327ca741"
+  },
+  "files.md/DevOps_Central_Platform_Etapes_Implementation.md": {
+    "mtime": 1783092658.091749,
+    "ast_hash": "f6cd856060676ef928f7f99522193f27",
+    "semantic_hash": "f6cd856060676ef928f7f99522193f27"
+  },
+  "files.md/Objective Bootstrap 1.md": {
+    "mtime": 1783384708.7342935,
+    "ast_hash": "ea5cc63887bdaf2d92c74125ca3f580a",
+    "semantic_hash": "ea5cc63887bdaf2d92c74125ca3f580a"
+  },
+  "files.md/Phase_3_Etapes.md": {
+    "mtime": 1783464454.8506403,
+    "ast_hash": "bec3d2144c0501c6e34ffb2fbbcddc6b",
+    "semantic_hash": "bec3d2144c0501c6e34ffb2fbbcddc6b"
+  },
+  "files.md/Phase_4_Etapes.md": {
+    "mtime": 1783686706.5060482,
+    "ast_hash": "d34ac129e99b378e91e44aa2744513cd",
+    "semantic_hash": "d34ac129e99b378e91e44aa2744513cd"
+  },
+  "files.md/a.md": {
+    "mtime": 1783464857.0584993,
+    "ast_hash": "e99756b962f958de72653515538b4e61",
+    "semantic_hash": "e99756b962f958de72653515538b4e61"
+  },
+  "files.md/ansible-overview.md": {
+    "mtime": 1783464857.0549564,
+    "ast_hash": "a76e39533211f27cedc2f848518a205b",
+    "semantic_hash": "a76e39533211f27cedc2f848518a205b"
+  },
+  "files.md/arborescence.md": {
+    "mtime": 1783092928.5183818,
+    "ast_hash": "d1919ad924e6433f8d035fb35b3c7386",
+    "semantic_hash": "d1919ad924e6433f8d035fb35b3c7386"
+  },
+  "files.md/commende.md": {
+    "mtime": 1783464857.0569565,
+    "ast_hash": "f7256a6cb405041b9791f8337b36d631",
+    "semantic_hash": "f7256a6cb405041b9791f8337b36d631"
+  },
+  "files.md/devops-analysis-report.md": {
+    "mtime": 1783785344.838983,
+    "ast_hash": "be66de484bc8dd8e336a1bd22c762ec7",
+    "semantic_hash": "be66de484bc8dd8e336a1bd22c762ec7"
+  },
+  "files.md/findings_fixed.md": {
+    "mtime": 1783797484.245074,
+    "ast_hash": "49ae81b70c005c0bd23c2bd63fefbf8d",
+    "semantic_hash": "49ae81b70c005c0bd23c2bd63fefbf8d"
+  },
+  "files.md/main.md": {
+    "mtime": 1783340344.159079,
+    "ast_hash": "30d52d8e985c48315c12120b4ca28a2e",
+    "semantic_hash": "30d52d8e985c48315c12120b4ca28a2e"
+  },
+  "files.md/metrics-server-fix.md": {
+    "mtime": 1783438988.314092,
+    "ast_hash": "a967aba68d9c1f37ce2a5ca86f90d84f",
+    "semantic_hash": "a967aba68d9c1f37ce2a5ca86f90d84f"
+  },
+  "files.md/phase4_rapport.md": {
+    "mtime": 1783695978.4774992,
+    "ast_hash": "c58399e8d87239ec0b2fc37044b02de8",
+    "semantic_hash": "c58399e8d87239ec0b2fc37044b02de8"
+  },
+  "files.md/project_describtion.md": {
+    "mtime": 1783092924.0097508,
+    "ast_hash": "ee8ee0fb5d020911db7fb984b9adbe5f",
+    "semantic_hash": "ee8ee0fb5d020911db7fb984b9adbe5f"
+  },
+  "files.md/scan-report.md": {
+    "mtime": 1783555679.6384218,
+    "ast_hash": "f49fea652b9efe43de863b61162c106f",
+    "semantic_hash": "f49fea652b9efe43de863b61162c106f"
+  },
+  "files.md/t.md": {
+    "mtime": 1783464857.0618556,
+    "ast_hash": "ba8d6bbb3654e6a7a82b1dc0c7ba4da8",
+    "semantic_hash": "ba8d6bbb3654e6a7a82b1dc0c7ba4da8"
+  },
+  "files.md/testphase3.txt": {
+    "mtime": 1783515786.2875679,
+    "ast_hash": "ced83ba30a9258887bb406c19c1bbf3e",
+    "semantic_hash": "ced83ba30a9258887bb406c19c1bbf3e"
+  },
+  "files.md/todolist.md": {
+    "mtime": 1783384694.6408043,
+    "ast_hash": "c319b12bdb8086a52f0b5d8d5b49be14",
+    "semantic_hash": "c319b12bdb8086a52f0b5d8d5b49be14"
+  },
+  "files.md/verification.md": {
+    "mtime": 1783515789.750351,
+    "ast_hash": "99ba4b3f4cd021464992d95b35e3f90c",
+    "semantic_hash": "99ba4b3f4cd021464992d95b35e3f90c"
+  },
+  "k8s/apps/hpa.yaml": {
+    "mtime": 1783791080.920888,
+    "ast_hash": "3d4b2f8edb297a50513f9b3bcddc0b1b",
+    "semantic_hash": "3d4b2f8edb297a50513f9b3bcddc0b1b"
+  },
+  "k8s/apps/namespace.yaml": {
+    "mtime": 1783790172.0723696,
+    "ast_hash": "2664230750838cf4b49f247622cfd2b4",
+    "semantic_hash": "2664230750838cf4b49f247622cfd2b4"
+  },
+  "k8s/apps/networkpolicies.yaml": {
+    "mtime": 1783790818.447505,
+    "ast_hash": "87c8435dbe4197b2e3c359e992d5eedd",
+    "semantic_hash": "87c8435dbe4197b2e3c359e992d5eedd"
+  },
+  "k8s/apps/orders-deployment.yaml": {
+    "mtime": 1783790683.7012641,
+    "ast_hash": "08832f18ddb39cff177a23ac93a8a964",
+    "semantic_hash": "08832f18ddb39cff177a23ac93a8a964"
+  },
+  "k8s/apps/pdbs.yaml": {
+    "mtime": 1783790942.9775238,
+    "ast_hash": "9795d5706921a0266c61654e71f79efe",
+    "semantic_hash": "9795d5706921a0266c61654e71f79efe"
+  },
+  "k8s/apps/products-deployment.yaml": {
+    "mtime": 1783790539.804841,
+    "ast_hash": "3e0a21c715b1131bb787deb4c42ddef4",
+    "semantic_hash": "3e0a21c715b1131bb787deb4c42ddef4"
+  },
+  "k8s/apps/rbac.yaml": {
+    "mtime": 1783790336.124088,
+    "ast_hash": "55893cfa1ea93559fbea83fc0106e584",
+    "semantic_hash": "55893cfa1ea93559fbea83fc0106e584"
+  },
+  "k8s/apps/users-deployment.yaml": {
+    "mtime": 1783790423.8841205,
+    "ast_hash": "c05842ca599de210a8dc038cad877fb7",
+    "semantic_hash": "c05842ca599de210a8dc038cad877fb7"
+  },
+  "k8s/vault/README.md": {
+    "mtime": 1783791241.7618313,
+    "ast_hash": "a7eaa8c6105edf7aefd9d928047c884f",
+    "semantic_hash": "a7eaa8c6105edf7aefd9d928047c884f"
+  },
+  "k8s/vault/manifests.yaml": {
+    "mtime": 1783805261.321573,
+    "ast_hash": "6e0c64b916509a32c1a077712c636e23",
+    "semantic_hash": "6e0c64b916509a32c1a077712c636e23"
+  },
+  "k8s/vault/secret-vault-root.yaml": {
+    "mtime": 1783786069.864838,
+    "ast_hash": "0d436865fbbcca56079b25c12826e5c5",
+    "semantic_hash": "0d436865fbbcca56079b25c12826e5c5"
+  },
+  "k8s/vault/values.yaml": {
+    "mtime": 1783786520.5404117,
+    "ast_hash": "7023a39e8a3f25beaf7ae3b377d8edb1",
+    "semantic_hash": "7023a39e8a3f25beaf7ae3b377d8edb1"
+  }
+}

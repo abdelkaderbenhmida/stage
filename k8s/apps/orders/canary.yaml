@@ -1,0 +1,37 @@
+apiVersion: flagger.app/v1beta1
+kind: Canary
+metadata:
+  name: orders-service
+  namespace: devops-platform
+  labels:
+    app.kubernetes.io/name: orders-service
+    app.kubernetes.io/part-of: devops-platform
+spec:
+  provider: istio
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: orders-service
+  service:
+    name: orders-service
+    port: 80
+    targetPort: http
+  analysis:
+    interval: 30s
+    threshold: 2
+    maxWeight: 50
+    stepWeights:
+      - 10
+      - 20
+      - 30
+      - 40
+      - 50
+    primaryReadyThreshold: 30
+    canaryReadyThreshold: 30
+    webhooks:
+      - name: load-test
+        url: http://flagger-loadtester.devops-platform/
+        timeout: 5s
+        metadata:
+          cmd: "hey -z 1m -q 10 -c 2 http://orders-service-canary.devops-platform/"
+  progressDeadlineSeconds: 300

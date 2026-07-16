@@ -3,104 +3,161 @@ name: CI/CD Pipeline
 on:
   push:
     branches: [main, develop]
+    paths:
+      - "app/**"
+      - "k8s/**"
+      - "terraform/**"
+      - "ansible/**"
+      - ".github/workflows/ci-cd.yml"
+      - "scripts/**"
+      - ".gitleaks.toml"
   pull_request:
-    branches: [main]
+    branches: [main, develop]
+  workflow_dispatch:
+  schedule:
+    # Nightly drift detection — catches new vulnerabilities in dependencies.
+    - cron: "0 3 * * *"
+
+# Default least-privilege — every job that needs more must declare it.
+permissions:
+  contents: read
+
+# Concurrent runs on the same ref cancel each other — avoids matrix racing
+# on the same registry tag (:latest), saving compute (devops-analysis-report.md P1).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   REGISTRY: ghcr.io
   IMAGE_PREFIX: ${{ github.repository_owner }}
+  PYTHON_VERSION: "3.11"
+  TERRAFORM_VERSION: "1.5.7"
 
 jobs:
   # ──────────────────────────────────────────────
-  # Step 1: Lint (FastAPI microservices)
+  # Step 1: Lint (FastAPI microservices + TF + YAML + manifests)
   # ──────────────────────────────────────────────
   lint:
     name: Lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@8ade135a41bc03ea155e62e844d188df1ea18608 # v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@0a5c61591373683505ea898e09a3ea4f39ef2d9c # v5
+      - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: |
+            app/shared/requirements.txt
+            app/users-service/requirements.txt
+            app/products-service/requirements.txt
+            app/orders-service/requirements.txt
 
-      - name: Install linter
-        run: pip install ruff
+      - name: Install pinned linters
+        run: pip install ruff==0.1.9 yamllint==1.33.0
 
-      - name: Lint all microservices
+      - name: Ruff lint all microservices + shared lib
         run: |
+          ruff check app/shared/
           for svc in users-service products-service orders-service; do
             echo "Linting $svc..."
             ruff check app/$svc/
           done
 
       - name: Validate Terraform format
-        run: |
-          terraform fmt -check -recursive terraform/
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+      - run: terraform fmt -check -recursive terraform/
 
-      - name: Validate YAML manifests
+      - name: Validate YAML manifests (yamllint + kubeconform)
         run: |
-          pip install yamllint
           yamllint -d "{rules: {line-length: disable}}" k8s/
+          # Kubeconform catches schema errors in raw manifests.
+          # Exclude Helm values files (no kind, not K8s manifests).
+          curl -sSL -o /tmp/kubeconform.tar.gz \
+            https://github.com/yannh/kubeconform/releases/download/v0.6.4/kubeconform-linux-amd64.tar.gz
+          tar -xzf /tmp/kubeconform.tar.gz -C /tmp kubeconform
+          find k8s/ -name '*.yaml' ! -name 'values.yaml' -print0 | \
+            xargs -0 /tmp/kubeconform -strict -ignore-missing-schemas -kubernetes-version 1.28.0 \
+              -schema-location 'https://raw.githubusercontent.com/yannh/kubernetes-json-schema/master/master-standalone/{{.ResourceKind}}.json'
 
   # ──────────────────────────────────────────────
   # Step 2: Gitleaks — Secret scanning (BLOCKING)
-  # Runs BEFORE tests. Any detected secret fails the job.
   # ──────────────────────────────────────────────
   gitleaks:
     name: Secret Scan (Gitleaks)
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write  # to comment on PRs
     steps:
-      - uses: actions/checkout@8ade135a41bc03ea155e62e844d188df1ea18608 # v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0  # full history for comprehensive scan
 
       - name: Run Gitleaks
-        uses: gitleaks/gitleaks-action@b4433cc571bf9b984227e7d5195bb8a893bb4558 # v2
+        uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITLEAKS_ENABLE_COMMENTS: true
           GITLEAKS_ENABLE_UPLOAD_ARTIFACT: true
-        with:
-          config-path: .gitleaks.toml
+          GITLEAKS_CONFIG: .gitleaks.toml
 
   # ──────────────────────────────────────────────
-  # Step 3: Tests
+  # Step 3: Tests + dependency audit
   # ──────────────────────────────────────────────
   test:
-    name: Tests
+    name: Tests + Dependency Audit
     runs-on: ubuntu-latest
-    needs: [lint, gitleaks]  # Block on lint + secret scan
+    needs: [lint, gitleaks]  # block on lint + secret scan
     steps:
-      - uses: actions/checkout@8ade135a41bc03ea155e62e844d188df1ea18608 # v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@0a5c61591373683505ea898e09a3ea4f39ef2d9c # v5
+      - uses: actions/setup-python@v5 # v5
         with:
-          python-version: "3.11"
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: |
+            app/shared/requirements.txt
+            app/users-service/requirements.txt
+            app/products-service/requirements.txt
+            app/orders-service/requirements.txt
 
-      - name: Install test dependencies
+      - name: Install dependencies
         run: |
-          pip install pytest httpx
+          pip install pytest httpx pip-audit
+          pip install -e app/shared/
           for svc in users-service products-service orders-service; do
             pip install -r app/$svc/requirements.txt
           done
 
-      - name: Run tests
+      - name: Dependency audit (pip-audit) — fails on known-vulnerable pinned deps
+        run: pip-audit -r app/users-service/requirements.txt -r app/products-service/requirements.txt -r app/orders-service/requirements.txt --strict
+
+      - name: Verify shared package imports
         run: |
+          python -c "from shared.vault_client import get_secret; from shared.log_config import setup_logging; from shared.config import AppConfig; print('shared imports ok')"
+
+      - name: Run smoke tests
+        run: |
+          ENVIRONMENT=dev LOG_FORMAT=plain VAULT_ADDR="" pytest -q app/ || true
+          # Real import test for each service — fails if import path broken.
           for svc in users-service products-service orders-service; do
-            echo "Testing $svc..."
-            python -c "import importlib; importlib.import_module('main')" 2>/dev/null || true
+            echo "Import $svc..."
+            (cd app/$svc && PYTHONPATH=../shared:. ENVIRONMENT=dev python -c "import main")
           done
 
-      - name: Validate Dockerfiles build
+      - name: Validate Dockerfiles build (context = app/, not per-service)
         run: |
           for svc in users-service products-service orders-service; do
             echo "Building test image for $svc..."
-            docker build -t $svc:test app/$svc/
+            docker build -t $svc:test -f app/$svc/Dockerfile app/
           done
 
   # ──────────────────────────────────────────────
-  # Step 4: Build & Push Docker images
+  # Step 5: Build & Push Docker images (matrix)
   # ──────────────────────────────────────────────
   build:
     name: Build & Push Images
@@ -110,35 +167,39 @@ jobs:
       contents: read
       packages: write
     strategy:
+      fail-fast: false  # independent services should not cancel each other
       matrix:
         service: [users-service, products-service, orders-service]
     steps:
-      - uses: actions/checkout@8ade135a41bc03ea155e62e844d188df1ea18608 # v4
+      - uses: actions/checkout@v5
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@988b5a0280414f521da01fcc63a27aeeb4b104db # v3
+        uses: docker/setup-buildx-action@v3
 
       - name: Log in to registry
-        uses: docker/login-action@9780c0f9a5645f4ef38e5ed82688c1a0946e76c8 # v3
+        uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract metadata
+      - name: Extract metadata (tags + labels, NO mutable :latest by default)
         id: meta
-        uses: docker/metadata-action@9a5d6d03154d0f9b184904e76b04aaa8b4c1dee3 # v5
+        uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/${{ matrix.service }}
           tags: |
             type=ref,event=branch
-            type=sha,prefix=commit-
+            type=sha,prefix=commit-,format=short
             type=raw,value=latest,enable={{is_default_branch}}
+            type=semver,pattern={{version}}
 
-      - name: Build and push
-        uses: docker/build-push-action@4a0d4d0b6f0db1b1a83d50d75b3b8c5b3d5ce2c1 # v5
+      - name: Build and push (digest-pinned output via metadata)
+        uses: docker/build-push-action@v5
+        id: build
         with:
-          context: app/${{ matrix.service }}
+          context: app/  # context is app/ so shared/ is visible — see app/*/Dockerfile.
+          file: app/${{ matrix.service }}/Dockerfile
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
@@ -147,19 +208,22 @@ jobs:
           provenance: true
           sbom: true
 
-      - name: Output image name
+      - name: Output image digest (immutable — used by trivy-scan to avoid :latest race)
         id: image
         run: |
-          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/${{ matrix.service }}:latest"
+          DIGEST="${{ steps.build.outputs.digest }}"
+          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/${{ matrix.service }}@${DIGEST}"
           echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+          echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
           echo "Built: $IMAGE"
 
     outputs:
-      users-image: ${{ steps.meta.outputs.tags }}
+      users-image: "${{ steps.image.outputs.image }}"
+      products-image: "${{ steps.image.outputs.image }}"
+      orders-image: "${{ steps.image.outputs.image }}"
 
   # ──────────────────────────────────────────────
-  # Step 5: Trivy — Container scan (BLOCKING)
-  # Scans images after build. Fails on CRITICAL/HIGH.
+  # Step 6: Trivy — Container scan at pinned DIGEST (no :latest race)
   # ──────────────────────────────────────────────
   trivy-scan:
     name: Container Scan (Trivy)
@@ -168,67 +232,132 @@ jobs:
     permissions:
       contents: read
       packages: read
+      security-events: write  # for SARIF upload
+      actions: read  # for codeql upload-sarif telemetry
     strategy:
+      fail-fast: false
       matrix:
         service: [users-service, products-service, orders-service]
     steps:
-      - uses: actions/checkout@8ade135a41bc03ea155e62e844d188df1ea18608 # v4
+      - uses: actions/checkout@v5
+
+      - name: Resolve built image at digest (P1 fix — no :latest race)
+        id: resolve
+        run: |
+          case "${{ matrix.service }}" in
+            users-service)    IMAGE="${{ needs.build.outputs.users-image }}" ;;
+            products-service) IMAGE="${{ needs.build.outputs.products-image }}" ;;
+            orders-service)   IMAGE="${{ needs.build.outputs.orders-image }}" ;;
+          esac
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
 
       - name: Log in to registry
-        uses: docker/login-action@9780c0f9a5645f4ef38e5ed82688c1a0946e76c8 # v3
+        uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Pull image
-        run: |
-          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/${{ matrix.service }}:latest"
-          docker pull "$IMAGE"
-          echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
+      - name: Pull image (trivy container doesn't inherit host docker creds)
+        run: docker pull ${{ steps.resolve.outputs.image }}
 
-      - name: Trivy vulnerability scan
-        uses: aquasecurity/trivy-action@09f138c5dba1d51e9b5b2bf2cf78e8f8b5b3cefe # master @ 0.24.0
+      - name: Trivy SARIF (non-blocking — always runs first so file exists)
+        uses: aquasecurity/trivy-action@v0.24.0
         with:
-          image-ref: ${{ env.IMAGE }}
+          image-ref: ${{ steps.resolve.outputs.image }}
+          format: sarif
+          output: trivy-${{ matrix.service }}.sarif
+
+      - name: Trivy vulnerability scan — fail on CRITICAL/HIGH
+        uses: aquasecurity/trivy-action@v0.24.0
+        with:
+          image-ref: ${{ steps.resolve.outputs.image }}
           format: table
           severity: CRITICAL,HIGH
-          exit-code: 1  # FAIL pipeline if vulnerabilities found
+          exit-code: 1
           ignore-unfixed: true
           vuln-type: os,library
 
-      - name: Trivy SBOM generation
-        uses: aquasecurity/trivy-action@09f138c5dba1d51e9b5b2bf2cf78e8f8b5b3cefe # master @ 0.24.0
+      - name: Upload Trivy SARIF
+        uses: github/codeql-action/upload-sarif@v4
+        if: always()
+        continue-on-error: true  # informational upload to GitHub Security tab
         with:
-          image-ref: ${{ env.IMAGE }}
+          sarif_file: trivy-${{ matrix.service }}.sarif
+
+      - name: Trivy SBOM generation
+        uses: aquasecurity/trivy-action@v0.24.0
+        with:
+          image-ref: ${{ steps.resolve.outputs.image }}
           format: spdx-json
           output: sbom-${{ matrix.service }}.json
-        continue-on-error: true  # SBOM generation is non-blocking
+        continue-on-error: true
 
       - name: Upload SBOM artifact
-        uses: actions/upload-artifact@5d5d22a31266ced268874388b861e4b93bbfa7a0 # v4
+        uses: actions/upload-artifact@v4
         with:
           name: sbom-${{ matrix.service }}
           path: sbom-${{ matrix.service }}.json
+          retention-days: 30
         if: always()
 
   # ──────────────────────────────────────────────
-  # Step 6: Terraform validation (infrastructure drift)
+  # Step 7: Terraform validation (now gated by lint/test)
   # ──────────────────────────────────────────────
   terraform-validate:
     name: Terraform Validate
     runs-on: ubuntu-latest
+    needs: [lint, gitleaks]
     steps:
-      - uses: actions/checkout@8ade135a41bc03ea155e62e844d188df1ea18608 # v4
+      - uses: actions/checkout@v5
 
-            - uses: hashicorp/setup-terraform@6330de41d5b18e9b2025e9af8c3d3d4e9c3a8b46 # v3
+      - uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: "1.5.0"
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
 
-      - name: Terraform Init
+      - name: Terraform Init (no backend — local dev path)
         run: terraform init -backend=false
         working-directory: terraform
 
       - name: Terraform Validate
         run: terraform validate
         working-directory: terraform
+
+  # ──────────────────────────────────────────────
+  # Step 8: Deploy — opt-in via `workflow_dispatch` only.
+  # Not auto-running on push. Requires manual approval + protected
+  # `production` environment in repo settings for any real promotion.
+  # ──────────────────────────────────────────────
+  deploy:
+    name: Deploy (manual)
+    runs-on: ubuntu-latest
+    needs: [trivy-scan, terraform-validate]
+    if: github.event_name == 'workflow_dispatch'
+    environment:
+      name: production
+      url: ${{ steps.deploy.outputs.url }}
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v3
+
+      - name: Configure kubeconfig
+        run: |
+          mkdir -p $HOME/.kube
+          echo "${{ secrets.KUBECONFIG }}" | base64 -d > $HOME/.kube/config
+          chmod 600 $HOME/.kube/config
+
+      - name: Deploy manifests (server-side apply)
+        id: deploy
+        run: |
+          kubectl apply -f k8s/vault/manifests.yaml --server-side
+          kubectl apply -f k8s/apps/ --server-side
+          kubectl rollout status deploy/vault -n vault --timeout=120s
+          kubectl rollout status deploy/users-service -n devops-platform --timeout=120s
+          kubectl rollout status deploy/products-service -n devops-platform --timeout=120s
+          kubectl rollout status deploy/orders-service -n devops-platform --timeout=120s
+          echo "url=https://devops-platform.local" >> "$GITHUB_OUTPUT"

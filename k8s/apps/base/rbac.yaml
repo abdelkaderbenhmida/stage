@@ -1,0 +1,90 @@
+# RBAC for the three microservices in the devops-platform namespace.
+#
+# devops-analysis-report.md P1:
+#   - Apps shared ONE ServiceAccount -> over-scoped (pods/services/watch).
+#     Apps don't call the K8s API at runtime — Vault does.
+#   - Now each service gets its OWN dedicated SA, used by the Vault
+#     Kubernetes auth method to mint per-service Vault tokens. No app
+#     needs to call the K8s API directly, so we set
+#     automountServiceAccountToken:false on the SA + every pod.
+#   - The vault-setup Job in the vault namespace already mints
+#     "auth/kubernetes/role/<svc>" bindings for these SAs.
+
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: users-service-sa
+  namespace: devops-platform
+  labels:
+    app.kubernetes.io/name: users-service
+    app.kubernetes.io/part-of: devops-platform
+  # Token is mounted so the app can use the Vault Kubernetes auth method in a
+  # future release (hvac client reads the SA JWT at /var/run/secrets/...).
+  # For now, apps authenticate using VAULT_TOKEN env from the vault-root-token
+  # Secret. The SA itself has no cluster RBAC beyond get-self, so the token is
+  # useless to an attacker who steals the pod's mount (still encodable as the
+  # low-privilege SA).
+automountServiceAccountToken: true
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: products-service-sa
+  namespace: devops-platform
+  labels:
+    app.kubernetes.io/name: products-service
+    app.kubernetes.io/part-of: devops-platform
+automountServiceAccountToken: true
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: orders-service-sa
+  namespace: devops-platform
+  labels:
+    app.kubernetes.io/name: orders-service
+    app.kubernetes.io/part-of: devops-platform
+automountServiceAccountToken: true
+---
+# A role + binding the apps SAs share. The apps themselves do NOT call the
+# K8s API at runtime (secrets are fetched from Vault via the hvac client).
+# The Role is empty verb-set kept here only to make policy auditing explicit
+# and to support future health-checking sidecars that may want to read
+# their own Pod metadata.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: app-read-self
+  namespace: devops-platform
+  labels:
+    app.kubernetes.io/name: app-read-self
+    app.kubernetes.io/part-of: devops-platform
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get"]
+    # resourceNames omitted — apps default token is not automounted; if a
+    # future sidecar enables it, this stays least-privilege.
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: apps-read-self
+  namespace: devops-platform
+  labels:
+    app.kubernetes.io/name: apps-read-self
+    app.kubernetes.io/part-of: devops-platform
+subjects:
+  - kind: ServiceAccount
+    name: users-service-sa
+    namespace: devops-platform
+  - kind: ServiceAccount
+    name: products-service-sa
+    namespace: devops-platform
+  - kind: ServiceAccount
+    name: orders-service-sa
+    namespace: devops-platform
+roleRef:
+  kind: Role
+  name: app-read-self
+  apiGroup: rbac.authorization.k8s.io

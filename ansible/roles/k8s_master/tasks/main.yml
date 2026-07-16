@@ -138,7 +138,7 @@
   until: kubeadm_join_command.rc == 0
   tags: master
 
-- name: Save join command as fact for worker nodes
+- name: Store join command as fact for worker nodes
   ansible.builtin.set_fact:
     join_command: "{{ kubeadm_join_command.stdout }}"
   tags: master
@@ -148,13 +148,17 @@
     content: |
       #!/bin/bash
       {{ kubeadm_join_command.stdout }}
-    dest: /tmp/kubeadm-join.sh
+    dest: "{{ kubeadm_join_sh | default('/tmp/kubeadm-join.sh') }}"
+    owner: devops
+    group: devops
     mode: "0700"
   tags: master
 
 - name: Store join command text for workers to read
   ansible.builtin.copy:
     content: "{{ kubeadm_join_command.stdout }}"
-    dest: /tmp/kubeadm-join.txt
-    mode: "0644"
+    dest: "{{ kubeadm_join_txt | default('/tmp/kubeadm-join.txt') }}"
+    owner: devops
+    group: devops
+    mode: "0600"   # P2: was 0644 — plaintext-readable by any local user.
   tags: master

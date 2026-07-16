@@ -1,0 +1,69 @@
+# Namespace manifest for the devops-platform application namespace.
+#
+# devops-analysis-report.md P1: previously apps referenced
+# `namespace: devops-platform` but no Namespace object declared it — apply would
+# fail unless `--create-namespace` was used. Now declared explicitly with Pod
+# Security Admission labels so `runAsNonRoot`, `seccompProfile: RuntimeDefault`,
+# and `allowPrivilegeEscalation: false` are ENFORCED, not just hoped for.
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: devops-platform
+  labels:
+    app.kubernetes.io/name: devops-platform
+    app.kubernetes.io/part-of: devops-platform
+    # Pod Security Admission — restricted profile enforces non-root, no
+    # privilege escalation, seccomp RuntimeDefault, drop ALL caps.
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+---
+# LimitRange — bounds per-container defaults so unannotated pods still have
+# request/limit semantics. Prevents a noisy service from starving siblings.
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: default-limits
+  namespace: devops-platform
+  labels:
+    app.kubernetes.io/name: default-limits
+    app.kubernetes.io/part-of: devops-platform
+spec:
+  limits:
+    - type: Container
+      default:
+        cpu: "250m"
+        memory: "256Mi"
+      defaultRequest:
+        cpu: "100m"
+        memory: "128Mi"
+      max:
+        cpu: "4"
+        memory: "2Gi"
+      min:
+        cpu: "10m"
+        memory: "32Mi"
+---
+# ResourceQuota — caps aggregate usage so a runaway HPA-scaling app cannot
+# consume the entire cluster. Tune per environment.
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: platform-quota
+  namespace: devops-platform
+  labels:
+    app.kubernetes.io/name: platform-quota
+    app.kubernetes.io/part-of: devops-platform
+spec:
+  hard:
+    requests.cpu: "4"
+    requests.memory: "4Gi"
+    limits.cpu: "8"
+    limits.memory: "8Gi"
+    pods: "20"
+    services: "20"
+    configmaps: "20"
+    secrets: "20"
+    persistentvolumeclaims: "10"

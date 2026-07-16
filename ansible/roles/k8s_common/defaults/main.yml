@@ -1,0 +1,17 @@
+---
+# Defaults for `k8s_common` — kubeadm prerequisites (modules, sysctl, containerd_socket).
+k8s_version: "1.28"
+k8s_version_deb: "1.28.*"
+pod_cidr: "192.168.0.0/16"
+service_cidr: "10.96.0.0/12"
+containerd_socket: "/run/containerd/containerd.sock"
+cri_endpoint: "unix:///run/containerd/containerd.sock"
+# Kernel modules required by kubeadm.
+k8s_kernel_modules:
+  - br_netfilter
+  - overlay
+# Sysctl params required by kubeadm.
+k8s_sysctl_params:
+  - { name: net.bridge.bridge-nf-call-iptables, value: 1 }
+  - { name: net.bridge.bridge-nf-call-ip6tables, value: 1 }
+  - { name: net.ipv4.ip_forward, value: 1 }

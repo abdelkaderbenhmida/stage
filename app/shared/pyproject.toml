@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "devops-platform-shared"
+version = "1.0.0"
+description = "Shared library for the DevOps Central Platform microservices (Vault client, logging, config)."
+requires-python = ">=3.11"
+license = "MIT"
+authors = [{ name = "DevOps Platform Team" }]
+dependencies = [
+    "hvac==2.1.0",
+    "prometheus-client==0.17.1",
+    "python-json-logger==2.0.7",
+]
+
+[tool.setuptools]
+packages = ["shared"]
+
+[tool.setuptools.package-dir]
+shared = "."
