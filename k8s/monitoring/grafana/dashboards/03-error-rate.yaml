@@ -1,0 +1,65 @@
+# Grafana dashboard: Error Rate SLO — 5xx rate per service, 4xx rate, threshold comparison.
+# Data source: Prometheus. http_requests_total with status_code label emitted by
+# instrumentator (commit 5). 1% threshold line = Phase 6 SLO error-rate spec.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dashboard-error-rate
+  namespace: monitoring
+  labels:
+    grafana_dashboard: "1"
+    app.kubernetes.io/name: dashboard-error-rate
+    app.kubernetes.io/part-of: devops-platform
+data:
+  "03-error-rate.json": |
+    {
+      "title": "Error Rate SLO",
+      "uid": "devops-platform-error-rate",
+      "schemaVersion": 39,
+      "version": 1,
+      "panels": [
+        {
+          "id": 1,
+          "title": "5xx Error Rate (%)",
+          "type": "timeseries",
+          "gridPos": {"h": 10, "w": 24, "x": 0, "y": 0},
+          "fieldConfig": {"defaults": {"unit": "percent", "decimals": 2}},
+          "targets": [
+            {"expr": "sum by(handler)(rate(http_requests_total{status_code=~\"5..\"}[5m])) / sum by(handler)(rate(http_requests_total[5m])) * 100", "legendFormat": "{{handler}}", "datasource": {"type": "prometheus", "uid": "PBFA97CFB590B2093"}},
+            {"expr": "1", "legendFormat": "SLO threshold 1%", "datasource": {"type": "prometheus", "uid": "PBFA97CFB590B2093"}}
+          ]
+        },
+        {
+          "id": 2,
+          "title": "Total 5xx Requests (last 5m)",
+          "type": "stat",
+          "gridPos": {"h": 4, "w": 6, "x": 0, "y": 10},
+          "fieldConfig": {"defaults": {"thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "orange", "value": 1}, {"color": "red", "value": 5}]}}},
+          "targets": [
+            {"expr": "sum(rate(http_requests_total{status_code=~\"5..\"}[5m])) * 300", "datasource": {"type": "prometheus", "uid": "PBFA97CFB590B2093"}}
+          ]
+        },
+        {
+          "id": 3,
+          "title": "4xx Rate (%)",
+          "type": "timeseries",
+          "gridPos": {"h": 8, "w": 12, "x": 6, "y": 10},
+          "fieldConfig": {"defaults": {"unit": "percent", "decimals": 2}},
+          "targets": [
+            {"expr": "sum by(handler)(rate(http_requests_total{status_code=~\"4..\"}[5m])) / sum by(handler)(rate(http_requests_total[5m])) * 100", "legendFormat": "{{handler}}", "datasource": {"type": "prometheus", "uid": "PBFA97CFB590B2093"}}
+          ]
+        },
+        {
+          "id": 4,
+          "title": "Top Error Endpoints",
+          "type": "table",
+          "gridPos": {"h": 6, "w": 12, "x": 18, "y": 10},
+          "targets": [
+            {"expr": "topk(5, sum by(handler)(rate(http_requests_total{status_code=~\"5..\"}[5m])))", "format": "table", "datasource": {"type": "prometheus", "uid": "PBFA97CFB590B2093"}}
+          ]
+        }
+      ],
+      "editable": true,
+      "refresh": "15s"
+    }

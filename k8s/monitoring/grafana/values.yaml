@@ -1,0 +1,65 @@
+# Grafana Helm chart values (arborescence.md Phase 6 #3-4).
+#
+# Chart: grafana/grafana
+# Install: helm install grafana grafana/grafana -f k8s/monitoring/grafana/values.yaml -n monitoring
+
+adminUser: admin
+# важ: override at install with --set adminPassword=... (never commit a real password).
+adminPassword: changeme-default
+
+persistence:
+  enabled: true
+  size: 2Gi
+  storageClassName: standard
+
+datasources:
+  datasources.yaml:
+    apiVersion: 1
+    datasources:
+      - name: Prometheus
+        type: prometheus
+        access: proxy
+        url: http://prometheus.monitoring.svc.cluster.local:9090
+        isDefault: true
+        editable: true
+      - name: Loki
+        type: loki
+        access: proxy
+        url: http://loki.monitoring.svc.cluster.local:3100
+        editable: true
+
+dashboardProviders:
+  dashboardproviders.yaml:
+    apiVersion: 1
+    providers:
+      - name: devops-platform
+        orgId: 1
+        folder: devops-platform
+        type: file
+        disableDeletion: false
+        editable: true
+        options:
+          path: /var/lib/grafana/dashboards/devops-platform
+
+dashboards:
+  # The 3 spec'd dashboards are provisioned from
+  # k8s/monitoring/grafana/dashboards/*.json (or ConfigMaps in grafana-dashboards/)
+  devops-platform:
+    infra-overview:
+      file: dashboards/01-infra-overview.json
+    app-performance:
+      file: dashboards/02-app-performance.json
+    error-rate:
+      file: dashboards/03-error-rate.json
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 250m
+    memory: 256Mi
+
+service:
+  type: ClusterIP
+  port: 3000

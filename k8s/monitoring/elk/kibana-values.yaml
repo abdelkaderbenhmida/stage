@@ -1,0 +1,150 @@
+# Kibana — visual discovery layer on top of Elasticsearch.
+# Connects to ES via http://elasticsearch.monitoring.svc.cluster.local:9200,
+# authenticates with the kibana_system user (password injected out-of-band).
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kibana
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: kibana
+    app.kubernetes.io/part-of: devops-platform
+---
+# Service — ClusterIP 5601, the canonical Kibana port.
+apiVersion: v1
+kind: Service
+metadata:
+  name: kibana
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: kibana
+    app.kubernetes.io/part-of: devops-platform
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 5601
+      targetPort: http
+      protocol: TCP
+  selector:
+    app.kubernetes.io/name: kibana
+---
+# ConfigMap — kibana.yml.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kibana-config
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: kibana
+    app.kubernetes.io/part-of: devops-platform
+data:
+  kibana.yml: |
+    server.name: kibana
+    server.host: 0.0.0.0
+    server.port: 5601
+
+    elasticsearch.hosts: ["http://elasticsearch.monitoring.svc.cluster.local:9200"]
+    elasticsearch.username: "kibana_system"
+    elasticsearch.password: "${KIBANA_PASSWORD}"
+    elasticsearch.ssl.verificationMode: "none"
+
+    monitoring.ui.container.elasticsearch.enabled: true
+    # Default index pattern: matches Logstash output (devops-platform-YYYY.MM.dd).
+    kibana.defaultAppId: "discover"
+---
+# Secret — kibana_system password injected out-of-band via
+# scripts/bootstrap-elasticsearch-secret.sh. The placeholder value FAILS
+# at runtime on purpose so fresh deploys don't silently run with a weak pwd.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: kibana-credentials
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: kibana
+    app.kubernetes.io/part-of: devops-platform
+type: Opaque
+stringData:
+  KIBANA_PASSWORD: "DO-NOT-COMMIT-INJECT-VIA-Scripts-bootstrap-elasticsearch-secret.sh"
+---
+# Deployment — 1 replica for 3-node dev cluster.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kibana
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: kibana
+    app.kubernetes.io/part-of: devops-platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kibana
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: kibana
+        app.kubernetes.io/part-of: devops-platform
+    spec:
+      serviceAccountName: kibana
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: kibana
+          image: docker.elastic.co/kibana/kibana:8.14.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 5601
+              protocol: TCP
+          env:
+            - name: KIBANA_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: kibana-credentials
+                  key: KIBANA_PASSWORD
+                  optional: false  # fail-closed
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 1Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false  # Kibana writes to /usr/share/kibana/data
+            capabilities:
+              drop: ["ALL"]
+          readinessProbe:
+            httpGet:
+              path: /api/status
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 12
+          livenessProbe:
+            httpGet:
+              path: /api/status
+              port: http
+            initialDelaySeconds: 90
+            periodSeconds: 30
+            timeoutSeconds: 5
+          volumeMounts:
+            - name: config
+              mountPath: /usr/share/kibana/config/kibana.yml
+              subPath: kibana.yml
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: kibana-config

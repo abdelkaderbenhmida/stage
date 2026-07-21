@@ -1,0 +1,224 @@
+Project scan complete — accuracy report + test commands
+I scanned the entire project (clean-main, 5 commits) against the source code. The docs are mostly accurate, but several claims are wrong or stale. Here is the truth grounded in the actual code.
+A. Discrepancies found (docs vs. actual source)
+#	Doc claim
+1	AGENTS.md P0 #4: "tfstate + generated inventory removed from git tracking"
+2	AGENTS.md P1 / RAPPORT line 213: "per-service vault_client.py copies deleted" + "Supprimées, shared unique"
+3	AGENTS.md P0 #5: "CI test job drops `
+4	AGENTS.md P2 / devops-analysis-report: Vault root token removed from "all 5 git-tracked locations"
+5	RAPPORT line 119: "fail-fast: false" in matrix
+6	RAPPORT line 128: app/shared/vault_client.py — uses SecretUnavailable
+7	RAPPORT line 175: "k8s/apps/{users,products,orders}/ — deployment.yaml + canary.yaml"
+8	AGENTS.md P2: "UID/GID hardcoded 64055/993 replaced with var"
+9	validate-security.sh check 2 references :latest matching CI build tag
+10	RAPPORT Phase 6: app/*/servicemonitor.yaml scrape on port http (80)
+11	test file (root)
+12	autopilot.log, vigolium-report.html, semgrep-findings-report.md, findings.md
+13	graphify-out/
+14	RAPPORT line 79: "/metrics" route exists
+All other checked claims match the source: Vault manifests are token-free with cross-namespace SA; validate-security.sh is set -euo pipefail + jq; cloud-init has ssh_pwauth:false, disable_root, fail2ban, restricted sudoers; kubeadm join txt is 0600 (k8s_master/tasks/main.yml:163); reset gate is when: reset_confirmed|bool + tag never; TF validation blocks present on network_cidr/worker_count/vm_vcpu; gateway_ip via cidrhost; 5 outputs all sensitive=true; .dockerignore blocks .git/__pycache__; Dependabot has pip/docker/github-actions; gitleaks allowlist does NOT contain .*\.md$ or changeme.
+B. Files that are "extra"/not part of the deliverable
+- app/{users,products,orders}-service/vault_client.py — stale insecure copies (claim #2 above). Should be deleted.
+- k8s/apps/{users,products,orders}-deployment.yaml, k8s/apps/hpa.yaml, k8s/apps/rbac.yaml — old Phase 3 loose duplicates superseded by base/ + per-service subdirs (claim #7). Should be deleted.
+- terraform/terraform.tfstate, .backup, .terraform/terraform.tfstate, terraform/inventory.ini — should be git rm --cached (claim #1).
+- test, autopilot.log, vigolium-report.html, semgrep-findings-report.md, findings.md, graphify-out/ — generated/reference artifacts, fine to keep untracked.
+- files.md/ — reference notes directory (whitelisted in gitleaks for .txt).
+I did NOT run anything — plan mode is read-only. Before showing the test commands, I want to confirm scope with you:
+→Asked 2 questions
+# Questions
+Which scope of test commands do you want?
+All 6 phases (Recommended)
+Do you want a remediation plan for the 4 real issues (git-tracked tfstate, stale vault_client.py copies, `|| true` in CI, duplicate k8s/apps manifests), or just the test commands?
+Test commands + fix plan
+Selected: all 6 phases + remediation plan. Delivering both now (read-only — I will NOT execute anything).
+C. How to test every phase — commands only (do NOT run in plan mode)
+Prereqs: terraform>=1.5, ansible>=2.14, kubectl>=1.28, docker>=24, python 3.11+, ruff, yamllint, kubeconform, gitleaks, trivy, jq, gh. Run from repo root /home/gadour/Desktop/stage.
+Phase 1 & 2 — Terraform infra + Ansible K8s cluster
+# Terraform static validation (no libvirt provider needed)
+cd terraform
+terraform fmt -check -recursive .
+terraform init -backend=false
+terraform validate
+
+# Dry-run plan (uses ~/.ssh key auto-detection; no apply)
+terraform plan -input=false
+
+# Provision VMs (ONLY if libvirt + KVM host available)
+terraform apply -var-file=terraform.tfvars -auto-approve
+virsh list --all                                  # expect 3 VMs
+terraform output                                  # expect 3 IPs (sensitive — shows as <sensitive>)
+
+# Ansible lint + syntax check (no cluster needed)
+cd ../ansible
+ansible-galaxy collection install -r requirements.yml
+ansible-playbook -i inventory.ini --syntax-check playbook.yml
+ansible-playbook -i inventory.ini --check --tags docker playbook.yml
+
+# Bootstrap real cluster (ONLY if VMs up + SSH reachable)
+ansible-playbook -i inventory.ini playbook.yml
+
+# Verify cluster
+ssh devops@<master-ip> "kubectl get nodes -o wide"           # expect 3 Ready
+ansible all -i inventory.ini -m shell -a "docker version && kubelet --version"
+
+# Reset MUST be opt-in (safety) — dry-run check it is gated:
+ansible-playbook -i inventory.ini playbook.yml --tags reset --check    # should SKIP k8s_reset
+ansible-playbook -i inventory.ini playbook.yml --tags reset -e reset_confirmed=true --check   # should RUN k8s_reset
+Phase 3 — Microservices containerization (local, no cluster)
+# Python lint
+pip install ruff==0.1.9
+ruff check app/shared/ app/users-service/ app/products-service/ app/orders-service/
+
+# Install shared as real package, then import-smoke each service
+pip install -e app/shared/
+pip install -r app/users-service/requirements.txt -r app/products-service/requirements.txt -r app/orders-service/requirements.txt
+python -c "from shared.vault_client import get_secret, SecretUnavailable; from shared.log_config import setup_logging; from shared.config import AppConfig; print('shared imports ok')"
+for svc in users-service products-service orders-service; do
+  (cd app/$svc && PYTHONPATH=../shared:. ENVIRONMENT=dev VAULT_ADDR="" python -c "import main; print('$svc import ok')")
+done
+
+# Build all 3 images (context MUST be app/)
+for svc in users-service products-service orders-service; do
+  docker build -t "$svc:1.0.0" -f "app/$svc/Dockerfile" app/
+done
+docker image ls | grep -E 'users|products|orders'
+
+# Run one locally + probe endpoints (dev mode = no Vault needed)
+docker run --rm -d -p 8001:8000 -e ENVIRONMENT=dev -e VAULT_ADDR="" --name users-test users-service:1.0.0
+curl -sf http://localhost:8001/livez   && echo " livez OK"
+curl -sf http://localhost:8001/readyz  || echo " readyz 503 (expected: no Vault) → OK in dev"
+curl -sf http://localhost:8001/metrics | grep -q http_request_duration_seconds_bucket && echo " metrics OK"
+docker rm -f users-test
+Phase 4 — DevSecOps + Vault (local + K8s)
+# Gitleaks: zero secrets in tree + full history
+gitleaks detect --source . --config .gitleaks.toml --redact --verbose      # expect exit 0
+
+# pip-audit: fail on vulnerable pinned deps
+pip install pip-audit
+pip-audit -r app/users-service/requirements.txt -r app/products-service/requirements.txt -r app/orders-service/requirements.txt --strict
+
+# Trivy image scan: fail on CRITICAL/HIGH
+for svc in users-service products-service orders-service; do
+  trivy image --severity CRITICAL,HIGH --exit-code 1 --ignore-unfixed --quiet "$svc:1.0.0"
+done
+
+# Local validate-security.sh (run scripts, NOT --ci first to see SKIPs)
+./scripts/validate-security.sh            # local: tolerates missing kubectl/trivy
+./scripts/validate-security.sh --ci       # CI mode: exit 1 on any missing tool
+
+# YAML + K8s schema validation
+yamllint -d "{rules: {line-length: disable}}" k8s/
+find k8s/ -name '*.yaml' ! -name 'values.yaml' ! -name 'crds.yaml' -print0 | \
+  xargs -0 kubeconform -strict -ignore-missing-schemas -kubernetes-version 1.28.0 \
+    -schema-location 'https://raw.githubusercontent.com/yannh/kubernetes-json-schema/master/master-standalone/{{.ResourceKind}}.json'
+
+# Vault on cluster (ONLY if cluster up)
+kubectl apply -f k8s/apps/base/namespace.yaml    # devops-platform ns (REQUIRED first for cross-ns RBAC)
+kubectl apply -f k8s/vault/manifests.yaml
+kubectl rollout status deploy/vault -n vault --timeout=120s
+VAULT_DEV_ROOT_TOKEN="$(head -c 32 /dev/urandom | base64 | tr -d '+/\n=' | head -c 64)" ./scripts/bootstrap-vault-secret.sh
+kubectl get secret vault-root-token -n devops-platform -o jsonpath='{.data.root-token}' | base64 -d   # confirm non-empty
+./scripts/validate-security.sh --ci             # checks 3 (Vault unsealed) + check 4 (token live)
+Phase 5 — GitOps + Istio + Flagger + hardened K8s manifests
+Stop. Before applying, the duplicate loose files in k8s/apps/ will conflict. Apply ONLY the canonical paths, or fix issue #7 first.
+# Apply ONLY the hardened canonical manifests (avoid the loose duplicates)
+kubectl apply -f k8s/apps/base/namespace.yaml
+kubectl apply -f k8s/apps/base/rbac.yaml
+kubectl apply -f k8s/apps/base/networkpolicies.yaml
+kubectl apply -f k8s/apps/base/pdbs.yaml
+kubectl apply -f k8s/apps/base/hpa.yaml
+kubectl apply -f k8s/apps/users/users-deployment.yaml
+kubectl apply -f k8s/apps/products/products-deployment.yaml
+kubectl apply -f k8s/apps/orders/orders-deployment.yaml
+kubectl apply -f k8s/apps/users/canary.yaml -f k8s/apps/products/canary.yaml -f k8s/apps/orders/canary.yaml
+kubectl apply -f k8s/apps/users/servicemonitor.yaml -f k8s/apps/products/servicemonitor.yaml -f k8s/apps/orders/servicemonitor.yaml
+
+# Rollout watch (expects ENVIRONMENT=production → services fail-closed UNTIL Vault seeded)
+kubectl rollout status -n devops-platform deploy/users-service deploy/products-service deploy/orders-service --timeout=120s
+kubectl get pods -n devops-platform -o wide
+kubectl get deploy -n devops-platform
+kubectl get networkpolicy,pdb,hpa -n devops-platform
+
+# Verify hardening actually applied
+kubectl get deploy users-service -n devops-platform -o jsonpath='{.spec.template.spec.securityContext}' ; echo
+kubectl get deploy users-service -n devops-platform -o jsonpath='{.spec.template.spec.containers[0].securityContext}' ; echo
+# Expect: runAsNonRoot=true, runAsUser=1000, seccompProfile=RuntimeDefault, readOnlyRootFilesystem=true, drop:ALL
+
+# Istio + Flagger (heavy — ~16k-line manifest)
+kubectl apply -f k8s/istio-flagger/istio/manifest.yaml
+kubectl apply -f k8s/istio-flagger/flagger/manifest.yaml
+kubectl rollout status deploy/istiod -n istio-system --timeout=300s
+kubectl rollout status deploy/flagger -n istio-system --timeout=300s
+kubectl logs -n istio-system deploy/flagger --tail=20 | grep -i prometheus   # expect NO connection-refused
+
+# ArgoCD GitOps
+kubectl apply -f k8s/argocd/project.yaml
+for f in k8s/argocd/app-*.yaml; do kubectl apply -f "$f"; done
+kubectl get appproj,argocd-app -n argocd
+kubectl get applications -A
+# Expect Synced + Healthy for each application
+Phase 6 — Observability stack
+# 1. CRDs FIRST (Prometheus Operator) — non-negotiable
+kubectl apply -f k8s/observability/prometheus/crds.yaml
+kubectl get crd | grep -E 'monitoring.coreos.com|alertmanager|prometheus|servicemonitor|prometheusrule'
+
+# 2. Namespace + quotas (separate from devops-platform)
+kubectl apply -f k8s/observability/base/namespace.yaml
+
+# 3. Prometheus operator + Prometheus + RBAC + Service
+kubectl apply -f k8s/observability/prometheus/
+kubectl rollout status deploy/prometheus-operator -n monitoring
+kubectl get prometheus -n monitoring
+
+# 4. Alertmanager + Grafana + dashboards + Loki + Promtail
+kubectl apply -f k8s/observability/alertmanager/
+kubectl apply -f k8s/observability/grafana/
+kubectl apply -f k8s/observability/grafana-dashboards/
+kubectl apply -f k8s/observability/loki/
+kubectl apply -f k8s/observability/promtail/
+
+# 5. SLO alert rules
+kubectl apply -f k8s/observability/rules/
+
+# Verifications (RAPPORT criteria)
+kubectl port-forward svc/prometheus -n monitoring 9090:9090     # → /-/healthy, Targets UP
+kubectl port-forward svc/grafana -n monitoring 3000:3000        # → 3 dashboards live
+kubectl port-forward svc/loki -n monitoring 3100:3100
+# Logs JSON: Grafana Explore → {service="users-service"} |= "ERROR"
+kubectl logs -n istio-system deploy/flagger | grep -i prometheus   # expect NO refused
+
+# Service metrics smoke (RAPPORT line 293)
+kubectl port-forward -n devops-platform svc/users-service 8001:80
+curl -s http://localhost:8001/metrics | grep -q http_request_duration_seconds_bucket && echo "histogram OK"
+
+# ArgoCD applications for observability
+kubectl apply -f k8s/argocd/app-observability-base.yaml
+kubectl apply -f k8s/argocd/app-prometheus.yaml
+kubectl apply -f k8s/argocd/app-alertmanager.yaml
+kubectl apply -f k8s/argocd/app-grafana.yaml
+kubectl apply -f k8s/argocd/app-grafana-dashboards.yaml
+kubectl apply -f k8s/argocd/app-loki.yaml
+kubectl apply -f k8s/argocd/app-promtail.yaml
+kubectl apply -f k8s/argocd/app-slo-rules.yaml
+Phase CI/CD — GitHub Actions
+# Trigger full pipeline (non-deploy stages)
+gh workflow run ci-cd.yml --ref main
+gh run watch
+gh run list --workflow=ci-cd.yml --limit 5
+
+# Manual deploy (protected environment "production")
+gh workflow run ci-cd.yml --ref main   # then approve in UI: Actions → CI/CD → Deploy
+
+# Verify required GitHub Secrets + Environment exist
+gh secret list
+gh api repos/:owner/:repo/environments --jq '.environments[].name'   # expect "production"
+
+# Pinned actions check (RAPPORT line 217)
+grep -E 'uses: ' .github/workflows/ci-cd.yml | grep -vE '@v[0-9]+'   # expect empty
+D. Remediation plan for the 4 real issues (for after plan mode)
+#	Issue
+1	terraform/terraform.tfstate, .backup, .terraform/terraform.tfstate, terraform/inventory.ini still git-tracked despite .gitignore
+2	app/{users,products,orders}-service/vault_client.py = old insecure copies (silent {} fallback), contradicting P1 unified-shared fix
+3	`
+4	Duplicate loose k8s manifests conflict with hardened base/ + per-service */ versions
+Before I implement any of this, confirm: I am still in plan mode so I have made zero changes. Say "go" + which of the 4 fixes (or all) and I will execute them in a follow-up.

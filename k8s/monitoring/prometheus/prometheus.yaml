@@ -1,0 +1,64 @@
+# Prometheus instance managed by Prometheus Operator.
+# serviceMonitorSelector: {} => picks up ALL ServiceMonitors in cluster.
+# ruleSelector:       {} => picks up ALL PrometheusRules.
+# retention 15d, PVC 10Gi.
+# Service named `prometheus` on port 9090 (Flagger points at this name cross-ns).
+---
+apiVersion: monitoring.coreos.com/v1
+kind: Prometheus
+metadata:
+  name: prometheus
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: prometheus
+    app.kubernetes.io/part-of: devops-platform
+spec:
+  image: quay.io/prometheus/prometheus:v2.51.0
+  version: v2.51.0
+  replicas: 1
+  serviceAccountName: prometheus
+  retention: 15d
+  retentionSize: 8GiB
+  scrapeInterval: 15s
+  evaluationInterval: 15s
+  enableFeatures:
+    - memory-snapshot-on-shutdown
+  serviceMonitorSelector: {}
+  serviceMonitorNamespaceSelector: {}
+  podMonitorSelector: {}
+  podMonitorNamespaceSelector: {}
+  ruleSelector: {}
+  ruleNamespaceSelector: {}
+  alerting:
+    alertmanagers:
+      - name: alertmanager
+        namespace: monitoring
+        port: http
+  resources:
+    requests:
+      cpu: 200m
+      memory: 512Mi
+    limits:
+      cpu: 1
+      memory: 1Gi
+  storage:
+    volumeClaimTemplate:
+      spec:
+        storageClassName: local-path
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 10Gi
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65534
+    fsGroup: 65534
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: prometheus
+      securityContext:
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: [ALL]
+        allowPrivilegeEscalation: false

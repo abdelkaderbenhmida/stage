@@ -1,0 +1,42 @@
+# Grafana datasources provisioning (auto-loaded at startup, no UI clicks).
+# Prometheus is default datasource (used by all dashboards in commit 8).
+# Logs are centralised through the ELK Stack (Elasticsearch, Logstash,
+# Kibana, Filebeat) — see k8s/monitoring/elk/. Kibana exposes its own
+# UI on port 5601; Grafana only consumes Prometheus for metrics here.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-datasources
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: grafana-datasources
+    app.kubernetes.io/part-of: devops-platform
+data:
+  prometheus.yaml: |
+    apiVersion: 1
+    datasources:
+      - name: Prometheus
+        type: prometheus
+        access: proxy
+        url: http://prometheus.monitoring.svc.cluster.local:9090
+        isDefault: true
+        jsonData:
+          timeInterval: "15s"
+  elasticsearch.yaml: |
+    apiVersion: 1
+    datasources:
+      - name: Elasticsearch-Logs
+        type: elasticsearch
+        access: proxy
+        url: http://elasticsearch.monitoring.svc.cluster.local:9200
+        database: "devops-platform-*"
+        jsonData:
+          timeField: "@timestamp"
+          esVersion: "8.14.0"
+          # kibana_system user can NOT read indices; reuse elastic for read-only.
+          # In production, create a dedicated `grafana_reader` role in ES.
+          esCustomData: '{"authType":"basic","withCredentials":true}'
+        secureJsonData:
+          basicAuthUser: "elastic"
+          basicAuthPassword: "${ELASTIC_PASSWORD}"

@@ -1,0 +1,129 @@
+Now I have a complete picture. Here is the summary:
+Full Deploy Flow Summary — DevOps Central Platform
+1. Infrastructure Provisioning (Terraform + Libvirt)
+No Makefile, Vagrantfile, or docker-compose exists at root. Infrastructure is provisioned in two layers:
+Terraform (terraform/main.tf) provisions VMs on a libvirt/KVM hypervisor:
+- Provider: dmacvicar/libvirt ~> 0.9 talking to qemu:///system.
+- Creates a private NAT network (libvirt_network) with configurable CIDR (default 192.168.56.0/24), DNS forwarders (1.1.1.1, 8.8.8.8), DHCP range.
+- Clones an Ubuntu 22.04 cloud image into per-node qcow2 volumes.
+- Provisions 1 master + N workers (default 2, range 1-32) with configurable vCPU (2), RAM (2048 MB), disk (20 GB).
+- Each VM gets a cloud-init ISO with:
+- Hardened SSH (ssh_pwauth: false, disable_root: true, PermitRootLogin no, restricted sudo for kubeadm/kubelet/containerd only, fail2ban installed).
+- Static IP from CIDR (master at .10, workers at .11+).
+- Automatic disk grow/fs resize.
+- Ansible inventory auto-generated (local_file.ansible_inventory → terraform/inventory.ini).
+- State backend: currently local (backend.tf documents S3 migration path). All *.tfstate* gitignored (P0 #4).
+Key variables (variables.tf): ssh_public_key marked sensitive = true (P0 #4), all outputs marked sensitive (P0 #4). Validations enforce RFC1918 CIDR, worker count 1-32, vCPU 1-16, memory 512-32768 MB, disk 8-1024 GB.
+2. Kubernetes Bootstrapping (Ansible)
+Ansible (ansible/playbook.yml) runs against the Terraform-provisioned VMs using the generated inventory. Galaxy-compliant roles with per-role defaults/main.yml + meta/main.yml.
+Steps (tags gated):
+Play	Hosts	Role
+docker	all	docker
+k8s	all	k8s_common
+master	masters	k8s_master
+worker	workers	k8s_worker
+reset	all	k8s_reset
+Group vars: K8s 1.28, Calico v3.26.1, pod CIDR 192.168.0.0/16, service CIDR 10.96.0.0/12, containerd socket at /run/containerd/containerd.sock.
+CNI: Calico (Tigera operator, not flannel/weave).
+3. Application Deployment (Kubectl + ArgoCD)
+Two deployment paths documented:
+Path A — direct kubectl (in AGENTS.md and CI deploy job):
+kubectl apply -f k8s/apps/base/namespace.yaml   # devops-platform NS + LimitRange + ResourceQuota
+kubectl apply -f k8s/vault/manifests.yaml        # Vault Deployment + Service + setup Job + RBAC
+scripts/bootstrap-vault-secret.sh                # Creates vault-root-token Secret out-of-band
+kubectl apply -f k8s/apps/base/                  # RBAC, HPA, NetworkPolicies, PDBs
+kubectl apply -f k8s/apps/users/, k8s/apps/products/, k8s/apps/orders/
+kubectl apply -f k8s/apps/<svc>/servicemonitor.yaml
+kubectl apply -f k8s/apps/<svc>/canary.yaml      # Flagger canary objects
+Path B — ArgoCD (declarative GitOps) (14 Application CRs in k8s/argocd/):
+All ArgoCD apps point at https://github.com/abdelkaderbenhmida/stage.git / main branch, with automated sync (prune+selfHeal), retry backoff, ServerSideApply.
+ArgoCD App	Path in repo
+devops-platform-base	k8s/apps/base
+users-service	k8s/apps/users
+products-service	k8s/apps/products
+orders-service	k8s/apps/orders
+observability-base	k8s/observability/base
+prometheus	k8s/observability/prometheus
+grafana	k8s/observability/grafana
+grafana-dashboards	k8s/observability/grafana-dashboards
+loki	k8s/observability/loki
+promtail	k8s/observability/promtail
+alertmanager	k8s/observability/alertmanager
+slo-rules	k8s/observability/rules
+istio-control-plane	k8s/istio-flagger/istio
+flagger	k8s/istio-flagger/flagger
+Vault secret management (per-service):
+- HashiCorp Vault deployed in vault namespace (dev mode, auto-unsealed).
+- Root token never committed — injected via scripts/bootstrap-vault-secret.sh using stdin-to-kubectl pattern.
+- Vault setup Job (one-shot) enables KV v2 at secret/, Kubernetes auth method, per-service policies (secret/data/devops-platform/<svc> read-only), per-service Vault roles bound to <svc>-sa ServiceAccounts with 1h TTL.
+- Apps reference VAULT_TOKEN from vault-root-token Secret with optional: false (fail-closed).
+- Apps have /livez (process check) vs /readyz (Vault-reachable check) split probes.
+- Each app has dedicated ServiceAccount (users-service-sa, products-service-sa, orders-service-sa).
+- NetworkPolicy default-deny + allow-list: app→Vault:8200, app→DNS:53, app→postgres:5432, Prometheus scrape ingress, intra-namespace.
+4. Observability Stack
+All in monitoring namespace. Components:
+Component	Implementation
+Prometheus Operator	prometheus-operator:v0.74.0
+Prometheus	Prometheus CR (operator-managed)
+ServiceMonitors	Per-service (k8s/apps/*/servicemonitor.yaml)
+Alertmanager	alertmanager.yaml (statefulset)
+Grafana	Deployment + kiwigrid/k8s-sidecar
+Grafana Dashboards	3 ConfigMaps under k8s/observability/grafana-dashboards/
+Loki	StatefulSet
+Promtail	DaemonSet (1 per node)
+SLO Rules	k8s/observability/rules/slo-rules.yaml
+Data flow: App /metrics → ServiceMonitor → Prometheus → Alertmanager (alerts) → Grafana (dashboards). App logs → Promtail (DaemonSet) → Loki → Grafana (Loki datasource plugin).
+5. Orchestration Scripts & CI/CD
+No root-level Makefile or docker-compose. Orchestration is layered:
+Scripts (scripts/):
+- bootstrap-vault-secret.sh: Creates/rotates vault-root-token Secret out-of-band. Generates random 64-char hex token if VAULT_DEV_ROOT_TOKEN unset. Pipes via stdin to avoid ps/disk exposure. Requires namespace pre-exists.
+- validate-security.sh: 4 checks — (1) Gitleaks full-history scan, (2) Trivy CRITICAL/HIGH scan on :latest images, (3) Vault initialized+unsealed via jq parsing, (4) Real Vault token authentication via vault token lookup in one-off pod. --ci mode fails on missing tools. Exits 1 on any failure.
+CI/CD (.github/workflows/ci-cd.yml — 370 lines):
+- Triggers: push to main/develop (with path filters on app/, k8s/, terraform/, ansible/, .github/, scripts/, .gitleaks.toml), PR, workflow_dispatch, nightly cron.
+- Concurrency: cancel-in-progress per ref.
+- Permissions: contents: read default, escalated per job.
+- Jobs (sequential where needed):
+Job	Needs
+lint	—
+gitleaks	—
+test	lint, gitleaks
+build	test
+trivy-scan	build
+terraform-validate	lint, gitleaks
+deploy	trivy-scan, terraform-validate
+Dependabot (.github/dependabot.yml): Weekly pip updates for all 4 Python dirs, monthly GitHub Actions, weekly Docker base images.
+How to run locally (from AGENTS.md verification section):
+# Build all three service images (context = app/ for shared/ access):
+for svc in users-service products-service orders-service; do
+  docker build -t "$svc:1.0.0" -f "app/$svc/Dockerfile" app/
+done
+
+# Deploy:
+kubectl apply -f k8s/apps/base/namespace.yaml
+kubectl apply -f k8s/vault/manifests.yaml
+scripts/bootstrap-vault-secret.sh
+kubectl apply -f k8s/apps/base/
+kubectl apply -f k8s/apps/users/ k8s/apps/products/ k8s/apps/orders/
+kubectl rollout status deploy/vault -n vault
+kubectl rollout status -n devops-platform deploy/users-service deploy/products-service deploy/orders-service
+End-to-End Flow Summary
+Terraform (libvirt provider)
+  → provisions 1 master + N workers (Ubuntu 22.04 KVM VMs)
+  → generates Ansible inventory
+
+Ansible playbook (4 sequential plays)
+  → Docker + containerd → K8s prerequisites → kubeadm init master → kubeadm join workers
+  → Calico CNI (Tigera operator)
+  → Cluster ready, ~/.kube/config on master
+
+Direct kubectl OR ArgoCD (GitOps)
+  → Namespace + quota + NetworkPolicy + RBAC + PDBs + HPA (k8s/apps/base/)
+  → Vault + setup Job + vault-root-token Secret (out-of-band bootstrap)
+  → Per-service Deployments (2 replicas, hardened security contexts)
+  → Istio CRDs + Flagger (canary deployments)
+  → ServiceMonitors → Prometheus Operator → Prometheus
+  → Loki + Promtail + Grafana + Alertmanager + SLO rules
+  → 3 FastAPI microservices running (users/products/orders) with Vault secret injection
+
+CI/CD (GitHub Actions)
+  → lint → gitleaks → test → build+publish to ghcr.io → trivy scan → deploy (manual gate)

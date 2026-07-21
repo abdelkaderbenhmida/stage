@@ -1,0 +1,230 @@
+# Logstash — receives beats input on 5044, forwards to Elasticsearch on 9200.
+# Parses the JSON stdout emitted by the FastAPI microservices (Phase 5
+# log_config.py) so Kibana can query `level`, `service`, `event` as fields.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: logstash
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: logstash
+    app.kubernetes.io/part-of: devops-platform
+---
+# Service — beats input (5044) + monitoring API (9600).
+apiVersion: v1
+kind: Service
+metadata:
+  name: logstash
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: logstash
+    app.kubernetes.io/part-of: devops-platform
+spec:
+  type: ClusterIP
+  ports:
+    - name: beats
+      port: 5044
+      targetPort: beats
+      protocol: TCP
+    - name: monitoring
+      port: 9600
+      targetPort: monitoring
+      protocol: TCP
+  selector:
+    app.kubernetes.io/name: logstash
+---
+# ConfigMap — logstash.yml + pipelines.yml + json-filter.conf.
+# Single pipeline: beats → json codec → mutate (index name per svc) → elasticsearch output.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: logstash-config
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: logstash
+    app.kubernetes.io/part-of: devops-platform
+data:
+  logstash.yml: |
+    http.host: "0.0.0.0"
+    http.port: 9600
+    pipeline.workers: 2
+    pipeline.batch.size: 125
+    queue.type: persisted
+    path.queue: /usr/share/logstash/queue
+  pipelines.yml: |
+    - pipeline.id: main
+      path.config: "/usr/share/logstash/pipeline/logstash.conf"
+  logstash.conf: |
+    input {
+      beats {
+        port => 5044
+        codec => plain { charset => "UTF-8" }
+      }
+    }
+
+    filter {
+      # The FastAPI json-logger emits one JSON object per line.
+      json {
+        source => "message"
+        target => "app"
+        remove_field => ["message"]
+      }
+
+      # Pull structured fields up to the top level for Kibana search.
+      mutate {
+        add_field => {
+          "service" => "%{[app][event]}"
+          "log_level" => "%{[app][level]}"
+        }
+      }
+
+      # Tag container logs with k8s metadata exposed by Filebeat.
+      if [kubernetes] {
+        mutate {
+          add_field => {
+            "pod_name" => "%{[kubernetes][pod][name]}"
+            "namespace" => "%{[kubernetes][namespace]}"
+            "container_name" => "%{[kubernetes][container][name]}"
+          }
+        }
+      }
+
+      # Drop probe noise — readiness/liveness logs pollute Kibana.
+      if "/livez" in [app][event] or "/readyz" in [app][event] {
+        drop {}
+      }
+    }
+
+    output {
+      elasticsearch {
+        hosts => ["http://elasticsearch.monitoring.svc.cluster.local:9200"]
+        user => "elastic"
+        password => "${ELASTIC_PASSWORD}"
+        index => "devops-platform-%{+YYYY.MM.dd}"
+        ilm_enabled => false
+        manage_template => false
+      }
+    }
+---
+# Secret ref — Logstash needs the elastic password to write to ES.
+# We re-use the elasticsearch-credentials Secret created in
+# elasticsearch/manifest.yaml instead of duplicating the value.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: logstash-elasticsearch-auth
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: logstash
+    app.kubernetes.io/part-of: devops-platform
+type: Opaque
+stringData:
+  # Reuse the same password as ELASTIC_PASSWORD — injected kubectl-side.
+  # DO NOT COMMIT REAL VALUE — bootstrap with bootstrap-elasticsearch-secret.sh.
+  ELASTIC_PASSWORD: "DO-NOT-COMMIT-INJECT-VIA-Scripts-bootstrap-elasticsearch-secret.sh"
+---
+# Deployment — 1 replica for 3-node dev cluster.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: logstash
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: logstash
+    app.kubernetes.io/part-of: devops-platform
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate  # Single pipeline writer — avoid dual-runner write race.
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: logstash
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: logstash
+        app.kubernetes.io/part-of: devops-platform
+    spec:
+      serviceAccountName: logstash
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: logstash
+          image: docker.elastic.co/logstash/logstash:8.14.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: beats
+              containerPort: 5044
+              protocol: TCP
+            - name: monitoring
+              containerPort: 9600
+              protocol: TCP
+          env:
+            - name: ELASTIC_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: logstash-elasticsearch-auth
+                  key: ELASTIC_PASSWORD
+                  optional: false
+            - name: LS_JAVA_OPTS
+              value: "-Xms256m -Xmx256m"
+          resources:
+            requests:
+              cpu: 100m
+              memory: 512Mi
+            limits:
+              cpu: 500m
+              memory: 1Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false  # queue + logs dirs need write
+            capabilities:
+              drop: ["ALL"]
+          readinessProbe:
+            httpGet:
+              path: /
+              port: monitoring
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /
+              port: monitoring
+            initialDelaySeconds: 90
+            periodSeconds: 30
+            timeoutSeconds: 5
+          volumeMounts:
+            - name: config
+              mountPath: /usr/share/logstash/config/logstash.yml
+              subPath: logstash.yml
+              readOnly: true
+            - name: config
+              mountPath: /usr/share/logstash/config/pipelines.yml
+              subPath: pipelines.yml
+              readOnly: true
+            - name: pipeline
+              mountPath: /usr/share/logstash/pipeline/logstash.conf
+              subPath: logstash.conf
+              readOnly: true
+            - name: queue
+              mountPath: /usr/share/logstash/queue
+            - name: logs
+              mountPath: /usr/share/logstash/logs
+      volumes:
+        - name: config
+          configMap:
+            name: logstash-config
+        - name: pipeline
+          configMap:
+            name: logstash-config
+        - name: queue
+          emptyDir: {}
+        - name: logs
+          emptyDir: {}

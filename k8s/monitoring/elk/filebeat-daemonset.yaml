@@ -1,0 +1,202 @@
+# Filebeat — DaemonSet tailing /var/log/containers/*.log on every node,
+# forwarding to Logstash on port 5044 (per Phase 6 spec).
+# Uses autodiscovery to enrich logs with pod labels (namespace, container, svc).
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: filebeat
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: filebeat
+    app.kubernetes.io/part-of: devops-platform
+---
+# RBAC — Filebeat needs to query the kube-apiserver for pod metadata.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: filebeat
+  labels:
+    app.kubernetes.io/name: filebeat
+    app.kubernetes.io/part-of: devops-platform
+rules:
+  - apiGroups: [""]
+    resources: ["namespaces", "nodes", "pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["replicasets"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: filebeat
+  labels:
+    app.kubernetes.io/name: filebeat
+    app.kubernetes.io/part-of: devops-platform
+subjects:
+  - kind: ServiceAccount
+    name: filebeat
+    namespace: monitoring
+roleRef:
+  kind: ClusterRole
+  name: filebeat
+  apiGroup: rbac.authorization.k8s.io
+---
+# ConfigMap — filebeat.yml + autodiscover rules + processors.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: filebeat-config
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: filebeat
+    app.kubernetes.io/part-of: devops-platform
+data:
+  filebeat.yml: |
+    filebeat.config:
+      inputs:
+        path: ${path.config}/inputs.d/*.yml
+        reload.enabled: false
+
+    filebeat.autodiscover:
+      providers:
+        - type: kubernetes
+          hints.enabled: true
+          node: ${NODE_NAME}
+          # Only tail containers matching the devops-platform workloads.
+          templates:
+            - condition:
+                contains:
+                  kubernetes.labels.app_kubernetes_io/part-of: "devops-platform"
+              config:
+                - type: container
+                  paths:
+                    - /var/log/containers/*${data.kubernetes.container.id}*.log
+
+    processors:
+      - add_kubernetes_metadata:
+          host: ${NODE_NAME}
+          matchers:
+            - logs_path:
+                logs_path: "/var/log/containers/"
+      - drop_fields:
+          fields:
+            - agent.ephemeral_id
+            - agent.id
+            - agent.type
+            - agent.version
+            - ecs.version
+            - host.mac
+            - input.type
+            - log.file.path
+            - log.offset
+            - stream
+          ignore_missing: true
+
+    output.logstash:
+      hosts: ["logstash.monitoring.svc.cluster.local:5044"]
+      loadbalance: true
+      worker: 2
+
+    # Block-level: when Logstash is down, hold the events in the spooler
+    # (default 2048 events) rather than dropping them.
+    queue.mem:
+      events: 4096
+      flush.min_events: 1024
+      flush.timeout: 5s
+
+    # Slow log + JSON stdout to /var/log/filebeat for debugging.
+    logging.level: info
+    logging.to_files: false
+    logging.to_stderr: true
+    logging.json: true
+---
+# DaemonSet — one Filebeat pod per node, hostPath-mounted /var/log.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: filebeat
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: filebeat
+    app.kubernetes.io/part-of: devops-platform
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: filebeat
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: filebeat
+        app.kubernetes.io/part-of: devops-platform
+    spec:
+      serviceAccountName: filebeat
+      securityContext:
+        runAsNonRoot: false  # Filebeat needs to read root-owned container logs
+        seccompProfile:
+          type: RuntimeDefault
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: filebeat
+          image: docker.elastic.co/beats/filebeat:8.14.0
+          imagePullPolicy: IfNotPresent
+          args:
+            - "-c"
+            - "/etc/filebeat/filebeat.yml"
+            - "-e"
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          resources:
+            requests:
+              cpu: 10m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+          securityContext:
+            runAsUser: 0
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false  # data + spooler dirs
+            capabilities:
+              drop: ["ALL"]
+          livenessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - |
+                  LB=$(cat /proc/loadavg | awk '{print $1}')
+                  awk -v lb="$LB" 'BEGIN { exit (lb > 100.0) }'
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          volumeMounts:
+            - name: config
+              mountPath: /etc/filebeat
+              readOnly: true
+            - name: varlog
+              mountPath: /var/log
+              readOnly: true
+            - name: varlibdockercontainers
+              mountPath: /var/lib/docker/containers
+              readOnly: true
+            - name: data
+              mountPath: /var/lib/filebeat-data
+      volumes:
+        - name: config
+          configMap:
+            name: filebeat-config
+            defaultMode: 0640
+        - name: varlog
+          hostPath:
+            path: /var/log
+            type: Directory
+        - name: varlibdockercontainers
+          hostPath:
+            path: /var/lib/docker/containers
+            type: Directory
+        - name: data
+          emptyDir: {}
