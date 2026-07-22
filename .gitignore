@@ -53,6 +53,7 @@ autopilot.log
 vigolium-report.html
 semgrep-findings-report.md
 findings.md
+RAPPORT_*.md
 trivy-*.json
 sbom-*.json
 
@@ -61,6 +62,17 @@ sbom-*.json
 .envrc
 .env.*
 !.env.example
-istio-*.tar.gz
+
+# Orphan test/debug files
+aa
+tt
+test
+
+# Helm archives
 flagger-*.tar.gz
 helm-*.tar.gz
+graphify-out/
+files.md/
+.opencode/
+# Archived working files — kept locally but not versioned
+archive/
