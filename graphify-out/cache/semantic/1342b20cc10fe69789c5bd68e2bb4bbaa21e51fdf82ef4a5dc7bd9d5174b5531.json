@@ -1,1 +1,0 @@
-{"nodes": [{"id": "ansible_roles_k8s_common_swap_disable", "label": "Disable Swap (K8s Prerequisite)", "file_type": "document", "source_file": "ansible/roles/k8s_common/meta/main.yml", "source_location": null, "source_url": null, "captured_at": null, "author": null, "contributor": null}], "edges": [], "hyperedges": []}
