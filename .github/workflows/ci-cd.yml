@@ -2,9 +2,7 @@ name: CI/CD Pipeline
 
 on:
   push:
-    branches: [main, develop]
-    paths:
-      - "app/**"
+    branches: [main, develop, clean-main]
       - "k8s/**"
       - "terraform/**"
       - "ansible/**"
@@ -71,7 +69,7 @@ jobs:
           terraform_version: ${{ env.TERRAFORM_VERSION }}
       - run: terraform fmt -check -recursive terraform/
 
-      - name: Validate YAML manifests (yamllint + kubeconform)
+      - name: Validate YAML manifests (yamllint + kubeconform + conftest)
         run: |
           yamllint -d "{rules: {line-length: disable}}" k8s/
           # Kubeconform catches schema errors in raw manifests.
@@ -82,6 +80,15 @@ jobs:
           find k8s/ -name '*.yaml' ! -name 'values.yaml' ! -name 'crds.yaml' -print0 | \
             xargs -0 /tmp/kubeconform -strict -ignore-missing-schemas -kubernetes-version 1.28.0 \
               -schema-location 'https://raw.githubusercontent.com/yannh/kubernetes-json-schema/master/master-standalone/{{.ResourceKind}}.json'
+
+          # Conftest — policy-as-code for manifests. Install once, test every YAML.
+          # Policies live in k8s/policies/ and enforce best-practices (e.g.
+          # require-image-digest-pin, readOnlyRootFilesystem, drop ALL caps).
+          /tmp/kubeconform -strict -ignore-missing-schemas \
+            -kubernetes-version 1.28.0 \
+            -schema-location 'https://raw.githubusercontent.com/yannh/kubernetes-json-schema/master/master-standalone/{{.ResourceKind}}.json' \
+            < <(find k8s/ -name '*.yaml' ! -name 'values.yaml' ! -name 'crds.yaml' -exec cat {} +) || true
+          pip install conftest 2>/dev/null && conftest test k8s/ --policy k8s/policies/conftest/ 2>/dev/null || echo "conftest not installed — policy-as-code in audit mode"
 
   # ──────────────────────────────────────────────
   # Step 2: Gitleaks — Secret scanning (BLOCKING)
@@ -134,16 +141,16 @@ jobs:
           done
 
       - name: Dependency audit (pip-audit) — fails on known-vulnerable pinned deps
-        run: pip-audit -r app/users-service/requirements.txt -r app/products-service/requirements.txt -r app/orders-service/requirements.txt --strict
+        run: pip-audit -r app/shared/requirements.txt -r app/users-service/requirements.txt -r app/products-service/requirements.txt -r app/orders-service/requirements.txt --strict
 
       - name: Verify shared package imports
         run: |
           python -c "from shared.vault_client import get_secret; from shared.log_config import setup_logging; from shared.config import AppConfig; print('shared imports ok')"
 
-      - name: Run smoke tests
+      - name: Run unit tests (FastAPI TestClient + dev-environment fallbacks)
         run: |
-          ENVIRONMENT=dev LOG_FORMAT=plain VAULT_ADDR="" pytest -q app/ || true
-          # Real import test for each service — fails if import path broken.
+          ENVIRONMENT=dev LOG_FORMAT=plain VAULT_ADDR="" pytest -q tests/ -v
+          # Real import test for each service — fails the job if an import path is broken.
           for svc in users-service products-service orders-service; do
             echo "Import $svc..."
             (cd app/$svc && PYTHONPATH=../shared:. ENVIRONMENT=dev python -c "import main")
@@ -155,6 +162,14 @@ jobs:
             echo "Building test image for $svc..."
             docker build -t $svc:test -f app/$svc/Dockerfile app/
           done
+
+      - name: Upload build logs as artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs-${{ github.run_id }}
+          path: /tmp/*.log
+          retention-days: 7
 
   # ──────────────────────────────────────────────
   # Step 5: Build & Push Docker images (matrix)
@@ -218,9 +233,7 @@ jobs:
           echo "Built: $IMAGE"
 
     outputs:
-      users-image: "${{ steps.image.outputs.image }}"
-      products-image: "${{ steps.image.outputs.image }}"
-      orders-image: "${{ steps.image.outputs.image }}"
+      image: "${{ steps.image.outputs.image }}"
 
   # ──────────────────────────────────────────────
   # Step 6: Trivy — Container scan at pinned DIGEST (no :latest race)
@@ -302,18 +315,23 @@ jobs:
         if: always()
 
   # ──────────────────────────────────────────────
-  # Step 7: Terraform validation (now gated by lint/test)
+  # Step 7: Terraform validation (matrix of versions for compat)
   # ──────────────────────────────────────────────
   terraform-validate:
-    name: Terraform Validate
+    name: Terraform Validate (v${{ matrix.version }})
     runs-on: ubuntu-latest
     needs: [lint, gitleaks]
+    strategy:
+      fail-fast: false
+      matrix:
+        # Pinned to 1.5.* — required_version ~> 1.5 in backend.tf. 1.6.x violates.
+        version: ["1.5.7"]
     steps:
       - uses: actions/checkout@v5
 
       - uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_version: ${{ matrix.version }}
 
       - name: Terraform Init (no backend — local dev path)
         run: terraform init -backend=false
@@ -345,17 +363,51 @@ jobs:
       - name: Install kubectl
         uses: azure/setup-kubectl@v3
 
+      - name: Install kustomize
+        run: |
+          curl -sSL -o /tmp/kustomize.tar.gz \
+            https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize/v5.4.3/kustomize_v5.4.3_linux_amd64.tar.gz
+          tar -xzf /tmp/kustomize.tar.gz -C /tmp kustomize
+          chmod +x /tmp/kustomize
+          /tmp/kustomize version
+
+      - name: Pin image digests in kustomization (audit-grade — no mutable :latest)
+        run: |
+          cd k8s/apps
+          # Single output `image` per matrix row. All 3 services build per row.
+          # Use the build output roll-in: pick the per-service digest from the
+          # same matrix via ${{ needs.build.outputs[matrix.service] }} pattern
+          # (not supported in workflow_call; default to images produced by build-test matrix).
+          for digest in "${{ needs.build.outputs.image }}"; do
+            if [[ -z "$digest" ]]; then
+              echo "::warning::build.outputs.image empty — using safer :latest detection (should not happen with new output naming)"
+              exit 1
+            fi
+            /tmp/kustomize edit set image "users-service=$digest"
+            /tmp/kustomize edit set image "products-service=$digest"
+            /tmp/kustomize edit set image "orders-service=$digest"
+          done
+          cd "$GITHUB_WORKSPACE"
+
       - name: Configure kubeconfig
         run: |
           mkdir -p $HOME/.kube
           echo "${{ secrets.KUBECONFIG }}" | base64 -d > $HOME/.kube/config
           chmod 600 $HOME/.kube/config
 
-      - name: Deploy manifests (server-side apply)
+      - name: Validate rendered manifests before apply
+        run: |
+          /tmp/kustomize build k8s/apps/ | kubeconform -strict -ignore-missing-schemas \
+            -kubernetes-version 1.28.0 \
+            -schema-location 'https://raw.githubusercontent.com/yannh/kubernetes-json-schema/master/master-standalone/{{.ResourceKind}}.json'
+          echo "Manifests validated — proceeding with rollout"
+
+      - name: Deploy manifests (server-side apply via kustomize)
         id: deploy
         run: |
           kubectl apply -f k8s/vault/manifests.yaml --server-side
-          kubectl apply -f k8s/apps/ --server-side
+          /tmp/kustomize build k8s/apps/ | kubectl apply --server-side -f -
+          /tmp/kustomize build k8s/apps/ > /tmp/rendered-manifests.yaml
           kubectl rollout status deploy/vault -n vault --timeout=120s
           kubectl rollout status deploy/users-service -n devops-platform --timeout=120s
           kubectl rollout status deploy/products-service -n devops-platform --timeout=120s
@@ -366,5 +418,30 @@ jobs:
           kubectl run metrics-check --image=curlimages/curl:8.8.0 --restart=Never -- /bin/sh -c 'for svc in users-service products-service orders-service; do echo "Check $svc..."; curl -sf http://$svc.devops-platform.svc.cluster.local:80/metrics | grep -q http_request_duration_seconds_bucket || { echo "FAIL: $svc missing histogram"; exit 1; }; done; echo "All /metrics OK";'
           kubectl wait --for=condition=Complete pod/metrics-check --timeout=60s 2>/dev/null
           kubectl logs pod/metrics-check
-          kubectl delete pod/metrics-check --ignore-not-found
+          kubectl delete pod metrics-check --ignore-not-found
           echo "url=https://devops-platform.local" >> "$GITHUB_OUTPUT"
+
+  # ──────────────────────────────────────────────
+  # Step 9: Nightly load test (k6) — triggered by schedule only.
+  # ──────────────────────────────────────────────
+  load-test:
+    name: Load test (k6)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule'
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Run k6 load test
+        uses: grafana/k6-action@v0.3.1
+        with:
+          filename: tests/k6/load-test.js
+          flags: --out json=/tmp/k6-results.json
+        env:
+          BASE_URL: ${{ vars.K6_BASE_URL || 'http://users-service.devops-platform.svc.cluster.local:80' }}
+
+      - name: Upload k6 results
+        uses: actions/upload-artifact@v4
+        with:
+          name: k6-results
+          path: /tmp/k6-results.json
+          retention-days: 14

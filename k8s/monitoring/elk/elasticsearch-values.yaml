@@ -142,16 +142,19 @@ spec:
         # ES refuses to start with vm.max_map_count < 262144 — privileged
         # initContainer bumps it on the host. Removed in managed cloud / EKS
         # where nodeAMI already sets it.
-        - name: sysctl
-          image: busybox:1.36.1
-          securityContext:
-            runAsUser: 0
-            privileged: true
-            capabilities:
-              drop: ["ALL"]
-              add: ["SYS_CHROOT"]
-            allowPrivilegeEscalation: false
-          command: ["sh", "-c", "sysctl -w vm.max_map_count=262144"]
+        # WARNING: vm.max_map_count must be set manually on node before deploy:
+        #   sudo sysctl -w vm.max_map_count=262144
+        #   echo "vm.max_map_count=262144" | sudo tee -a /etc/sysctl.conf
+        # - name: sysctl
+        #   image: busybox:1.36.1
+        #   securityContext:
+        #     runAsUser: 0
+        #     privileged: true
+        #     capabilities:
+        #       drop: ["ALL"]
+        #       add: ["SYS_CHROOT"]
+        #     allowPrivilegeEscalation: false
+        #   command: ["sh", "-c", "sysctl -w vm.max_map_count=262144"]
       containers:
         - name: elasticsearch
           image: docker.elastic.co/elasticsearch/elasticsearch:8.14.0

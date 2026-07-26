@@ -8,12 +8,22 @@ metadata:
     app.kubernetes.io/part-of: devops-platform
   finalizers:
     - resources-finalizer.argocd.argoproj.io
+  annotations:
+    argocd.argoproj.io/sync-wave: "25"
 spec:
   project: devops-platform
   source:
+    # Phase 5 / cahier des charges §3: Grafana deployed via official Helm chart
+    # (grafana/grafana v8.0.0) wrapped in a local umbrella chart
+    # (k8s/monitoring/grafana/Chart.yaml). values.yaml configures datasources +
+    # dashboard provider + references the 4 spec'd dashboards (overview/perf/
+    # errors/infra-detail) provisioned from k8s/monitoring/grafana/dashboards/.
     repoURL: https://github.com/abdelkaderbenhmida/stage.git
     targetRevision: main
     path: k8s/monitoring/grafana
+    helm:
+      valueFiles:
+        - values.yaml
   destination:
     server: https://kubernetes.default.svc
     namespace: monitoring

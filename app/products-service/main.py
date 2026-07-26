@@ -16,7 +16,7 @@ Instrumentator(
     should_group_status_codes=True,
     should_ignore_untemplated=True,
     should_respect_env_var=False,
-    excluded_handlers=["/healthz", "/readyz", "/metrics"],
+    excluded_handlers=["/livez", "/readyz", "/metrics"],
 ).instrument(app).expose(app, endpoint="/metrics", include_in_schema=False)
 
 
@@ -33,7 +33,7 @@ def _load_secrets() -> None:
         API_KEY = None
     if not DATABASE_URL:
         if is_dev:
-            DATABASE_URL = "sqlite:///./products.db"
+            DATABASE_URL = "sqlite:///file::memory:?cache=shared&uri=true"
             _LOG.warning("secret.default_used", extra={"event": "secret.default_used", "secret_name": "DATABASE_URL"})
         else:
             raise SystemExit("DATABASE_URL missing in Vault; refusing to start in production.")
@@ -76,11 +76,6 @@ def readyz():
         status_code=200 if health.get("reachable") else 503,
         content={"service": "products", "vault": health},
     )
-
-
-@app.get("/health")
-def health():
-    return readyz()
 
 
 @app.get("/products")

@@ -78,16 +78,27 @@ fi
 
 apply_secret() {
   local name="$1" key="$2" value="$3"
-  # Use process substitution so the plaintext name=value never appears on the
-  # command-line (which would leak via `ps` to other users).
+  # Avoid `--from-literal` which puts the plaintext on argv (visible via `ps`).
+  # Instead pipe the YAML body via stdin: write to a temp file in mktemp, then
+  # `kubectl apply -f <temp>` and remove the file in a trap-style cleanup.
+  # kubectl's --from-file requires the value to live on disk somewhere we
+  # control the permissions on. mktemp-derived tmp file is created with 0600.
   if $DRY_RUN; then
     echo "kubectl -n \"$NAMESPACE\" create secret generic \"$name\" \
       --from-literal=$key=\"<REDACTED>\" --dry-run=client -o yaml | kubectl apply -f -"
     return
   fi
-  kubectl -n "$NAMESPACE" create secret generic "$name" \
-    --from-literal="$key=$value" --dry-run=client -o yaml \
-    | kubectl apply -f - >/dev/null
+  local tmpfile
+  tmpfile=$(mktemp /tmp/elk-secret.XXXXXX.yaml)
+  trap 'rm -f -- "$tmpfile"' RETURN INT TERM
+  # Build YAML by rendering the literal value via stdin (no argv) using cat.
+  {
+    printf 'apiVersion: v1\nkind: Secret\nmetadata:\n  name: "%s"\n  namespace: "%s"\ntype: Opaque\nstringData:\n  %s: "%s"\n' \
+      "$name" "$NAMESPACE" "$key" "$value"
+  } > "$tmpfile"
+  kubectl -n "$NAMESPACE" apply -f "$tmpfile" >/dev/null
+  rm -f -- "$tmpfile"
+  trap - RETURN INT TERM
 }
 
 # Apply the three Secrets that ELK manifests reference.

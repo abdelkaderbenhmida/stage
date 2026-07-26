@@ -4,8 +4,7 @@
 # Install: helm install grafana grafana/grafana -f k8s/monitoring/grafana/values.yaml -n monitoring
 
 adminUser: admin
-# важ: override at install with --set adminPassword=... (never commit a real password).
-adminPassword: changeme-default
+adminPassword: INJECT-VIA-HELM-SET-OR-SECRET-DO-NOT-COMMIT
 
 persistence:
   enabled: true
@@ -22,11 +21,13 @@ datasources:
         url: http://prometheus.monitoring.svc.cluster.local:9090
         isDefault: true
         editable: true
-      - name: Loki
-        type: loki
-        access: proxy
-        url: http://loki.monitoring.svc.cluster.local:3100
-        editable: true
+      # Loki datasource commented — not deployed in this stack (ELK handles logs).
+      # Uncomment when loki is added to the monitoring suite.
+      # - name: Loki
+      #   type: loki
+      #   access: proxy
+      #   url: http://loki.monitoring.svc.cluster.local:3100
+      #   editable: true
 
 dashboardProviders:
   dashboardproviders.yaml:
@@ -42,8 +43,9 @@ dashboardProviders:
           path: /var/lib/grafana/dashboards/devops-platform
 
 dashboards:
-  # The 3 spec'd dashboards are provisioned from
-  # k8s/monitoring/grafana/dashboards/*.json (or ConfigMaps in grafana-dashboards/)
+  # The 4 spec'd dashboards (cahier des charges §6 + Phase 5) are provisioned
+  # from k8s/monitoring/grafana/dashboards/*.yaml (ConfigMaps the sidecar
+  # watches via label grafana_dashboard=1).
   devops-platform:
     infra-overview:
       file: dashboards/01-infra-overview.json
@@ -51,6 +53,8 @@ dashboards:
       file: dashboards/02-app-performance.json
     error-rate:
       file: dashboards/03-error-rate.json
+    infra-detail:
+      file: dashboards/04-infra-detail.json
 
 resources:
   requests:

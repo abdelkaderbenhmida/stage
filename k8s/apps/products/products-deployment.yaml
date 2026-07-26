@@ -1,10 +1,10 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: users-service
+  name: products-service
   namespace: devops-platform
   labels:
-    app.kubernetes.io/name: users-service
+    app.kubernetes.io/name: products-service
     app.kubernetes.io/part-of: devops-platform
     app.kubernetes.io/managed-by: kubectl
 spec:
@@ -16,11 +16,11 @@ spec:
       maxSurge: 1
   selector:
     matchLabels:
-      app.kubernetes.io/name: users-service
+      app.kubernetes.io/name: products-service
   template:
     metadata:
       labels:
-        app.kubernetes.io/name: users-service
+        app.kubernetes.io/name: products-service
         app.kubernetes.io/part-of: devops-platform
         # Flagger: required to split primary vs. canary traffic.
         app.kubernetes.io/version: primary
@@ -29,36 +29,34 @@ spec:
         prometheus.io/port: "8000"
         prometheus.io/path: "/metrics"
     spec:
-      serviceAccountName: users-service-sa  # P1: dedicated SA, least-privilege.
-      automountServiceAccountToken: true
+      serviceAccountName: products-service-sa
+      automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
-        runAsUser: 1000           # P1: explicit non-root UID (matches appuser in image).
+        runAsUser: 1000
         runAsGroup: 1000
         fsGroup: 1000
         seccompProfile:
-          type: RuntimeDefault    # P1: enforce kernel seccomp filter.
-      topologySpreadConstraints:  # P1: spread replicas across nodes for HA.
+          type: RuntimeDefault
+      topologySpreadConstraints:
         - maxSkew: 1
           topologyKey: kubernetes.io/hostname
           whenUnsatisfiable: ScheduleAnyway
           labelSelector:
             matchLabels:
-              app.kubernetes.io/name: users-service
+              app.kubernetes.io/name: products-service
       affinity:
-        podAntiAffinity:  # P1: prefer replicas on different nodes.
+        podAntiAffinity:
           preferredDuringSchedulingIgnoredDuringExecution:
             - weight: 100
               podAffinityTerm:
                 labelSelector:
                   matchLabels:
-                    app.kubernetes.io/name: users-service
+                    app.kubernetes.io/name: products-service
                 topologyKey: kubernetes.io/hostname
       containers:
-        - name: users-service
-          # Local image built + imported on each worker (offline dev cluster).
-          # For production, replace with registry image pinned by digest.
-          image: users-service:latest
+        - name: products-service
+          image: products-service:latest
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
@@ -66,14 +64,14 @@ spec:
               protocol: TCP
           securityContext:
             allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: true  # P1: read-only FS guards tmp writes.
+            readOnlyRootFilesystem: true
             capabilities:
               drop: ["ALL"]
           env:
             - name: SERVICE_NAME
-              value: "users-service"
+              value: "products-service"
             - name: ENVIRONMENT
-              value: "production"  # P0 #3: fail-fast on missing secret in prod.
+              value: "production"
             - name: VAULT_ADDR
               value: "http://vault-service.vault.svc.cluster.local:8200"
             - name: VAULT_TOKEN
@@ -81,7 +79,7 @@ spec:
                 secretKeyRef:
                   name: vault-root-token
                   key: root-token
-                  optional: false  # P0: fail-closed — refuse to start without the token.
+                  optional: false
             - name: LOG_FORMAT
               value: "json"
           resources:
@@ -91,7 +89,7 @@ spec:
             limits:
               cpu: "250m"
               memory: "256Mi"
-          startupProbe:  # P1: startup probe before liveness kicks in.
+          startupProbe:
             httpGet:
               path: /livez
               port: http
@@ -115,7 +113,7 @@ spec:
             failureThreshold: 3
           volumeMounts:
             - name: tmp
-              mountPath: /tmp  # writable tmp for readOnlyRootFilesystem.
+              mountPath: /tmp
       volumes:
         - name: tmp
           emptyDir: {}

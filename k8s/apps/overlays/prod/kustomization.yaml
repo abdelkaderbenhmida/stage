@@ -1,0 +1,63 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Production overlay — digest-pinned images (immutable), 3 replicas for HA,
+# strict network policies + anti-affinity enforced.
+
+namespace: production
+resources:
+  - ../../base
+  - namespace.yaml
+
+# Production overrides: stricter PDB + replicas.
+patches:
+  - target:
+      kind: Deployment
+      name: users-service
+    patch: |
+      - op: replace
+        path: /spec/replicas
+        value: 3
+  - target:
+      kind: PodDisruptionBudget
+      name: users-service-pdb
+    patch: |
+      - op: replace
+        path: /spec/minAvailable
+        value: 2
+  - target:
+      kind: Deployment
+      name: products-service
+    patch: |
+      - op: replace
+        path: /spec/replicas
+        value: 3
+  - target:
+      kind: Deployment
+      name: orders-service
+    patch: |
+      - op: replace
+        path: /spec/replicas
+        value: 3
+  - target:
+      kind: PodDisruptionBudget
+      name: products-service-pdb
+    patch: |
+      - op: replace
+        path: /spec/minAvailable
+        value: 2
+  - target:
+      kind: PodDisruptionBudget
+      name: orders-service-pdb
+    patch: |
+      - op: replace
+        path: /spec/minAvailable
+        value: 2
+
+images:
+  - name: users-service
+    newTag: digest-staging
+  - name: products-service
+    newTag: digest-staging
+  - name: orders-service
+    newTag: digest-staging

@@ -63,3 +63,43 @@ spec:
           annotations:
             summary: "5xx error rate > 1% on {{ $labels.handler }}"
             description: "Endpoint {{ $labels.handler }} is returning {{ printf \"%.2f\" $value }}% 5xx errors (SLO ≤ 1%)."
+    # ── Incident 1: container memory usage ratio > 80% (noisy-neighbour / OOMKill early warning) ──
+    # Compares working-set against the spec memory limit. Fires before kubelet eviction.
+    - name: platform-resource-saturation
+      interval: 30s
+      rules:
+        - alert: ContainerMemoryRatioHigh
+          expr: |
+            sum by(pod, namespace) (container_memory_working_set_bytes)
+              / sum by(pod, namespace) (container_spec_memory_limit_bytes > 0)
+              * 100 > 80
+          for: 2m
+          labels:
+            severity: warning
+            incident: "1"
+          annotations:
+            summary: "Memory usage > 80% of limit on {{ $labels.pod }}"
+            description: "Pod {{ $labels.pod }} (ns {{ $labels.namespace }}) memory ratio is {{ printf \"%.1f\" $value }}% — noisy-neighbour / eviction risk (Incident 1)."
+        - alert: PodEvictionOngoing
+          expr: kube_pod_container_status_last_terminated_reason{reason="OOMKilled"} > 0
+          for: 1m
+          labels:
+            severity: critical
+            incident: "1"
+          annotations:
+            summary: "OOMKilled pod detected — {{ $labels.pod }}"
+            description: "Pod {{ $labels.pod }} (ns {{ $labels.namespace }}) was OOMKilled — LimitRange/requests/limits need review."
+    # ── Incident 9: HPA pinned at maxReplicas for >15m (cost runaway / leak-driven scale-up) ──
+    - name: platform-hpa-runaway
+      interval: 30s
+      rules:
+        - alert: HPAPinnedAtMaxReplicas
+          expr: |
+            kube_hpa_status_current_replicas == kube_hpa_spec_max_replicas
+          for: 15m
+          labels:
+            severity: warning
+            incident: "9"
+          annotations:
+            summary: "HPA {{ $labels.hpa }} at maxReplicas for >15m"
+            description: "HPA {{ $labels.hpa }} (ns {{ $labels.namespace }}) pinned at maxReplicas — possible memory leak driving scale-up (Incident 9). Check app + alert mirrors cost-saturation."

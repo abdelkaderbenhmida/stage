@@ -7,8 +7,8 @@ metadata:
   labels:
     app.kubernetes.io/name: vault
     app.kubernetes.io/part-of: devops-platform
-    # Pod Security Admission: baseline is enforced because Vault needs
-    # IPC_LOCK + CAP_SETFCAP which the restricted profile disallows.
+    # Pod Security Admission: enforce=baseline. Vault needs root for
+    # IPC_LOCK + mlock which restricted disallows.
     # DEV-ONLY override — production must tune the Vault Deployment
     # securityContext explicitly rather than relaxing the namespace.
     pod-security.kubernetes.io/enforce: baseline
@@ -35,7 +35,7 @@ spec:
       protocol: TCP
     - name: vault-metrics
       port: 8201
-      targetPort: vault-api
+      targetPort: vault-metrics
       protocol: TCP
   type: ClusterIP
 ---
@@ -79,18 +79,17 @@ spec:
     spec:
       serviceAccountName: vault-sa  # Wire the SA that was previously unused.
       automountServiceAccountToken: true  # Needed for Kubernetes auth method.
-      # DEV ONLY — Vault image needs CAP_SETFCAP which libvirt nested virt
-      # blocks for non-root UIDs. We accept running as root inside the
-      # container because the Pod is in the dedicated `vault` namespace
-      # with pod-security.kubernetes.io/enforce=privileged (set above).
-      # Production requirement: adjust the Vault Deployment to run as
-      # non-root + harden the host OS to grant CAP_SETFCAP properly.
+      # DEV ONLY — Vault needs CAP_SETFCAP which libvirt nested virt blocks
+      # for non-root UIDs. runAsUser:0 also required for Vault to bind
+      # privileged port 8200 in dev mode. Production: run as non-root
+      # + harden host OS to grant CAP_SETFCAP properly.
+      # Pod Security Admission: namespace enforce=baseline (line 14).
       securityContext:
-        runAsUser: 0
-        runAsGroup: 0
-        fsGroup: 0
-        seccompProfile:
-          type: RuntimeDefault
+         runAsUser: 0
+         runAsGroup: 0
+         fsGroup: 0
+         seccompProfile:
+           type: RuntimeDefault
       terminationGracePeriodSeconds: 10
       containers:
         - name: vault
@@ -109,6 +108,9 @@ spec:
           ports:
             - name: vault-api
               containerPort: 8200
+              protocol: TCP
+            - name: vault-metrics
+              containerPort: 8201
               protocol: TCP
           env:
             - name: VAULT_ADDR
@@ -134,10 +136,12 @@ spec:
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: false  # Vault writes to /vault/data.
+            seccompProfile:
+              type: RuntimeDefault
             capabilities:
-              # Only drop NET_RAW; keep others so Vault can set file caps
-              # in the libvirt nested-virt dev environment.
-              drop: ["NET_RAW"]
+              drop: ["ALL"]
+              # Vault needs CAP_SETFCAP in nested-virt dev env.
+              add: ["IPC_LOCK", "NET_RAW"]
           livenessProbe:
             httpGet:
               path: /v1/sys/health?standbyok=true
@@ -148,7 +152,7 @@ spec:
             timeoutSeconds: 5
           readinessProbe:
             httpGet:
-              path: /v1/sys/health?standbyok=true&standbyok=true
+              path: /v1/sys/health?standbyok=true
               port: 8200
             initialDelaySeconds: 5
             periodSeconds: 5

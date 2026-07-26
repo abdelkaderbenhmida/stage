@@ -133,7 +133,10 @@ spec:
     spec:
       serviceAccountName: filebeat
       securityContext:
-        runAsNonRoot: false  # Filebeat needs to read root-owned container logs
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
         seccompProfile:
           type: RuntimeDefault
       terminationGracePeriodSeconds: 30
@@ -158,7 +161,6 @@ spec:
               cpu: 200m
               memory: 256Mi
           securityContext:
-            runAsUser: 0
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: false  # data + spooler dirs
             capabilities:
@@ -166,13 +168,20 @@ spec:
           livenessProbe:
             exec:
               command:
-                - sh
-                - -c
-                - |
-                  LB=$(cat /proc/loadavg | awk '{print $1}')
-                  awk -v lb="$LB" 'BEGIN { exit (lb > 100.0) }'
+                - /usr/share/filebeat/bin/filebeat
+                - test
+                - config
             initialDelaySeconds: 30
             periodSeconds: 30
+          readinessProbe:
+            exec:
+              command:
+                - /usr/share/filebeat/bin/filebeat
+                - test
+                - config
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
           volumeMounts:
             - name: config
               mountPath: /etc/filebeat

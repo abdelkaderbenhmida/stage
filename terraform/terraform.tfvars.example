@@ -1,0 +1,37 @@
+# Example tfvars — copy to terraform.tfvars (gitignored) and edit.
+# Backend (remote S3 + locking): pass via `terraform init -backend-config=...`
+# instead of tfvars. Bucket must have versioning + SSE-KMS + public access blocked
+# and a DynamoDB table "terraform-locks" with a LockID primary key.
+#
+#   terraform init \
+#     -backend-config="bucket=stage-terraform-state" \
+#     -backend-config="key=stage/terraform.tfstate" \
+#     -backend-config="region=eu-west-1"
+
+# ── VM specs ──
+vm_vcpu      = 2
+vm_memory_mb = 2048
+disk_size_gb = 20
+
+# ── Cluster topology ──
+master_name  = "master-01"
+worker_count = 2
+
+# ── Network (RFC1918 only — see variables.tf validation) ──
+network_cidr  = "192.168.56.0/24"
+network_name  = "devops-platform-net"
+network_domain = "devops.local"
+
+# ── Base image ──
+# Path is host-specific. Override to match your libvirt storage layout.
+base_image_path  = "/var/lib/libvirt/images/ubuntu-22.04-server-cloudimg-amd64.img"
+storage_pool     = "default"
+
+# ── SSH access ──
+ssh_user = "devops"
+# Public key authorized on the nodes. Leave null to auto-detect from ~/.ssh.
+# Override with your own: ssh_public_key = "ssh-ed25519 AAAA... user@host"
+ssh_public_key = null
+
+# ── DNS ──
+dns_servers = ["1.1.1.1", "8.8.8.8"]

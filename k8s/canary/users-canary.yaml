@@ -17,16 +17,13 @@ spec:
     port: 80
     targetPort: http
   analysis:
-    # No Prometheus available (phase 6) → keep strict SLOs opt-in.
+    # Phase 4 / Incident 6: progressive rollout 10%→100% with 5-minute analysis.
+    # interval 30s × maxWeight 100 × step 10 = 10 steps × 30s ≈ 5 min analysis window.
+    # threshold 2 = auto-rollback after 2 failed metric checks (Flagger builtin).
     interval: 30s
     threshold: 2
-    maxWeight: 50
-    stepWeights:
-      - 10
-      - 20
-      - 30
-      - 40
-      - 50
+    maxWeight: 100
+    stepWeight: 10
     primaryReadyThreshold: 30
     canaryReadyThreshold: 30
     webhooks:
@@ -34,5 +31,6 @@ spec:
         url: http://flagger-loadtester.devops-platform/
         timeout: 5s
         metadata:
-          cmd: "hey -z 1m -q 10 -c 2 http://users-service-canary.devops-platform/"
+          # 5-minute load test aligns with the analysis window.
+          cmd: "hey -z 5m -q 10 -c 2 http://users-service-canary.devops-platform/"
   progressDeadlineSeconds: 300

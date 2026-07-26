@@ -42,11 +42,14 @@
 - name: Install Docker CE + containerd
   ansible.builtin.apt:
     name:
-      - docker-ce
-      - docker-ce-cli
-      - containerd.io
+      # Pinned versions (audit P2: 24.0+ per cahier, exact pin Mar 2024).
+      # Update via explicit bump to keep reproducible.
+      - docker-ce=5:24.0.7-1~ubuntu.22.04~jammy
+      - docker-ce-cli=5:24.0.7-1~ubuntu.22.04~jammy
+      - containerd.io=1.6.21-1ubuntu1~22.04.3
     state: present
     update_cache: true
+    allow_downgrade: false
   tags: docker
 
 - name: Ensure Docker service is enabled and started

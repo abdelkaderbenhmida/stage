@@ -8,12 +8,16 @@ metadata:
     app.kubernetes.io/part-of: devops-platform
   finalizers:
     - resources-finalizer.argocd.argoproj.io
+  annotations:
+    argocd.argoproj.io/sync-wave: "20"
 spec:
   project: devops-platform
   source:
     repoURL: https://github.com/abdelkaderbenhmida/stage.git
     targetRevision: main
     path: k8s/monitoring/alertmanager
+    directory:
+      exclude: rules.yaml
   destination:
     server: https://kubernetes.default.svc
     namespace: monitoring

@@ -254,7 +254,10 @@ resource "libvirt_domain" "node" {
 
 
 resource "local_file" "ansible_inventory" {
-  filename = "${path.module}/inventory.ini"
+  # Audit fix: never overwrite the committed inventory.ini. .generated suffix
+  # is gitignored-friendly (existing *.ini not gitignored — we add it via
+  # scripts/generate-inventory.sh chmod + minimal override, not commit).
+  filename = "${path.module}/inventory.generated.ini"
   content = templatefile("${path.module}/inventory.tpl", {
     master_name = local.master_node.name
     master_ip   = local.master_node.ip

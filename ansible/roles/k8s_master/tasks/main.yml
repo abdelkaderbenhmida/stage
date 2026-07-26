@@ -72,6 +72,7 @@
 - name: Download Calico Tigera operator manifest
   ansible.builtin.get_url:
     url: https://raw.githubusercontent.com/projectcalico/calico/{{ calico_version }}/manifests/tigera-operator.yaml
+    # TODO: add checksum verification
     dest: /tmp/tigera-operator.yaml
     mode: "0644"
   tags: master
@@ -123,7 +124,8 @@
   retries: 3
   delay: 10
   until: calico_wait.rc == 0
-  ignore_errors: true
+  changed_when: false
+  ignore_errors: false  # fail-closed: broken Calico ⇒ broken cluster, abort.
   tags: master
 
 - name: Generate kubeadm join command for workers
@@ -133,6 +135,7 @@
     KUBECONFIG: /etc/kubernetes/admin.conf
   register: kubeadm_join_command
   changed_when: false
+  no_log: true  # P0: bootstrap token leaks node join secret into CI logs.
   retries: 6
   delay: 10
   until: kubeadm_join_command.rc == 0
@@ -141,6 +144,7 @@
 - name: Store join command as fact for worker nodes
   ansible.builtin.set_fact:
     join_command: "{{ kubeadm_join_command.stdout }}"
+  no_log: true  # inherit no_log from upstream token command.
   tags: master
 
 - name: Store join command on master host for workers to fetch
@@ -152,6 +156,7 @@
     owner: devops
     group: devops
     mode: "0700"
+  no_log: true  # inherit no_log from upstream token command — token in content.
   tags: master
 
 - name: Store join command text for workers to read
@@ -161,4 +166,5 @@
     owner: devops
     group: devops
     mode: "0600"   # P2: was 0644 — plaintext-readable by any local user.
+  no_log: true  # inherit no_log from upstream token command.
   tags: master

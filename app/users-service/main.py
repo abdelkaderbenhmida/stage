@@ -17,13 +17,12 @@ Instrumentator(
     should_group_status_codes=True,
     should_ignore_untemplated=True,
     should_respect_env_var=False,
-    excluded_handlers=["/healthz", "/readyz", "/metrics"],
+    excluded_handlers=["/livez", "/readyz", "/metrics"],
 ).instrument(app).expose(app, endpoint="/metrics", include_in_schema=False)
 
 # Fail-fast secrets: refuse to start with placeholder values in production.
-# Developers may opt into a local SQLite path by setting DATABASE_URL or
-# by passing --reload with the `dev` default below — but only when LOG_LEVEL
-# is set to DEBUG, signaling a non-production run.
+# Dev overrides: uses aciermemory path (compatible with readOnlyRootFilesystem) or
+# ephemeral token generated per-process.
 def _load_secrets() -> None:
     """Resolve required secrets at startup. Raises on missing — fail closed."""
     global DATABASE_URL, JWT_SECRET_KEY
@@ -38,7 +37,7 @@ def _load_secrets() -> None:
         JWT_SECRET_KEY = None
     if not DATABASE_URL:
         if is_dev:
-            DATABASE_URL = "sqlite:///./users.db"
+            DATABASE_URL = "sqlite:///file::memory:?cache=shared&uri=true"
             _LOG.warning("secret.default_used", extra={"event": "secret.default_used", "secret_name": "DATABASE_URL"})
         else:
             raise SystemExit(
@@ -91,16 +90,6 @@ def readyz():
         status_code=200 if health.get("reachable") else 503,
         content={"service": "users", "vault": health},
     )
-
-
-@app.get("/health")
-def health():
-    """Compatibility alias for /readyz.
-
-    Older deployments / gitleaks allowlist reference this; kept until all
-    probes migrated to /livez + /readyz.
-    """
-    return readyz()
 
 
 @app.get("/users")

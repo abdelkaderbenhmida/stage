@@ -30,7 +30,7 @@ spec:
         prometheus.io/path: "/metrics"
     spec:
       serviceAccountName: orders-service-sa
-      automountServiceAccountToken: true
+      automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000

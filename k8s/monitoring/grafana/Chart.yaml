@@ -1,0 +1,11 @@
+apiVersion: v2
+name: devops-grafana
+description: Umbrella chart — wraps grafana/grafana with platform values + 4 dashboards.
+type: application
+version: 1.0.0
+appVersion: "11.1.0"
+# Wrapper chart matches deployment.yaml image pin grafana/grafana:11.1.0.
+dependencies:
+  - name: grafana
+    version: 8.0.0
+    repository: https://grafana.github.io/helm-charts

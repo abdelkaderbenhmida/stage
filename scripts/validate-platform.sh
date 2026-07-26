@@ -60,14 +60,15 @@ PASS=0
 FAIL=0
 SKIPPED=0
 
-# Optional: filter checks via --only 1,3,5.
+# Optional: filter checks via --only 1,3,5. Accept numeric IDs + bonus A/B.
 should_run() {
   local id="$1"
   if [[ -z "$ONLY" ]]; then return 0; fi
   local IFS=','
   local -a ids=( $ONLY )
   for x in "${ids[@]}"; do
-    if [[ "$x" == "$id" ]]; then return 0; fi
+    # case-insensitive compare so "a" matches "A".
+    if [[ "${x^^}" == "${id^^}" ]]; then return 0; fi
   done
   return 1
 }
@@ -87,8 +88,8 @@ require_tool() {
   return 0
 }
 
-record_pass() { local name="$1"; echo -e "${GREEN}  ✅ PASS${NC} — $name" ; ((PASS++)) ; }
-record_fail() { local name="$1"; echo -e "${RED}  ❌ FAIL${NC} — $name" >&2 ; ((FAIL++)) ; }
+record_pass() { local name="$1"; echo -e "${GREEN}  ✅ PASS${NC} — $name" ; PASS=$((PASS+1)) ; }
+record_fail() { local name="$1"; echo -e "${RED}  ❌ FAIL${NC} — $name" >&2 ; FAIL=$((FAIL+1)) ; }
 
 # Run a named check function and gate it through should_run().
 run_check() {
@@ -97,7 +98,7 @@ run_check() {
   shift 2
   if ! should_run "$id"; then
     echo -e "${YELLOW}  ⏭  SKIP${NC} — check $id ($name) filtered by --only" >&2
-    ((SKIPPED++))
+    SKIPPED=$((SKIPPED+1))
     return 0
   fi
   "$@" "$id" "$name"
@@ -115,7 +116,7 @@ check_cluster() {
   local id="$1" name="$2"
   echo "$id. $name"
   if ! require_tool kubectl "https://kubernetes.io/docs/tasks/tools/install-kubectl/"; then
-    ((SKIPPED++)); return
+    SKIPPED=$((SKIPPED+1)); return
   fi
   local nodes_json ready_count total
   if ! nodes_json=$(kubectl get nodes -o json 2>/dev/null); then
@@ -153,12 +154,12 @@ check_trivy() {
   local id="$1" name="$2"
   echo "$id. $name"
   if ! require_tool trivy "https://aquasecurity.github.io/trivy/latest/install/"; then
-    ((SKIPPED++)); return
+    SKIPPED=$((SKIPPED+1)); return
   fi
   if ! command -v docker >/dev/null 2>&1; then
     echo -e "${YELLOW}  ⚠️  SKIP${NC} — docker not installed." >&2
     [[ $CI_MODE == true ]] && exit 1
-    ((SKIPPED++)); return
+    SKIPPED=$((SKIPPED+1)); return
   fi
   local scanned=0
   for svc in users-service products-service orders-service; do
@@ -172,11 +173,11 @@ check_trivy() {
     else
       record_fail "Trivy $svc : vulnérabilités CRITICAL/HIGH trouvées"
     fi
-    ((scanned++))
+    scanned=$((scanned+1))
   done
   if [[ $scanned -eq 0 ]]; then
     echo -e "${YELLOW}  ⚠️  SKIP${NC} — aucune image locale :$IMAGE_TAG trouvée."
-    ((SKIPPED++))
+    SKIPPED=$((SKIPPED+1))
   fi
 }
 
@@ -185,7 +186,7 @@ check_gitleaks() {
   local id="$1" name="$2"
   echo "$id. $name"
   if ! require_tool gitleaks "https://github.com/gitleaks/gitleaks/releases"; then
-    ((SKIPPED++)); return
+    SKIPPED=$((SKIPPED+1)); return
   fi
   if gitleaks detect --source . --config .gitleaks.toml --redact --quiet >/dev/null 2>&1; then
     record_pass "Gitleaks : aucun secret détecté"
@@ -198,11 +199,11 @@ check_gitleaks() {
 check_argocd() {
   local id="$1" name="$2"
   echo "$id. $name"
-  if ! require_tool kubectl; then ((SKIPPED++)); return; fi
+  if ! require_tool kubectl; then SKIPPED=$((SKIPPED+1)); return; fi
   if ! kubectl get namespace "$ARGOCD_NS" >/dev/null 2>&1; then
     echo -e "${YELLOW}  ⚠️  SKIP${NC} — namespace '$ARGOCD_NS' absent (ArgoCD non installé)"
     [[ $CI_MODE == true ]] && exit 1
-    ((SKIPPED++)); return
+    SKIPPED=$((SKIPPED+1)); return
   fi
   local apps synced unhealthy
   apps=$(kubectl get applications -n "$ARGOCD_NS" -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || echo "")
@@ -235,11 +236,11 @@ check_argocd() {
 check_grafana() {
   local id="$1" name="$2"
   echo "$id. $name"
-  if ! require_tool kubectl; then ((SKIPPED++)); return; fi
+  if ! require_tool kubectl; then SKIPPED=$((SKIPPED+1)); return; fi
   if ! kubectl get namespace "$MONITORING_NS" >/dev/null 2>&1; then
     echo -e "${YELLOW}  ⚠️  SKIP${NC} — namespace '$MONITORING_NS' absent"
     [[ $CI_MODE == true ]] && exit 1
-    ((SKIPPED++)); return
+    SKIPPED=$((SKIPPED+1)); return
   fi
   # Check (a) Grafana pod ready, (b) ≥3 dashboard ConfigMaps present.
   local g_ready g_total
@@ -259,11 +260,11 @@ check_grafana() {
 check_kibana() {
   local id="$1" name="$2"
   echo "$id. $name"
-  if ! require_tool kubectl; then ((SKIPPED++)); return; fi
+  if ! require_tool kubectl; then SKIPPED=$((SKIPPED+1)); return; fi
   if ! kubectl get namespace "$MONITORING_NS" >/dev/null 2>&1; then
     echo -e "${YELLOW}  ⚠️  SKIP${NC} — namespace '$MONITORING_NS' absent"
     [[ $CI_MODE == true ]] && exit 1
-    ((SKIPPED++)); return
+    SKIPPED=$((SKIPPED+1)); return
   fi
 
   local k_ready k_total
@@ -309,13 +310,17 @@ check_kibana() {
 
 # ─── Bonus test A: Self-healing (delete a Pod, expect re-creation <30s) ──
 test_selfheal() {
+  if ! should_run "A"; then
+    echo -e "${YELLOW}  ⏭  SKIP${NC} — bonus A (self-heal) filtered by --only" >&2
+    return 0
+  fi
   echo ""
   echo "${BOLD}Bonus A : Self-healing — delete Pod, expect re-creation < 30s${NC}"
   if $SKIP_INCIDENT; then
     echo -e "${YELLOW}  ⏭  SKIP${NC} — --skip-incident fourni"
-    ((SKIPPED++)); return
+    SKIPPED=$((SKIPPED+1)); return
   fi
-  if ! require_tool kubectl; then ((SKIPPED++)); return; fi
+  if ! require_tool kubectl; then SKIPPED=$((SKIPPED+1)); return; fi
   local pod ns="$NAMESPACE"
   pod=$(kubectl get pods -n "$ns" -l app.kubernetes.io/name=users-service \
         -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
@@ -324,7 +329,8 @@ test_selfheal() {
     return
   fi
   kubectl delete pod -n "$ns" "$pod" --wait=false >/dev/null 2>&1 || true
-  local start elapsed=$(date +%s)
+  local start elapsed
+  start=$(date +%s)
   local newpod=""
   for _ in $(seq 1 30); do
     sleep 1
@@ -351,17 +357,32 @@ test_selfheal() {
 
 # ─── Bonus test B: Canary rollback (inject 5xx, expect Flagger rollback) ──
 test_rollback() {
+  if ! should_run "B"; then
+    echo -e "${YELLOW}  ⏭  SKIP${NC} — bonus B (rollback) filtered by --only" >&2
+    return 0
+  fi
   echo ""
   echo "${BOLD}Bonus B : Canary rollback — exiger une régression Flagger${NC}"
   if $SKIP_INCIDENT; then
     echo -e "${YELLOW}  ⏭  SKIP${NC} — --skip-incident fourni"
-    ((SKIPPED++)); return
+    SKIPPED=$((SKIPPED+1)); return
   fi
-  if ! require_tool kubectl; then ((SKIPPED++)); return; fi
+  if ! require_tool kubectl; then SKIPPED=$((SKIPPED+1)); return; fi
   # Rollback detection helper — look at the Canary resource analysis state.
   local svc="users-service"
   local state
   state=$(kubectl get canary -n "$NAMESPACE" "$svc" -o jsonpath='{.status.phase}' 2>/dev/null || echo "Unknown")
+
+  # Active mode (opt-in): inject a bad image, wait for Flagger to detect the
+  # regression and rollback (phase=Failed/Halted), then restore the original
+  # image. Triggered by env ACTIVE_ROLLBACK_TEST=1 — guards against accidental
+  # production breakage. CI sets ACTIVE_ROLLBACK_TEST=1 only in a throwaway cluster.
+  if [[ "${ACTIVE_ROLLBACK_TEST:-0}" == "1" ]]; then
+    _test_rollback_active "$svc" "$state"
+    return
+  fi
+
+  # Passive mode (default): report the current Canary phase without injecting.
   case "$state" in
     Finalising|Succeeded)
       record_pass "Canary $svc phase=$state (Flagger pivote/termine quand healthy)"
@@ -377,11 +398,60 @@ test_rollback() {
       ;;
   esac
   echo "    Pour un test de rollback actif:"
-  echo "      kubectl set image deploy -n $NAMESPACE $svc $svc=users-service:badtag"
-  echo "      sleep 60; watch 'kubectl get canary -n $NAMESPACE $svc -o jsonpath={.status.phase}'"
+  echo "      ACTIVE_ROLLBACK_TEST=1 scripts/validate-platform.sh"
+  echo "      (injecte une mauvaise image, attend Failed/Halted, restaure)"
+}
+
+# Active rollback sub-test — invoked from test_rollback when ACTIVE_ROLLBACK_TEST=1.
+# Injects a known-bad image into the users-service Deployment, polls the
+# Flagger Canary phase for up to 5 minutes waiting for Failed/Halted (the
+# condition Flagger reaches when threshold violations trigger rollback),
+# then restores the original image and waits for stabilization.
+_test_rollback_active() {
+  local svc="$1" prev_state="$2"
+  local ns="$NAMESPACE"
+  local container="${svc}"
+  local original_image
+  original_image=$(kubectl get deploy -n "$ns" "$svc" -o jsonpath="{.spec.template.spec.containers[?(@.name==\"$container\")].image}" 2>/dev/null || echo "")
+  if [[ -z "$original_image" ]]; then
+    record_fail "rollback actif : image $svc introuvable"
+    return
+  fi
+  if [[ "$prev_state" == "Failed" || "$prev_state" == "Halted" ]]; then
+    record_pass "rollback actif : Canary déjà en phase $prev_state (régression détectée)"
+    return
+  fi
+  echo "    Injection d'une mauvaise image dans $svc..."
+  if ! kubectl set image deploy -n "$ns" "$svc" "${container}=ghcr.io/devops-platform/${svc}:nonexistent-badtag-$$" >/dev/null 2>&1; then
+    record_fail "rollback actif : kubectl set image a échoué"
+    return
+  fi
+  local deadline=$(( $(date +%s) + 300 ))
+  local phase
+  while [[ $(date +%s) -lt $deadline ]]; do
+    sleep 10
+    phase=$(kubectl get canary -n "$ns" "$svc" -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+    case "$phase" in
+      Failed|Halted)
+        record_pass "rollback actif : Canary basculé en phase=$phase < 5 min (Flagger a détecté la régression)"
+        echo "    Restauration de l'image d'origine..."
+        kubectl set image deploy -n "$ns" "$svc" "${container}=${original_image}" >/dev/null 2>&1 || true
+        return
+        ;;
+    esac
+  done
+  # Timeout — Flagger did not rollback. Restore original image anyway.
+  kubectl set image deploy -n "$ns" "$svc" "${container}=${original_image}" >/dev/null 2>&1 || true
+  record_fail "rollback actif : Canary n'a pas detecté la régression en 5 min (phase=$phase)"
 }
 
 # ─── Run all selected checks ─────────────────────────────────────────
+# jq is required throughout (cluster/pods/grafana/probe JSON parsing).
+if [[ "$CI_MODE" == true ]] && ! command -v jq >/dev/null 2>&1; then
+  echo -e "${RED}ERROR: jq required but not found (install jqlang/jq).${NC}" >&2
+  exit 1
+fi
+
 run_check 1 "Cluster Kubernetes opérationnel" check_cluster
 echo ""
 run_check 2 "Pods en statut Running"          check_pods

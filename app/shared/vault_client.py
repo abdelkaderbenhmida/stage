@@ -57,11 +57,32 @@ def _vault_addr() -> str:
 
 
 def _vault_token() -> str:
+    """Resolve Vault token.
+
+    Resolution order (production-safe):
+      1. /vault/secrets/token (Vault Agent Injector mounts a short-lived token
+         for this pod when `vault.hashicorp.com/agent-inject` annotation is
+         set on the deployment + the SA is bound to a Kubernetes auth role).
+      2. VAULT_TOKEN env var (legacy/dev path — discouraged in production).
+      3. VAULT_DEV_ROOT_TOKEN_ID (Vault dev-mode fallback only).
+    """
+    injector_path = "/vault/secrets/token"
+    if os.path.exists(injector_path):
+        try:
+            token = open(injector_path).read().strip()
+            if token:
+                return token
+        except OSError as exc:
+            _LOG.warning(
+                "vault.injector_token_unreadable",
+                extra={"event": "vault.injector_token_unreadable", "error": str(exc)},
+            )
     token = os.environ.get("VAULT_TOKEN") or os.environ.get("VAULT_DEV_ROOT_TOKEN_ID")
     if not token:
         raise SecretUnavailable(
-            "No Vault token available. Set VAULT_TOKEN (dev) or use the Kubernetes "
-            "auth method via the Vault Agent Injector (prod). Refusing to start."
+            "No Vault token available. Configure the Vault Agent Injector "
+            "annotations in the Deployment + bind the ServiceAccount to "
+            "auth/kubernetes/config, OR set VAULT_TOKEN in dev mode."
         )
     return token
 
@@ -78,9 +99,22 @@ def _secrets_path() -> str:
 
 
 def _is_vault_configured() -> bool:
-    return bool(os.environ.get("VAULT_ADDR")) and bool(
-        os.environ.get("VAULT_TOKEN") or os.environ.get("VAULT_DEV_ROOT_TOKEN_ID")
+    # Prefer real Vault client when VAULT_ADDR+VAULT_TOKEN are set. The
+    # Vault Agent Injector mounts the per-pod short-lived token at
+    # `/vault/secrets/token` (default) when the
+    # `vault.hashicorp.com/agent-inject` annotation is enabled.
+    env_token = (
+        os.environ.get("VAULT_TOKEN")
+        or os.environ.get("VAULT_DEV_ROOT_TOKEN_ID")
     )
+    injector_token_path = "/vault/secrets/token"
+    injector_token = None
+    if os.path.exists(injector_token_path):
+        try:
+            injector_token = open(injector_token_path).read().strip() or None
+        except OSError:
+            injector_token = None
+    return bool(os.environ.get("VAULT_ADDR")) and bool(env_token or injector_token)
 
 
 @lru_cache(maxsize=1)

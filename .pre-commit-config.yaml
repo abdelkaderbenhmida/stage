@@ -1,0 +1,57 @@
+# Pre-commit hooks — runs locally before each commit.
+#
+# DevOps professional practice: catch linting, secret leakage, and formatting
+# regressions BEFORE pushing to CI. CI stays the source of truth (gates are
+# stricter — including `--exit-code 1`), but pre-commit catches 90% of issues
+# in seconds instead of minutes.
+#
+# Install:
+#   pip install pre-commit
+#   pre-commit install
+#
+# Run on demand:
+#   pre-commit run --all-files
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: check-yaml
+        # Allow long lines — many Helm/K8s values are run-on by design.
+        args: ["--allow-multiple-documents"]
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: check-merge-conflict
+      - id: check-case-conflict
+      - id: detect-private-key
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.1.9
+    hooks:
+      - id: ruff
+        files: '^(app/shared|app/[^/]+|tests)/.*\.py$'
+
+  - repo: https://github.com/adrienverge/yamllint
+    rev: v1.33.0
+    hooks:
+      - id: yamllint
+        args: ["-d", "{rules: {line-length: disable}, comments: {require-starting-space: true}}"]
+        files: '^(k8s|.*\.github).*\.ya?ml$'
+
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.18.0
+    hooks:
+      - id: gitleaks
+        # Full history scan locally before commit, configurable via
+        # GITLEAKS_CONFIG env if needed (the CI uses .gitleaks.toml).
+
+  - repo: https://github.com/antonbabenko/pre-commit-terraform
+    rev: v1.92.0
+    hooks:
+      - id: terraform_fmt
+        files: '^terraform/.*\.tf$'
+      - id: terraform_validate
+        files: '^terraform/.*\.tf$'
+        args:
+          - --init
+          - --backend=false

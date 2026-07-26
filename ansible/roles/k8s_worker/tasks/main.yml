@@ -19,11 +19,14 @@
   tags: worker
 
 - name: Join worker to Kubernetes cluster
+  # Uses `command:` (not shell:) — join command is a fixed argv vector from master,
+  # no shell metachar interpretation. Injection-safe at the task layer.
   ansible.builtin.command:
     cmd: "{{ join_command_decoded }}"
   args:
     creates: /etc/kubernetes/kubelet.conf
   register: join_result
+  changed_when: join_result.rc == 0
   tags: worker
 
 - name: Restart kubelet on worker after join

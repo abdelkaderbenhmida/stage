@@ -24,7 +24,7 @@ metadata:
   # Secret. The SA itself has no cluster RBAC beyond get-self, so the token is
   # useless to an attacker who steals the pod's mount (still encodable as the
   # low-privilege SA).
-automountServiceAccountToken: true
+automountServiceAccountToken: false
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -34,7 +34,7 @@ metadata:
   labels:
     app.kubernetes.io/name: products-service
     app.kubernetes.io/part-of: devops-platform
-automountServiceAccountToken: true
+automountServiceAccountToken: false
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -44,7 +44,7 @@ metadata:
   labels:
     app.kubernetes.io/name: orders-service
     app.kubernetes.io/part-of: devops-platform
-automountServiceAccountToken: true
+automountServiceAccountToken: false
 ---
 # A role + binding the apps SAs share. The apps themselves do NOT call the
 # K8s API at runtime (secrets are fetched from Vault via the hvac client).

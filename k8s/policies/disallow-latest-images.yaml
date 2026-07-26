@@ -1,0 +1,79 @@
+# Kyverno policies (production baseline).
+#
+# These policies enforce additional guard-rails beyond Pod Security
+# Admission. Install:
+#   helm repo add kyverno https://kyverno.github.io/kyverno
+#   helm install kyverno kyverno/kyverno -n kyverno --create-namespace
+#   kubectl apply -f k8s/policies/
+#
+# Each policy is a ClusterPolicy (cluster-scoped) and uses a `mutate` or
+# `validate` action. Fail open with `validationFailureAction: Audit` until
+# the team is ready to enforce (then switch to `Enforce`).
+---
+# Disallow `:latest` tags + force `@sha256:...` digest-pin in production.
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-image-digest-pin
+  annotations:
+    description: |
+      Production deployments must pin images by sha256 digest — mutable tags
+      like `:latest` or `:1.0.0` race against rebuilds and can silently
+      change between kubectl apply and Pod start.
+spec:
+  validationFailureAction: Audit  # Promote to Enforce once prod is migrated.
+  background: false
+  rules:
+    - name: pin-images-by-digest
+      match:
+        any:
+          - kind: Deployment
+      validate:
+        message: |
+          All container images must include an immutable tag (e.g.
+          `ghcr.io/org/svc@sha256:...`). Mutable tags like `:latest` or
+          loose semver are turned down at admission time.
+        pattern:
+          spec:
+            template:
+              spec:
+                containers:
+                  - image: "*@sha256:*"
+---
+# Disallow privileged containers + enforce runAsNonRoot.
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: restrict-security-context
+  annotations:
+    description: |
+      Enforces non-root execution + drops ALL Linux capabilities as
+      belt-and-suspenders on top of the namespace-level
+      pod-security.kubernetes.io/enforce=restricted label.
+spec:
+  validationFailureAction: Audit
+  background: false
+  rules:
+    - name: drop-all-capabilities
+      match:
+        any:
+          - kind: Pod
+      validate:
+        message: "Containers must set securityContext.capabilities.drop: [ALL]."
+        pattern:
+          spec:
+            containers:
+              - securityContext:
+                  capabilities:
+                    drop:
+                      - ALL
+    - name: runAsNonRoot
+      match:
+        any:
+          - kind: Pod
+      validate:
+        message: "Pods must set securityContext.runAsNonRoot: true."
+        pattern:
+          spec:
+            securityContext:
+              runAsNonRoot: true

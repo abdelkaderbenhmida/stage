@@ -1,0 +1,88 @@
+# Grafana dashboard: Infrastructure Detail — nodes, memory saturation, evictions, PDB, HPA.
+# Data source: Prometheus. Complements 01-infra-overview (cluster-wide rollup) with
+# per-node drill-down + saturation signals tied to Incident 1 (OOM eviction) and
+# Incident 9 (HPA runaway). cAdvisor + kube-state-metrics required.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dashboard-infra-detail
+  namespace: monitoring
+  labels:
+    grafana_dashboard: "1"
+    app.kubernetes.io/name: dashboard-infra-detail
+    app.kubernetes.io/part-of: devops-platform
+data:
+  "04-infra-detail.json": |
+    {
+      "title": "Infrastructure Detail",
+      "uid": "devops-platform-infra-detail",
+      "schemaVersion": 39,
+      "version": 1,
+      "panels": [
+        {
+          "id": 1,
+          "title": "Memory Usage Ratio per Container (>80%% = Incident 1 alert)",
+          "type": "timeseries",
+          "gridPos": {"h": 10, "w": 24, "x": 0, "y": 0},
+          "fieldConfig": {"defaults": {"unit": "percent", "decimals": 1, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "orange", "value": 80}, {"color": "red", "value": 90}]}}},
+          "targets": [
+            {"expr": "sum by(pod)(container_memory_working_set_bytes / container_spec_memory_limit_bytes > 0) * 100", "legendFormat": "{{pod}}", "datasource": {"type": "prometheus", "uid": "PBFA97CFB590B2093"}}
+          ]
+        },
+        {
+          "id": 2,
+          "title": "Pod Evictions (Incident 1 signal)",
+          "type": "timeseries",
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 10},
+          "fieldConfig": {"defaults": {"unit": "short"}},
+          "targets": [
+            {"expr": "sum(kube_pod_container_status_last_terminated_reason{reason=\"OOMKilled\"}) by(namespace)", "legendFormat": "OOMKilled {{namespace}}", "datasource": {"type": "prometheus", "uid": "PBFA97CFB590B2093"}},
+            {"expr": "sum(kube_pod_container_status_last_terminated_reason) by(namespace)", "legendFormat": "any- terminated {{namespace}}", "datasource": {"type": "prometheus", "uid": "PBFA97CFB590B2093"}}
+          ]
+        },
+        {
+          "id": 3,
+          "title": "Replicas per Deployment (Incident 9 signal)",
+          "type": "timeseries",
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 10},
+          "fieldConfig": {"defaults": {"unit": "short"}},
+          "targets": [
+            {"expr": "kube_deployment_status_replicas", "legendFormat": "{{deployment}}", "datasource": {"type": "prometheus", "uid": "PBFA97CFB590B2093"}},
+            {"expr": "kube_deployment_spec_replicas", "legendFormat": "{{deployment}} desired", "datasource": {"type": "prometheus", "uid": "PBFA97CFB590B2093"}}
+          ]
+        },
+        {
+          "id": 4,
+          "title": "HPA at MaxReplicas (Incident 9 alert source)",
+          "type": "stat",
+          "gridPos": {"h": 4, "w": 24, "x": 0, "y": 18},
+          "fieldConfig": {"defaults": {"thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "red", "value": 1}]}}},
+          "targets": [
+            {"expr": "count(kube_hpa_status_current_replicas == kube_hpa_spec_max_replicas)", "datasource": {"type": "prometheus", "uid": "PBFA97CFB590B2093"}}
+          ]
+        },
+        {
+          "id": 5,
+          "title": "Node CPU Saturation per Node",
+          "type": "timeseries",
+          "gridPos": {"h": 10, "w": 12, "x": 0, "y": 22},
+          "fieldConfig": {"defaults": {"unit": "percent", "decimals": 1}},
+          "targets": [
+            {"expr": "sum by(node)(rate(node_cpu_seconds_total{mode!=\"idle\"}[5m])) / sum by(node)(rate(node_cpu_seconds_total[5m])) * 100", "legendFormat": "{{node}}", "datasource": {"type": "prometheus", "uid": "PBFA97CFB590B2093"}}
+          ]
+        },
+        {
+          "id": 6,
+          "title": "Node Memory Available (GiB)",
+          "type": "timeseries",
+          "gridPos": {"h": 10, "w": 12, "x": 12, "y": 22},
+          "fieldConfig": {"defaults": {"unit": "gbytes", "decimals": 2}},
+          "targets": [
+            {"expr": "node_memory_MemAvailable_bytes / 1024 / 1024 / 1024", "legendFormat": "{{node}}", "datasource": {"type": "prometheus", "uid": "PBFA97CFB590B2093"}}
+          ]
+        }
+      ],
+      "editable": true,
+      "refresh": "15s"
+    }

@@ -1,0 +1,12 @@
+apiVersion: v2
+name: devops-prometheus
+description: Umbrella chart — wraps prometheus-community/prometheus with platform values.
+type: application
+version: 1.0.0
+appVersion: "2.51.0"
+# Wrapper chart — pulls chart v25.8.0 which ships prometheus v2.55.x at present.
+# Values override renders this appVersion (chart-bundled). Sync both sides.
+dependencies:
+  - name: prometheus
+    version: 25.8.0
+    repository: https://prometheus-community.github.io/helm-charts

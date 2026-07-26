@@ -5,6 +5,7 @@
 # Terraform state (NEVER commit)
 terraform/terraform.tfstate
 terraform/terraform.tfstate.backup
+terraform/.terraform/terraform.tfstate
 **/*.tfstate
 **/*.tfstate.backup
 *.tfvars
@@ -76,3 +77,11 @@ files.md/
 .opencode/
 # Archived working files — kept locally but not versioned
 archive/
+
+# k6 load test outputs
+tests/k6/*.json
+tests/k6/*.html
+
+# Ansible Molecule
+ansible/molecule/
+ansible/.molecule/

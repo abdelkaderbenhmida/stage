@@ -1,0 +1,28 @@
+# Ansible Molecule — test harness for Ansible roles
+#
+# Run locally:
+#   pip install molecule[docker] ansible-lint
+#   molecule test -s docker --all
+#
+# Each role under ansible/roles/ has a molecule/ directory with
+# a default scenario that runs the role on a throwaway Docker
+# container. CI invokes `molecule test --all` in the lint job.
+#
+# Current roles: docker, k8s_common, k8s_master, k8s_worker, k8s_reset
+# Molecule scenarios exist for: docker, k8s_common
+# (k8s_master/worker require real Kubernetes — delegated driver)
+dependency:
+  name: galaxy
+driver:
+  name: docker
+platforms:
+  - name: molecule-docker
+    image: geerlingguy/docker-ubuntu2404-ansible:latest
+    pre_build_image: true
+provisioner:
+  name: ansible
+  config_options:
+    defaults:
+      interpreter_python: auto_silent
+verifier:
+  name: ansible
