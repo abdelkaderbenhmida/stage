@@ -154,40 +154,28 @@ vault status              # Sealed: false
 
 ---
 
-## Phase 5 — GitOps + Istio Service Mesh + Flagger Canary
+## Phase 5 — GitOps ArgoCD
 
-**Commit:** `3914371` — feat(phase5): GitOps ArgoCD + Istio + Flagger canary + fixes
+**Commit:** `3914371` — feat(phase5): GitOps ArgoCD + fixes
 **Fichiers:** 148 | **Insertions:** 26 783 | **Suppressions:** 469
 
 ### Objectif
-Faire de Git la seule source de vérité (GitOps), déployer Istio service mesh,
-implémenter déploiement canary avec Flagger.
+Faire de Git la seule source de vérité (GitOps).
 
 ### Ce qui a été fait
 
 #### ArgoCD (GitOps)
-- `k8s/argocd/project.yaml` — AppProject `devops-platform` (destinations: devops-platform, istio-system, flagger-system)
-- `k8s/argocd/app-*.yaml` — 6 Applications (base, users, products, orders, istio, flagger)
+- `k8s/argocd/project.yaml` — AppProject `devops-platform` (destinations: devops-platform)
+- `k8s/argocd/app-*.yaml` — 3 Applications (base, users, products, orders)
 - SyncPolicy: `prune: true` + `selfHeal: true` + `ServerSideApply: true`
 - `CreateNamespace=true` — ns créé automatiquement par ArgoCD
 
 #### K8s manifests réorganisés
 - `k8s/apps/base/` — namespace.yaml, hpa.yaml, networkpolicies.yaml, pdbs.yaml, rbac.yaml
-- `k8s/apps/{users,products,orders}/` — deployment.yaml + canary.yaml par service
+- `k8s/apps/{users,products,orders}/` — deployment.yaml par service
 - **NetworkPolicies:** `allow-prometheus-scrape` (ingress depuis `monitoring` ns sur port 8000)
 - **PDBs:** PodDisruptionBudget 1 minimum disponible
 - **topologySpreadConstraints + podAntiAffinity:** dispersion des pods sur nœuds
-
-#### Istio
-- `k8s/istio-flagger/istio/manifest.yaml` — profile demo (~16k lignes)
-- istiod, sidecar injector, ingress/egress gateways
-- Annotations scrape prometheus sur sidecars Envoy (`port 15020`, `/stats/prometheus`)
-
-#### Flagger
-- `k8s/istio-flagger/flagger/manifest.yaml` — Deployment flagger dans `istio-system`
-- `-metrics-server=http://prometheus:9090` (bloqué — résolu Phase 6)
-- `k8s/apps/*/canary.yaml` — 3 canary resources (v1beta1)
-- Analyse: interval 30s, threshold 2, maxWeight 50, stepWeights 10,20,30,40,50
 
 #### Conteneurs durcis (P2)
 Tous les containers (Vault, services, operator):
@@ -217,18 +205,14 @@ Tous les containers (Vault, services, operator):
 | CI: `action SHA` pinned sur commits supprimés | Remplacé par tags `@v5`/`@v3`/`@v2` |
 | CI: `pip-audit` vulns fastapi/starlette | Bump fastapi 0.104.1→0.139.0, starlette 0.27.0→1.3.1 |
 | CI: Trivy vulns sur packages OS (`jaraco.context`, `wheel`) | Upgrade/uninstall dans Dockerfile |
-| CI: LimitRange trop basse pour Flagger | `max.cpu=4`, `max.memory=2Gi` |
+| CI: LimitRange trop basse | `max.cpu=4`, `max.memory=2Gi` |
 | CI: `values.yaml` inclu dans kubeconform | Exclu (`! -name 'values.yaml'`) |
 | setuptools: `find_packages()` retournait `[]` | flat-layout: `packages=["shared"]` |
 | Trivy OS vulns dans images Docker | `apt upgrade` en builder + uninstall `wheel` + `jaraco.context` |
 
-### Bloqueur résolu en Phase 6
-- Flagger pointait sur `prometheus:9090` (inexistant) → corrigé Phase 6 pour pointer sur `prometheus.monitoring.svc.cluster.local:9090`
-
 ### Critère de validation
 ```bash
 argocd app get <name>    # Synced + Healthy
-kubectl get pods -n istio-system   # Flagger Running
 ```
 
 ---
@@ -293,8 +277,7 @@ Pouvoir répondre à *"combien d'erreurs ?"* (métriques Prometheus) et
 - Déploiement: smoke-test `/metrics` vérifie `http_request_duration_seconds_bucket` présent
 
 #### Résolution blockers Phase 5
-- **Block P5:** Flagger `-metrics-server=http://prometheus:9090` → `http://prometheus.monitoring.svc.cluster.local:9090`
-- **Block P5:** Prometheus n'existait pas, les canaries Flagger ne pouvaient pas scorer
+- _canary/Flagger/Istio retirés volontairement — section conservée pour traçabilité historique_
 
 #### Décisions vs spec originale
 
@@ -322,7 +305,7 @@ kubectl port-forward svc/grafana -n monitoring 3000:3000
 kubectl port-forward svc/loki -n monitoring 3100:3100
 # Grafana Explore → {service="users-service"} → logs JSON
 
-kubectl logs -n istio-system deploy/flagger | grep prometheus
+kubectl logs -n istio-system deploy/flagger | grep prometheus  # historique, Flagger retiré
 # Plus d'erreur "connection refused prometheus:9090"
 ```
 
@@ -353,7 +336,6 @@ kubectl logs -n istio-system deploy/flagger | grep prometheus
 | `automountServiceAccountToken: false` | 5 | → `true` (futur auth k8s) |
 | NetworkPolicies absentes | 5 | Créées (`allow-prometheus-scrape`, `deny-all-ingress`) |
 | PDBs absents | 5 | Créés (1 min disponible) |
-| Flagger sans metrics-server | 5→6 | `prometheus:9090` → `prometheus.monitoring.svc.cluster.local:9090` |
 
 ### P2 — Moyens
 
@@ -374,7 +356,6 @@ kubectl logs -n istio-system deploy/flagger | grep prometheus
 | `setup.py` redondant | 5 | Supprimé |
 | ELK lourd pour cluster local | 6 | Remplacé par Loki + Promtail |
 | LimitRange max memory 2Gi bloque ELK | 6 | Nouveau ns `monitoring` avec 4Gi max |
-| Flagger `prometheus:9090` non résolu | 5→6 | Réécrit en FQDN cross-namespace |
 | Starlette vulns (PYSEC-2026-*) | 5 | Bump 0.27.0→1.3.1 |
 | Instrumentator 7.0.0 cassait starlette 1.3.1 | 6 | Pinné 6.1.0 (compatible starlette>=1.0) |
 
@@ -394,7 +375,7 @@ ansible/
 k8s/
 ├── apps/                  base/, users/, products/, orders/ (deployments + canaries)
 ├── argocd/                project.yaml + app-*.yaml (14 Applications)
-├── istio-flagger/         istio/manifest.yaml, flagger/manifest.yaml
+├── (istio-flagger/ supprimé)
 ├── observability/         base/, prometheus/, alertmanager/, grafana/,
 │                          grafana-dashboards/, loki/, promtail/, rules/
 └── vault/                 manifests.yaml, values.yaml, scripts

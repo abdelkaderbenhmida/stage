@@ -13,10 +13,6 @@ spec:
   destinations:
     - namespace: devops-platform
       server: https://kubernetes.default.svc
-    - namespace: istio-system
-      server: https://kubernetes.default.svc
-    - namespace: flagger-system
-      server: https://kubernetes.default.svc
     - namespace: monitoring
       server: https://kubernetes.default.svc
   clusterResourceWhitelist:

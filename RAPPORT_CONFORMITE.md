@@ -24,7 +24,7 @@ Légende : ✅ fait · ⚠️ partiel / déviation · ❌ absent
 | `k8s/monitoring/alertmanager/rules.yaml` | `k8s/monitoring/alertmanager/rules.yaml` (3 SLO rules) | ✅ |
 | `k8s/vault/{vault-values.yaml, vault-policy.hcl}` | 2 fichiers présents + `manifests.yaml`, `secret-vault-root.yaml`, `README.md` | ✅ |
 | `k8s/argocd/applications/{users,products,orders}-app.yaml` | 3 apps spec nom + 11 apps bonus (ce sont toutes dans `applications/`) | ✅ |
-| `k8s/canary/{istio-gateway, users/products/orders-canary}.yaml` | 4 fichiers présents conformes | ✅ |
+| `k8s/canary/{istio-gateway, users/products/orders-canary}.yaml` | retiré hors-scope (canary/Istio/Flagger supprimés volontairement) | ❌ |
 | `.github/workflows/ci-cd.yml` | `lint → gitleaks → test → build → trivy-scan → terraform-validate → deploy` | ✅ |
 | `scripts/{validate-platform.sh, generate-inventory.sh}` | 2 présents + bonus `validate-security.sh`, `bootstrap-{vault,elasticsearch}-secret.sh` | ✅ |
 | `docs/{DevOps_Central_Platform_Description.md, DevOps_Central_Platform_Etapes_Implementation.md}` | 2 fichiers copiés dans `docs/` | ✅ |
@@ -39,9 +39,9 @@ Légende : ✅ fait · ⚠️ partiel / déviation · ❌ absent
 | Infrastructure as Code | Terraform, VMs/cluster managé | Terraform provider libvirt (KVM homelab) — spec permits "VMs ou cluster managé" | ✅ |
 | Configuration | Ansible (docker, k8s_common, k8s_master, k8s_worker) | 4 rôles présents + bonus k8s_reset | ✅ |
 | Conteneurisation | Docker multi-stage pour 3 services | 3 Dockerfiles multi-stage, user non-root, HEALTHCHECK | ✅ |
-| Orchestration | K8s + Helm | K8s + Helm values pour prom/grafana/elk + manifests dédiés + flagger/istio Helm rendered | ✅ |
+| Orchestration | K8s + Helm | K8s + Helm values pour prom/grafana/elk + manifests dédiés | ✅ |
 | Sécurité (DevSecOps) | Trivy, Gitleaks, Vault | Trivy + Gitleaks + Vault KV v2 + K8s auth + fail-closed | ✅ |
-| GitOps | ArgoCD + Flagger + Istio | ArgoCD install (kustomize pin v2.7.16) + Application par svc + Flagger + Istio + Canary | ✅ |
+| GitOps | ArgoCD | ArgoCD install (kustomize pin v2.7.16) + Application par svc | ✅ |
 | Observabilité | Prometheus, Grafana, ELK Stack | Prometheus scrapeInterval 15s + Grafana 3 dashboards + ELK (ES+Logstash+Kibana+Filebeat DaemonSet) + AlertManager SLO | ✅ |
 
 ---
@@ -84,7 +84,7 @@ Légende : ✅ fait · ⚠️ partiel / déviation · ❌ absent
 | 5. Manifests Deployment+Service, 2 replicas | oui | `{users,products,orders}-deployment.yaml` + `{users,products,orders}-service.yaml`, `replicas: 2` | ✅ |
 | 6. resources.requests/limits | appliqué aux 3 services | requests+limits sur chaque container | ✅ |
 | 7. readiness/liveness probes | OK | readiness + liveness + startup sur /readyz, /livez / startup | ✅ |
-| Bonus P1/P2 | — | HPA, PDB, NetworkPolicies, topologySpread, podAntiAffinity, seccomp, non-root UID, readOnlyRootFilesystem, ServiceMonitor, canary | ✅+ |
+| Bonus P1/P2 | — | HPA, PDB, NetworkPolicies, topologySpread, podAntiAffinity, seccomp, non-root UID, readOnlyRootFilesystem, ServiceMonitor | ✅+ |
 
 ### Phase 4 — DevSecOps
 | Étape | Attendu | Réel | Statut |
@@ -97,15 +97,13 @@ Légende : ✅ fait · ⚠️ partiel / déviation · ❌ absent
 | 6. Microservices lisent Vault au démarrage | OK | `shared/vault_client.py` + `_load_secrets()` fail-closed dans chaque `main.py` | ✅ |
 | 7. `vault-policy.hcl` | spec arborescence | `k8s/vault/vault-policy.hcl` (least-priv: read KV v2 + list metadata) | ✅ |
 
-### Phase 5 — GitOps & progressif
+### Phase 5 — GitOps
 | Étape | Attendu | Réel | Statut |
 |---|---|---|---|
 | 1. ArgoCD install | namespace + manifests install | `k8s/argocd/install/kustomization.yaml` (remote pin v2.7.16) + `applications/argocd-install-app.yaml` (sync-wave -100) | ✅ |
-| 2. `Application` par microservice | 1 app/svc | `applications/{users,products,orders}-app.yaml` + 11 apps bonus | ✅ |
+| 2. `Application` par microservice | 1 app/svc | `applications/{users,products,orders}-app.yaml` + apps bonus | ✅ |
 | 3. sync auto + self-heal | OK | `automated: { prune: true, selfHeal: true }` | ✅ |
-| 4. Istio + Flagger install | `istioctl` + `helm install flagger` | `k8s/istio-flagger/{istio,flagger}/manifest.yaml` (Helm rendered) | ✅ |
-| 5. `Canary` Flagger par svc | 10%, <1% err, 5 min | `k8s/canary/{users,products,orders}-canary.yaml`, `stepWeights: [10,20,30,40,50]`, `interval: 30s`, webhook load-test | ✅ |
-| Bonus | — | `k8s/canary/istio-gateway.yaml` (Gateway + 3 VirtualServices `/users`, `/products`, `/orders`) | ✅+ |
+| 4. (canary/Istio/Flagger) | — | retiré volontairement, hors-scope | ❌ |
 
 ### Phase 6 — Observabilité
 | Étape | Attendu | Réel | Statut |
@@ -122,9 +120,8 @@ Légende : ✅ fait · ⚠️ partiel / déviation · ❌ absent
 ### Phase 7 — Validation finale
 | Étape | Attendu | Réel | Statut |
 |---|---|---|---|
-| 1. `scripts/validate-platform.sh` | script global | `scripts/validate-platform.sh` (7 checks + 2 bonus self-heal/rollback, modes `--ci`/`--only`/`--skip-incident`) | ✅ |
+| 1. `scripts/validate-platform.sh` | script global | `scripts/validate-platform.sh` (7 checks + 1 bonus self-heal, modes `--ci`/`--only`/`--skip-incident`) | ✅ |
 | 2. Test self-healing (delete pod) | OK | `test_self_healing()` dans validate-platform.sh (bonus A, opt-in `--skip-incident`) | ✅ |
-| 3. Test rollback Flagger | OK | `test_rollback()` dans validate-platform.sh (bonus B, inject régression 5xx) | ✅ |
 | 4. Résumé `7/7 PASS` | OK | résumé final: `${PASS}/7`, banner `7/7 tests passés — Projet VALIDÉ` | ✅ |
 
 ---
@@ -166,7 +163,6 @@ Légende : ✅ fait · ⚠️ partiel / déviation · ❌ absent
 | `.dockerignore` | repo root | exclut .git/__pycache__ du context |
 | ArgoCD install via kustomize remote | `k8s/argocd/install/kustomization.yaml` | pin v2.7.16, pas de copie 18k lignes en git |
 | Bonus `k8s/apps/base/` | `k8s/apps/base/` | namespace, NetworkPolicies, PDBs, HPA, RBAC centralisés |
-| `k8s/istio-flagger/` | install Istio+Flagger manifests | Helm rendered de pin stable |
 
 ---
 
@@ -177,9 +173,9 @@ Légende : ✅ fait · ⚠️ partiel / déviation · ❌ absent
 - Phase 2 Ansible complète (+ bonus reset)
 - Phase 3 conteneurisation + manifests durcis (Deployment + Service séparés conformes à arborescence)
 - Phase 4 DevSecOps (Trivy + Gitleaks + Vault KV v2 + Vault policy HCL)
-- Phase 5 ArgoCD install + Application par svc + Flagger + Istio + Canary + istio-gateway
+- Phase 5 ArgoCD install + Application par svc (canary/Istio/Flagger retirés volontairement)
 - Phase 6 Prometheus (Helm values) + Grafana + 3 dashboards + AlertManager + 3 SLO rules + ELK Stack conforme
-- Phase 7 `scripts/validate-platform.sh` complet (7 checks + self-heal + rollback + 7/7 banner)
+- Phase 7 `scripts/validate-platform.sh` complet (7 checks + self-heal + 7/7 banner)
 
 ### ⚠️ Partiels / déviations (justifiés)
 - **Terraform** : provider **libvirt/KVM** (homelab) — spec permet "VMs ou cluster managé"
@@ -187,7 +183,7 @@ Légende : ✅ fait · ⚠️ partiel / déviation · ❌ absent
 - **Charts Helm** : values.yaml référencent les charts upstream, manifests purs cohabit ; spec valant les deux approches (`Helm` liste dans stack technique + `manifests dédiés` liste dans Phase 4 Vault)
 
 ### ❌ Manquants / non conformes
-- _Aucun_ après réalignement de l'arborescence et complétion des `applications/{users,products,orders}-app.yaml`, `k8s/canary/`, `k8s/monitoring/{prometheus,grafana,elk}/values.yaml`, `k8s/vault/vault-policy.hcl`, `scripts/generate-inventory.sh`, `README.md`, `docs/`.
+- _canary/Istio/Flagger retirés volontairement_; reste conforme pour les autres dimensions.
 
 ### Hors spec (présents non demandés)
 - Voir table section 5 (durcissement P1/P2 + tooling CI exhaustif)

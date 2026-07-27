@@ -17,7 +17,7 @@ Plateforme DevOps de bout en bout autour de **3 microservices FastAPI** (Users, 
 | Conteneurisation | Docker multi-stage, images non-root + HEALTHCHECK |
 | Orchestration | Kubernetes + Helm (charts Prometheus, Grafana, ELK) |
 | Sécurité | Trivy (image), Gitleaks (code), HashiCorp Vault (secrets dynamiques) |
-| GitOps | GitHub Actions (CI), ArgoCD (sync), Flagger + Istio (Canary releases) |
+| GitOps | GitHub Actions (CI), ArgoCD (sync) |
 | Observabilité | Prometheus (métriques 15s), Grafana (3 dashboards), ELK Stack (logs), AlertManager (SLO rules) |
 
 ---
@@ -35,9 +35,7 @@ devops-central-platform/
 │   ├── apps/                 # Deployments + Service + HPA + RBAC
 │   ├── monitoring/           # Phase 6 — prometheus, grafana, elk, alertmanager
 │   ├── argocd/applications/  # Phase 5 — Applications CRDs
-│   ├── vault/                # Phase 4 — manifests + policy.hcl + values.yaml
-│   ├── canary/               # Phase 5 — Flagger Canary + istio-gateway
-│   └── istio-flagger/        # Istio + Flagger install manifests
+│   └── vault/                # Phase 4 — manifests + policy.hcl + values.yaml
 ├── .github/workflows/ci-cd.yml  # lint → gitleaks → tests → build → trivy → deploy
 ├── scripts/
 │   ├── validate-platform.sh     # Phase 7 — 7 checks + self-heal + rollback + 7/7 PASS

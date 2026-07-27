@@ -152,24 +152,6 @@ def extract_relationships(manifests):
                         'protects'
                     ))
 
-        elif kind == 'Canary' or kind == 'AnalysisTemplate':
-            # Flagger Canary → Deployment (targetRef)
-            ref = spec.get('targetRef', {})
-            if ref:
-                edges.append((
-                    kind, ns, name,
-                    ref.get('kind', 'Deployment'), ns, ref.get('name', ''),
-                    'targetRef'
-                ))
-            # Canary → Service
-            svc_name = spec.get('service', {}).get('name', '')
-            if svc_name:
-                edges.append((
-                    kind, ns, name,
-                    'Service', ns, svc_name,
-                    'service'
-                ))
-
         elif kind == 'Application':  # ArgoCD
             # ArgoCD Application → targets a namespace
             dest = spec.get('destination', {})
@@ -297,7 +279,6 @@ def render_mermaid_enhanced(nodes, edges):
                 'Job': '▶️',
                 'Namespace': '📦',
                 'ServiceMonitor': '📊',
-                'Canary': '🐤',
                 'Application': '🔄',
             }.get(kind, '📄')
             label_parts = name.split('/')

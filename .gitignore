@@ -70,7 +70,6 @@ tt
 test
 
 # Helm archives
-flagger-*.tar.gz
 helm-*.tar.gz
 graphify-out/
 files.md/

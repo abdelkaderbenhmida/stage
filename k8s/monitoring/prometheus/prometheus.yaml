@@ -2,7 +2,7 @@
 # serviceMonitorSelector: {} => picks up ALL ServiceMonitors in cluster.
 # ruleSelector:       {} => picks up ALL PrometheusRules.
 # retention 15d, PVC 10Gi.
-# Service named `prometheus` on port 9090 (Flagger points at this name cross-ns).
+# Service named `prometheus` on port 9090.
 ---
 apiVersion: monitoring.coreos.com/v1
 kind: Prometheus

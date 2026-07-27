@@ -1,6 +1,6 @@
 # Service exposing Prometheus on port 9090 (http) within monitoring ns.
 # Name `prometheus` matches the DNS FQDN `prometheus.monitoring.svc.cluster.local`
-# referenced by Flagger (see commit 4) and by Grafana datasource config.
+# referenced by Grafana datasource config.
 ---
 apiVersion: v1
 kind: Service

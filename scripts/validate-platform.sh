@@ -11,14 +11,13 @@
 #   5.  ArgoCD synchronisé
 #   6.  Dashboards Grafana actifs
 #   7.  Logs indexés dans Kibana (ELK)
-# Plus two optional fail-forward tests:
+# Plus one optional fail-forward test:
 #   A. Self-healing — delete a Pod and confirm it is recreated < 30s.
-#   B. Canary rollback — cause a 5xx regression and confirm Flagger rollbacks.
 #
 # Usage:
 #   scripts/validate-platform.sh                 # local: colored summary
 #   scripts/validate-platform.sh --ci           # CI: exit 1 on any failure
-#   scripts/validate-platform.sh --skip-incident  # skip A + B destructive tests
+#   scripts/validate-platform.sh --skip-incident  # skip A destructive test
 #   scripts/validate-platform.sh --only 1,2,5    # run only checks 1,2,5
 #
 # Exit codes:
@@ -355,96 +354,6 @@ test_selfheal() {
   fi
 }
 
-# ─── Bonus test B: Canary rollback (inject 5xx, expect Flagger rollback) ──
-test_rollback() {
-  if ! should_run "B"; then
-    echo -e "${YELLOW}  ⏭  SKIP${NC} — bonus B (rollback) filtered by --only" >&2
-    return 0
-  fi
-  echo ""
-  echo "${BOLD}Bonus B : Canary rollback — exiger une régression Flagger${NC}"
-  if $SKIP_INCIDENT; then
-    echo -e "${YELLOW}  ⏭  SKIP${NC} — --skip-incident fourni"
-    SKIPPED=$((SKIPPED+1)); return
-  fi
-  if ! require_tool kubectl; then SKIPPED=$((SKIPPED+1)); return; fi
-  # Rollback detection helper — look at the Canary resource analysis state.
-  local svc="users-service"
-  local state
-  state=$(kubectl get canary -n "$NAMESPACE" "$svc" -o jsonpath='{.status.phase}' 2>/dev/null || echo "Unknown")
-
-  # Active mode (opt-in): inject a bad image, wait for Flagger to detect the
-  # regression and rollback (phase=Failed/Halted), then restore the original
-  # image. Triggered by env ACTIVE_ROLLBACK_TEST=1 — guards against accidental
-  # production breakage. CI sets ACTIVE_ROLLBACK_TEST=1 only in a throwaway cluster.
-  if [[ "${ACTIVE_ROLLBACK_TEST:-0}" == "1" ]]; then
-    _test_rollback_active "$svc" "$state"
-    return
-  fi
-
-  # Passive mode (default): report the current Canary phase without injecting.
-  case "$state" in
-    Finalising|Succeeded)
-      record_pass "Canary $svc phase=$state (Flagger pivote/termine quand healthy)"
-      ;;
-    Failed|Halted)
-      record_fail "Canary $svc phase=$state — déployez une régression volontaire (bump image cassis) puis relancez"
-      ;;
-    ""|Unknown)
-      record_fail "Ressource Canary absente ou statut — vérifiez Flagger + Istio installés"
-      ;;
-    *)
-      record_pass "Canary $svc phase=$state — OK (test larveusement passif)"
-      ;;
-  esac
-  echo "    Pour un test de rollback actif:"
-  echo "      ACTIVE_ROLLBACK_TEST=1 scripts/validate-platform.sh"
-  echo "      (injecte une mauvaise image, attend Failed/Halted, restaure)"
-}
-
-# Active rollback sub-test — invoked from test_rollback when ACTIVE_ROLLBACK_TEST=1.
-# Injects a known-bad image into the users-service Deployment, polls the
-# Flagger Canary phase for up to 5 minutes waiting for Failed/Halted (the
-# condition Flagger reaches when threshold violations trigger rollback),
-# then restores the original image and waits for stabilization.
-_test_rollback_active() {
-  local svc="$1" prev_state="$2"
-  local ns="$NAMESPACE"
-  local container="${svc}"
-  local original_image
-  original_image=$(kubectl get deploy -n "$ns" "$svc" -o jsonpath="{.spec.template.spec.containers[?(@.name==\"$container\")].image}" 2>/dev/null || echo "")
-  if [[ -z "$original_image" ]]; then
-    record_fail "rollback actif : image $svc introuvable"
-    return
-  fi
-  if [[ "$prev_state" == "Failed" || "$prev_state" == "Halted" ]]; then
-    record_pass "rollback actif : Canary déjà en phase $prev_state (régression détectée)"
-    return
-  fi
-  echo "    Injection d'une mauvaise image dans $svc..."
-  if ! kubectl set image deploy -n "$ns" "$svc" "${container}=ghcr.io/devops-platform/${svc}:nonexistent-badtag-$$" >/dev/null 2>&1; then
-    record_fail "rollback actif : kubectl set image a échoué"
-    return
-  fi
-  local deadline=$(( $(date +%s) + 300 ))
-  local phase
-  while [[ $(date +%s) -lt $deadline ]]; do
-    sleep 10
-    phase=$(kubectl get canary -n "$ns" "$svc" -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
-    case "$phase" in
-      Failed|Halted)
-        record_pass "rollback actif : Canary basculé en phase=$phase < 5 min (Flagger a détecté la régression)"
-        echo "    Restauration de l'image d'origine..."
-        kubectl set image deploy -n "$ns" "$svc" "${container}=${original_image}" >/dev/null 2>&1 || true
-        return
-        ;;
-    esac
-  done
-  # Timeout — Flagger did not rollback. Restore original image anyway.
-  kubectl set image deploy -n "$ns" "$svc" "${container}=${original_image}" >/dev/null 2>&1 || true
-  record_fail "rollback actif : Canary n'a pas detecté la régression en 5 min (phase=$phase)"
-}
-
 # ─── Run all selected checks ─────────────────────────────────────────
 # jq is required throughout (cluster/pods/grafana/probe JSON parsing).
 if [[ "$CI_MODE" == true ]] && ! command -v jq >/dev/null 2>&1; then
@@ -467,7 +376,6 @@ echo ""
 run_check 7 "Logs indexés dans Kibana (ELK)"     check_kibana
 
 test_selfheal
-test_rollback
 
 # ─── Summary ─────────────────────────────────────────────────────────
 echo ""

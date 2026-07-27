@@ -22,8 +22,6 @@ spec:
       labels:
         app.kubernetes.io/name: products-service
         app.kubernetes.io/part-of: devops-platform
-        # Flagger: required to split primary vs. canary traffic.
-        app.kubernetes.io/version: primary
       annotations:
         prometheus.io/scrape: "true"
         prometheus.io/port: "8000"

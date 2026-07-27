@@ -22,7 +22,7 @@ Il couvre six grandes dimensions :
 2. **Configuration automatisée** — installation et paramétrage des serveurs et du cluster.
 3. **Conteneurisation & orchestration** — déploiement des microservices via Kubernetes.
 4. **Sécurité intégrée (DevSecOps)** — scan du code, scan des images, gestion dynamique des secrets.
-5. **Déploiement automatisé (GitOps)** — synchronisation continue entre Git et le cluster, déploiements progressifs.
+5. **Déploiement automatisé (GitOps)** — synchronisation continue entre Git et le cluster.
 6. **Observabilité complète** — supervision par métriques ET par logs centralisés.
 
 ### 2.1 Objectifs pédagogiques
@@ -32,7 +32,6 @@ Il couvre six grandes dimensions :
 - Sécuriser le pipeline de bout en bout (code, images, secrets).
 - Automatiser les déploiements selon les principes du GitOps.
 - Mettre en place une supervision complète (métriques + logs).
-- Réduire le risque de régression en production grâce aux déploiements progressifs (Canary).
 - Savoir diagnostiquer et résoudre des incidents de production réalistes.
 
 ### 2.2 Pourquoi cette approche
@@ -54,7 +53,7 @@ Il couvre six grandes dimensions :
 | Conteneurisation | Docker | Empaquette les 3 microservices avec leurs dépendances. |
 | Orchestration | Kubernetes, Helm | Déploie, fait évoluer et auto-répare les containers. |
 | Sécurité | Trivy, Gitleaks, Vault | Scanne le code et les images, distribue les secrets dynamiquement. |
-| Déploiement | GitHub Actions, ArgoCD, Flagger | Automatise build/test, synchronise Git↔K8s, pilote les Canary Releases. |
+| Déploiement | GitHub Actions, ArgoCD | Automatise build/test et synchronise Git↔K8s. |
 | Observabilité | Prometheus, Grafana, ELK Stack | Centralise métriques et logs pour le diagnostic et l'alerting. |
 
 ### 3.2 Flux de bout en bout
@@ -67,9 +66,6 @@ GitHub Actions: lint → Gitleaks → tests → build Docker → Trivy → push 
   │
   ▼
 ArgoCD détecte le commit ── synchronise l'état désiré vers Kubernetes
-  │
-  ▼
-Flagger: 10% du trafic vers la nouvelle version ── analyse 5 min ── 100% ou rollback
   │
   ├── Pods récupèrent leurs secrets ──────────────► Vault
   ├── Métriques exposées /metrics ───────────────► Prometheus ──► Grafana
@@ -87,8 +83,7 @@ devops-central-platform/
 │   ├── apps/                  # Deployments, Services, HPA, RBAC
 │   ├── monitoring/{prometheus,grafana,elk}/
 │   ├── argocd/applications/
-│   ├── vault/
-│   └── canary/                # Flagger + Istio
+│   └── vault/
 ├── .github/workflows/ci-cd.yml
 └── scripts/validate-platform.sh
 ```
@@ -111,7 +106,6 @@ devops-central-platform/
 | **Gitleaks** | Sécurité (code) | Détecte les secrets accidentellement commités. |
 | **HashiCorp Vault** | Gestion des secrets | Distribue des identifiants temporaires aux applications. |
 | **ArgoCD** | GitOps | Synchronise en continu Kubernetes avec l'état déclaré dans Git. |
-| **Flagger + Istio** | Déploiement progressif | Pilote les Canary Releases et le rollback automatique. |
 | **ELK Stack** | Logs centralisés | Elasticsearch (stockage), Logstash (traitement), Kibana (recherche). |
 | **AlertManager** | Alerting | Route les alertes Prometheus selon la sévérité. |
 
@@ -132,8 +126,6 @@ lint → Gitleaks (secrets) → tests → build → Trivy (CVE) → push → Arg
 ### 5.2 Déploiement GitOps & progressif
 
 **ArgoCD** fait de Git la seule source de vérité : tout changement doit passer par une pull request, et ArgoCD synchronise automatiquement le cluster avec ce qui est déclaré dans Git. Toute modification manuelle du cluster qui s'écarte de Git est détectée et peut être corrigée automatiquement (self-heal).
-
-**Flagger**, combiné à **Istio**, permet des **Canary Deployments** : une nouvelle version n'est d'abord exposée qu'à une petite fraction du trafic (ex. 10%). Ses métriques d'erreur et de latence sont analysées automatiquement avant d'augmenter progressivement le trafic, ou de revenir en arrière en cas de problème.
 
 ### 5.3 Observabilité
 
@@ -162,7 +154,6 @@ lint → Gitleaks (secrets) → tests → build → Trivy (CVE) → push → Arg
 | **GitOps** | Approche où Git est la source de vérité unique pour l'état désiré du système. |
 | **CI/CD** | Intégration et déploiement continus. |
 | **DevSecOps** | Intégration de la sécurité directement dans le pipeline DevOps. |
-| **Canary Deployment** | Déploiement progressif exposant une nouvelle version à une fraction du trafic. |
 | **Config drift** | Divergence entre l'état déclaré (Git) et l'état réel d'un système. |
 | **CVE** | Identifiant standardisé d'une faille de sécurité connue. |
 | **SLI / SLO / SLA** | Indicateur de service / Objectif associé / Engagement contractuel. |

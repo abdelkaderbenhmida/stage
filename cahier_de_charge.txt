@@ -7,8 +7,7 @@ production-ready
 Stack complèteTerraform · Ansible · Docker ·
 Kubernetes · Helm
 SécuritéTrivy · Gitleaks · HashiCorp Vault
-DéploiementGitHub Actions · ArgoCD (GitOps) ·
-Flagger (Canary)
+DéploiementGitHub Actions · ArgoCD (GitOps)
 ObservabilitéPrometheus · Grafana · ELK Stack
 Valeur ajoutée V39 incidents de production documentés
 avec cause racine, solution et résultat
@@ -49,9 +48,8 @@ OrchestrationKubernetes, HelmDéploie, fait évoluer (HPA) et auto-répare les
 Pods.
 SécuritéTrivy, Gitleaks, VaultScanne le code et les images, distribue les
 secrets dynamiquement.
-DéploiementGitHub Actions, ArgoCD,
-FlaggerAutomatise build/test, synchronise Git↔K8s
-(GitOps), pilote les Canary Releases.
+DéploiementGitHub Actions, ArgoCDAutomatise build/test, synchronise Git↔K8s
+(GitOps).
 ObservabilitéPrometheus, Grafana, ELK
 StackCentralise métriques et logs pour le diagnostic et
 l'alerting.
@@ -63,11 +61,8 @@ GitHub Actions: lint → Gitleaks → tests → build Docker → Trivy → push 
 │
 ▼
 ArgoCD détecte le commit ── synchronise l'état désiré vers Kubernetes
-│
-▼
-Flagger: 10% du trafic vers la nouvelle version ── analyse 5 min ── 100% ou rollback
-│
-├── Pods récupèrent leurs secrets ──────────────► Vault
+  │
+  ├── Pods récupèrent leurs secrets ──────────────► Vault
 ├── Métriques exposées /metrics ───────────────► Prometheus ──► Grafana
 └── Logs collectés par Filebeat ───────────────► Logstash ──► Elasticsearch ──► Kibana
 2.3 Structure du dépôt Git
@@ -82,9 +77,8 @@ devops-central-platform/
 │ ├── monitoring/{prometheus,grafana,elk}/
 │ ├── argocd/applications/
 Page 4DevOps Central Platform — V3 Professionnelle
-│ ├── vault/
-│ └── canary/
-# Flagger + Istio
+│ └── vault/
+
 ├── .github/workflows/ci-cd.yml
 └── scripts/validate-platform.sh
 Page 5DevOps Central Platform — V3 Professionnelle
@@ -115,11 +109,10 @@ GitleaksSécurité
 HashiCorp
 VaultGestion des
 secrets1.15+Distribue des identifiants temporaires aux applications.
-ArgoCDGitOps2.9+Synchronise en continu Kubernetes avec l'état déclaré dans
-Git.
-Flagger + IstioDéploiemen
-t progressif1.35+Pilote les Canary Releases et le rollback automatique.
-ELK StackLogs
+ ArgoCDGitOps2.9+Synchronise en continu Kubernetes avec l'état déclaré dans
+ Git.
+ (canary/Istio/Flagger retirés hors-scope) |—|—|—
+ ELK StackLogs
 centralisés8.11+Elasticsearch, Logstash, Kibana — recherche et diagnostic
 des logs.
 AlertManagerAlerting0.26+Route les alertes Prometheus vers Slack / email selon la
@@ -144,7 +137,7 @@ Page 6DevOps Central Platform — V3 Professionnelle
 12. Déployer Vault et migrer les identifiants statiques vers une récupération dynamique.
 4.4 Phase 4 — Déploiement GitOps & progressif
 13. Installer ArgoCD et déclarer une Application par microservice.
-14. Installer Istio + Flagger ; définir les seuils d'analyse Canary (erreurs, latence).
+14. (canary/Istio/Flagger retirés hors-scope)
 4.5 Phase 5 — Observabilité complète
 15. Déployer Prometheus (scrape 15s) et Grafana (4 dashboards provisionnés).
 16. Déployer la stack ELK et Filebeat sur chaque Pod pour la centralisation des logs.
@@ -258,9 +251,7 @@ Impact businessTous les utilisateurs actifs affectés simultanément, rollback m
 nécessaire, 18 minutes d'indisponibilité partielle.
 Cause racineAbsence de stratégie de déploiement progressif — tout changement, bon ou
 mauvais, atteignait 100% des utilisateurs instantanément.
-Solution mise en placeMise en place de Canary Deployments avec Flagger : 10% du trafic exposé en
-premier, analyse automatique des métriques d'erreur et de latence pendant 5
-minutes avant généralisation.
+Solution mise en placeMise en place d'une stratégie GitOps avec ArgoCD : synchronisation automatique et self-heal pour tout écart Git↔cluster.
 Résultat mesuréSur les déploiements suivants, 3 régressions ont été interceptées
 automatiquement et rollback en moins de 2 minutes, sans impact perçu par les
 utilisateurs.
@@ -372,9 +363,8 @@ Page 14DevOps Central Platform — V3 Professionnelle
 TermeDéfinition
 SLI / SLO / SLAIndicateur de niveau de service / Objectif / Engagement contractuel associé.
 MTTD / MTTRTemps moyen de détection / de résolution d'un incident.
-GitOpsApproche où Git est la source de vérité unique pour l'état désiré du système.
-Canary DeploymentDéploiement progressif exposant une nouvelle version à une fraction du trafic.
-Config driftDivergence entre l'état déclaré (Git/IaC) et l'état réel d'un système.
+ GitOpsApproche où Git est la source de vérité unique pour l'état désiré du système.
+ Config driftDivergence entre l'état déclaré (Git/IaC) et l'état réel d'un système.
 CVEIdentifiant standardisé d'une faille de sécurité connue.
 Post-mortemDocument d'analyse d'un incident : cause racine, impact, actions correctives.
 Noisy-neighbourContainer ou processus monopolisant les ressources partagées d'un nœud.

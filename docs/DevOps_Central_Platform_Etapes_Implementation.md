@@ -130,21 +130,12 @@ kubectl get pods -n devops-platform
    ```
 2. Déclarer une ressource `Application` ArgoCD par microservice, pointant vers le dossier correspondant du dépôt Git.
 3. Activer la synchronisation automatique et le mode `self-heal` (ArgoCD corrige automatiquement tout écart entre Git et le cluster).
-4. Installer Istio (service mesh) puis Flagger :
-   ```bash
-   istioctl install --set profile=demo
-   helm install flagger flagger/flagger --namespace istio-system
-   ```
-5. Définir, pour chaque microservice, un objet `Canary` Flagger avec :
-   - pourcentage de trafic initial (ex. 10%),
-   - seuil d'erreur maximum toléré (ex. taux d'erreur 5xx < 1%),
-   - durée d'analyse avant d'augmenter le trafic (ex. 5 minutes par palier).
 
 **Critère de validation :**
 ```bash
 argocd app get <nom-app>
 ```
-→ statut `Synced` et `Healthy`. Un déploiement de test avec une régression volontaire doit déclencher un rollback automatique de Flagger.
+→ statut `Synced` et `Healthy`.
 
 ---
 
@@ -182,8 +173,7 @@ argocd app get <nom-app>
    kubectl get pods -w
    ```
    → le Pod doit être recréé automatiquement en moins de 30 secondes.
-3. Simuler une régression applicative et vérifier que Flagger déclenche un rollback automatique.
-4. Documenter le résultat de chaque test dans un résumé final :
+3. Documenter le résultat de chaque test dans un résumé final :
 
 ```
 ✅ PASS — Cluster Kubernetes opérationnel
@@ -207,6 +197,6 @@ argocd app get <nom-app>
 | 2. Configuration | Installer Docker + Kubernetes | 1–2 jours |
 | 3. Applications | Conteneuriser et déployer les microservices | 2–3 jours |
 | 4. Sécurité | Intégrer Trivy, Gitleaks, Vault | 2–3 jours |
-| 5. GitOps & Canary | Installer ArgoCD, Flagger | 2 jours |
+| 5. GitOps | Installer ArgoCD | 1 jour |
 | 6. Observabilité | Prometheus, Grafana, ELK | 2–3 jours |
 | 7. Validation | Tests de bout en bout | 1 jour |
