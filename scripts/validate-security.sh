@@ -102,7 +102,6 @@ if require_tool trivy "https://aquasecurity.github.io/trivy/latest/install/" ; t
         run_check "Trivy $svc" trivy image \
           --severity CRITICAL,HIGH \
           --exit-code 1 \
-          --ignore-unfixed \
           --quiet \
           "$img"
         scanned=$((scanned+1))

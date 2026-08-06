@@ -60,9 +60,9 @@ sleep 3
 code=$(curl -sf -o /dev/null -w '%{http_code}' "http://127.0.0.1:18080/livez" || echo ERR)
 say "service /livez -> $code (expect 200)"
 
-q_before=$(curl -sf "http://127.0.0.1:19090/api/v1/query?query=sum(rate(http_requests_total{service=\"$SVC\"}[5m]))" 2>/dev/null \
+q_before=$(curl -sf "http://127.0.0.1:19090/api/v1/query?query=sum(http_requests_total%7Bservice%3D%22$SVC%22%7D)" 2>/dev/null \
   | jq -r '.data.result[0].value[1] // 0' || echo 0)
-say "prometheus req rate before load (req/s): $q_before"
+say "prometheus reqs before load (total): $q_before"
 
 replicas_before=$(kubectl -n "$NS" get hpa "$HPA" -o jsonpath='{.status.currentReplicas}')
 say "replicas before load: $replicas_before"
@@ -73,24 +73,34 @@ ab_out=$(ab -k -c "$AB_C" -n "$AB_N" "http://127.0.0.1:18080/users" 2>&1) || {
 printf '%s\n' "$ab_out" | grep -E "Requests per second|Failed requests|Complete requests|Time per request" | sed 's/^/  /'
 
 if [ "$DO_WATCH" = "1" ]; then
+  # HPA needs >70% CPU sustained across its 30s window. Keep a steady trickle
+  # of load running in the background for the whole watch so CPU stays elevated
+  # (single ab burst finishes too fast to register a scale-up).
+  say "keeping sustained load for ${WATCH_SEC}s while watching HPA..."
+  ( end=$((SECONDS+WATCH_SEC)); \
+    while [ $SECONDS -lt $end ]; do \
+      ab -k -c "$AB_C" -n 2000 "http://127.0.0.1:18080/users" >/dev/null 2>&1; \
+    done ) &
+  LOAD_PID=$!
   say "HPA tail for ${WATCH_SEC}s — watch replicas scale from $replicas_before:"
   ( timeout "$WATCH_SEC" kubectl -n "$NS" get hpa "$HPA" -w ) || true
+  kill "$LOAD_PID" 2>/dev/null || true
 else
   say "sleeping 5s for metrics propagation, then re-checking HPA..."
   sleep 5
   kubectl -n "$NS" get hpa "$HPA"
 fi
 
-q_after=$(curl -sf "http://127.0.0.1:19090/api/v1/query?query=sum(rate(http_requests_total{service=\"$SVC\"}[5m]))" 2>/dev/null \
+q_after=$(curl -sf "http://127.0.0.1:19090/api/v1/query?query=sum(http_requests_total%7Bservice%3D%22$SVC%22%7D)" 2>/dev/null \
   | jq -r '.data.result[0].value[1] // 0' || echo 0)
 replicas_after=$(kubectl -n "$NS" get hpa "$HPA" -o jsonpath='{.status.currentReplicas}' 2>/dev/null)
 
-say "prometheus reqs after load (5m rate): $q_after  (before: $q_before)"
+say "prometheus reqs after load: $q_after  (before: $q_before)"
 say "replicas after load: $replicas_after  (before: $replicas_before)"
 
 echo "-----------------------------------------"
 if [ "${replicas_after:-0}" -gt "${replicas_before:-0}" ] 2>/dev/null; then
-  say "PASS: HPA scaled ${replicas_before} -> ${replicas_after} replicas."
+  say "PASS: HPA scaled ${replicas_before} -> ${replicas_after} replicas; prometheus reqs ${q_before} -> ${q_after}."
   if [ "$CI" = "1" ]; then exit 0; fi
 else
   say "NOTE: replicas still ${replicas_after}. HPA scale-up window=30s; may need higher/event load."

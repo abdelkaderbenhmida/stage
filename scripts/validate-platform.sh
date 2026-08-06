@@ -186,7 +186,7 @@ check_trivy() {
       echo -e "${YELLOW}  ⚠️  SKIP${NC} — image $img absent; build it first (docker build -t $img -f app/$svc/Dockerfile app/)"
       continue
     fi
-    if trivy image --severity CRITICAL,HIGH --exit-code 1 --ignore-unfixed --quiet "$img" >/dev/null 2>&1; then
+    if trivy image --severity CRITICAL,HIGH --exit-code 1 --quiet "$img" >/dev/null 2>&1; then
       record_pass "Trivy $svc : 0 CRITICAL/HIGH"
     else
       record_fail "Trivy $svc : vulnérabilités CRITICAL/HIGH trouvées"

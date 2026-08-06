@@ -1,7 +1,7 @@
 # Grafana dashboard: Infrastructure Overview — nodes, CPU, memory, pods.
 # Data source: Prometheus (default). Format: YAML ConfigMap → sidecar → Grafana.
 # Label grafana_dashboard=1 triggers k8s-sidecar watch + import.
-# Queries use cAdvisor metrics (no node_exporter needed — bare-metal friendly).
+# Queries: container_* = kubelet cAdvisor; kube_node_*/kube_pod_info = kube-state-metrics.
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -51,7 +51,7 @@ data:
           "gridPos": {"h": 12, "w": 12, "x": 0, "y": 4},
           "fieldConfig": {"defaults": {"unit": "percent", "decimals": 1}},
           "targets": [
-            {"expr": "sum(rate(container_cpu_usage_seconds_total[5m])) / sum(machine_cpu_cores) * 100", "legendFormat": "Usage %", "datasource": {"type": "prometheus", "uid": "PBFA97CFB590B2093"}}
+            {"expr": "sum(rate(container_cpu_usage_seconds_total[5m])) / sum(kube_node_status_capacity{resource=\"cpu\"}) * 100", "legendFormat": "Usage %", "datasource": {"type": "prometheus", "uid": "PBFA97CFB590B2093"}}
           ]
         },
         {

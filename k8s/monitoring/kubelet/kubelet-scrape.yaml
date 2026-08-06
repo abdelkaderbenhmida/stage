@@ -1,0 +1,62 @@
+# Scrape kubelet /metrics/cadvisor on each node.
+# K3s runs kubelet as a systemd process (not a pod), so there is no kubelet
+# Service/Pod to select. We pin it with a headless Service + explicit Endpoints
+# (one address per node, port 10250 HTTPS) and scrape with the Prometheus SA token.
+# Kubelet metrics feed cAdvisor panels (container_*) in infra dashboards.
+# RBAC for /metrics & /metrics/cadvisor already granted in prometheus/rbac.yaml.
+---
+apiVersion: v1
+kind: Endpoints
+metadata:
+  name: kubelet
+  namespace: monitoring
+  labels:
+    kube-type: kubelet
+    app.kubernetes.io/part-of: devops-platform
+subsets:
+  - addresses:
+      - ip: 192.168.56.10
+      - ip: 192.168.56.11
+      - ip: 192.168.56.12
+    ports:
+      - name: https-metrics
+        port: 10250
+        protocol: TCP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kubelet
+  namespace: monitoring
+  labels:
+    kube-type: kubelet
+    app.kubernetes.io/part-of: monitoring
+spec:
+  clusterIP: None
+  ports:
+    - name: https-metrics
+      port: 10250
+      protocol: TCP
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: kubelet
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: kubelet
+    app.kubernetes.io/part-of: monitoring
+spec:
+  selector:
+    matchLabels:
+      kube-type: kubelet
+  endpoints:
+    - port: https-metrics
+      path: /metrics/cadvisor
+      scheme: https
+      honorLabels: true
+      interval: 15s
+      scrapeTimeout: 10s
+      bearerTokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token
+      tlsConfig:
+        insecureSkipVerify: true

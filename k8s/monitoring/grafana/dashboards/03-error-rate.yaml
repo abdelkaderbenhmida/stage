@@ -1,6 +1,7 @@
 # Grafana dashboard: Error Rate SLO — 5xx rate per service, 4xx rate, threshold comparison.
-# Data source: Prometheus. http_requests_total with status_code label emitted by
-# instrumentator (commit 5). 1% threshold line = Phase 6 SLO error-rate spec.
+# Data source: Prometheus. http_requests_total with status label emitted by
+# prometheus-fastapi-instrumentator (values "2xx", "3xx", "4xx", "5xx").
+# 1% threshold line = Phase 6 SLO error-rate spec.
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -26,7 +27,7 @@ data:
           "gridPos": {"h": 10, "w": 24, "x": 0, "y": 0},
           "fieldConfig": {"defaults": {"unit": "percent", "decimals": 2}},
           "targets": [
-            {"expr": "sum by(handler)(rate(http_requests_total{status_code=~\"5..\"}[5m])) / sum by(handler)(rate(http_requests_total[5m])) * 100", "legendFormat": "{{handler}}", "datasource": {"type": "prometheus", "uid": "PBFA97CFB590B2093"}},
+            {"expr": "sum by(handler)(rate(http_requests_total{status=\"5xx\"}[5m])) / sum by(handler)(rate(http_requests_total[5m])) * 100 or sum by(handler)(rate(http_requests_total[5m])) * 0", "legendFormat": "{{handler}}", "datasource": {"type": "prometheus", "uid": "PBFA97CFB590B2093"}},
             {"expr": "1", "legendFormat": "SLO threshold 1%", "datasource": {"type": "prometheus", "uid": "PBFA97CFB590B2093"}}
           ]
         },
@@ -37,7 +38,7 @@ data:
           "gridPos": {"h": 4, "w": 6, "x": 0, "y": 10},
           "fieldConfig": {"defaults": {"thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "orange", "value": 1}, {"color": "red", "value": 5}]}}},
           "targets": [
-            {"expr": "sum(rate(http_requests_total{status_code=~\"5..\"}[5m])) * 300", "datasource": {"type": "prometheus", "uid": "PBFA97CFB590B2093"}}
+            {"expr": "(sum(rate(http_requests_total{status=\"5xx\"}[5m])) or vector(0)) * 300", "datasource": {"type": "prometheus", "uid": "PBFA97CFB590B2093"}}
           ]
         },
         {
@@ -47,7 +48,7 @@ data:
           "gridPos": {"h": 8, "w": 12, "x": 6, "y": 10},
           "fieldConfig": {"defaults": {"unit": "percent", "decimals": 2}},
           "targets": [
-            {"expr": "sum by(handler)(rate(http_requests_total{status_code=~\"4..\"}[5m])) / sum by(handler)(rate(http_requests_total[5m])) * 100", "legendFormat": "{{handler}}", "datasource": {"type": "prometheus", "uid": "PBFA97CFB590B2093"}}
+            {"expr": "sum by(handler)(rate(http_requests_total{status=\"4xx\"}[5m])) / sum by(handler)(rate(http_requests_total[5m])) * 100 or sum by(handler)(rate(http_requests_total[5m])) * 0", "legendFormat": "{{handler}}", "datasource": {"type": "prometheus", "uid": "PBFA97CFB590B2093"}}
           ]
         },
         {
@@ -56,7 +57,7 @@ data:
           "type": "table",
           "gridPos": {"h": 6, "w": 12, "x": 18, "y": 10},
           "targets": [
-            {"expr": "topk(5, sum by(handler)(rate(http_requests_total{status_code=~\"5..\"}[5m])))", "format": "table", "datasource": {"type": "prometheus", "uid": "PBFA97CFB590B2093"}}
+            {"expr": "topk(5, sum by(handler)(rate(http_requests_total{status=\"5xx\"}[5m])))", "format": "table", "datasource": {"type": "prometheus", "uid": "PBFA97CFB590B2093"}}
           ]
         }
       ],
