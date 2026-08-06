@@ -10,7 +10,7 @@
 
 # ── VM specs ──
 vm_vcpu      = 2
-vm_memory_mb = 2048
+vm_memory_mb = 4096
 disk_size_gb = 20
 
 # ── Cluster topology ──

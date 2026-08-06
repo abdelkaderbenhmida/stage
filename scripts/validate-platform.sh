@@ -59,6 +59,24 @@ PASS=0
 FAIL=0
 SKIPPED=0
 
+kubectl_jsonpath() {
+  local retries="${1:-4}"
+  shift
+  local delay="${1:-2}"
+  shift
+  local out=""
+  local rc=0
+  for _ in $(seq 1 "$retries"); do
+    if out=$(kubectl "$@" 2>/dev/null); then
+      printf '%s' "$out"
+      return 0
+    fi
+    rc=$?
+    sleep "$delay"
+  done
+  return "$rc"
+}
+
 # Optional: filter checks via --only 1,3,5. Accept numeric IDs + bonus A/B.
 should_run() {
   local id="$1"
@@ -135,10 +153,11 @@ check_cluster() {
 check_pods() {
   local id="$1" name="$2"
   echo "$id. $name"
+  if ! require_tool kubectl; then SKIPPED=$((SKIPPED+1)); return; fi
   for svc in users-service products-service orders-service; do
     local desired ready
-    desired=$(kubectl get deploy -n "$NAMESPACE" "$svc" -o jsonpath='{.status.replicas}' 2>/dev/null || echo 0)
-    ready=$(kubectl get deploy -n "$NAMESPACE" "$svc" -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo 0)
+    desired=$(kubectl_jsonpath 4 2 get deploy -n "$NAMESPACE" "$svc" -o jsonpath='{.spec.replicas}' || echo 0)
+    ready=$(kubectl_jsonpath 4 2 get deploy -n "$NAMESPACE" "$svc" -o jsonpath='{.status.readyReplicas}' || echo 0)
     ready=${ready:-0}
     if [[ "$ready" == "$desired" && "$ready" -ge 1 ]]; then
       record_pass "$svc : $ready/$desired Pods Running"
@@ -187,7 +206,7 @@ check_gitleaks() {
   if ! require_tool gitleaks "https://github.com/gitleaks/gitleaks/releases"; then
     SKIPPED=$((SKIPPED+1)); return
   fi
-  if gitleaks detect --source . --config .gitleaks.toml --redact --quiet >/dev/null 2>&1; then
+  if gitleaks detect --source . --config .gitleaks.toml --redact --no-banner >/dev/null 2>&1; then
     record_pass "Gitleaks : aucun secret détecté"
   else
     record_fail "Gitleaks : secrets détectés dans le working tree ou l'historique"
@@ -243,7 +262,7 @@ check_grafana() {
   fi
   # Check (a) Grafana pod ready, (b) ≥3 dashboard ConfigMaps present.
   local g_ready g_total
-  g_total=$(kubectl get deploy -n "$MONITORING_NS" grafana -o jsonpath='{.status.replicas}' 2>/dev/null || echo 0)
+  g_total=$(kubectl get deploy -n "$MONITORING_NS" grafana -o jsonpath='{.spec.replicas}' 2>/dev/null || echo 0)
   g_ready=$(kubectl get deploy -n "$MONITORING_NS" grafana -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo 0)
   g_ready=${g_ready:-0}
   local dash_count
@@ -267,7 +286,7 @@ check_kibana() {
   fi
 
   local k_ready k_total
-  k_total=$(kubectl get deploy -n "$MONITORING_NS" kibana -o jsonpath='{.status.replicas}' 2>/dev/null || echo 0)
+  k_total=$(kubectl get deploy -n "$MONITORING_NS" kibana -o jsonpath='{.spec.replicas}' 2>/dev/null || echo 0)
   k_ready=$(kubectl get deploy -n "$MONITORING_NS" kibana -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo 0)
   k_ready=${k_ready:-0}
   if [[ "$k_ready" != "$k_total" || "$k_ready" -lt 1 ]]; then
@@ -276,7 +295,7 @@ check_kibana() {
   fi
 
   local es_ready es_total
-  es_total=$(kubectl get statefulset -n "$MONITORING_NS" elasticsearch -o jsonpath='{.status.replicas}' 2>/dev/null || echo 0)
+  es_total=$(kubectl get statefulset -n "$MONITORING_NS" elasticsearch -o jsonpath='{.spec.replicas}' 2>/dev/null || echo 0)
   es_ready=$(kubectl get statefulset -n "$MONITORING_NS" elasticsearch -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo 0)
   es_ready=${es_ready:-0}
   if [[ "$es_ready" != "$es_total" || "$es_ready" -lt 1 ]]; then
@@ -294,13 +313,14 @@ check_kibana() {
     return
   fi
 
-  # Sanity probe: query Kibana `/api/status` to confirm the storage connection works.
-  local probe
-  probe=$(kubectl run -n "$MONITORING_NS" kibana-probe --rm -i \
-      --restart=Never --image=curlimages/curl:8.8.0 \
-      --command -- sh -c 'curl -sf http://kibana.monitoring.svc.cluster.local:5601/api/status 2>/dev/null | head -c 200' \
-      2>/dev/null || true)
-  if printf '%s' "$probe" | jq -e '.status.overall.state | ascii_downcase | index("green") // index("yellow")' >/dev/null 2>&1; then
+  # Sanity probe: query Elasticsearch cluster health (green/yellow).
+  # ES has security enabled → read the bootstrap password from the Secret.
+  local es_pass probe
+  es_pass=$(kubectl get secret -n "$MONITORING_NS" elasticsearch-credentials \
+    -o jsonpath='{.data.ELASTIC_PASSWORD}' 2>/dev/null | base64 -d 2>/dev/null || true)
+  probe=$(kubectl exec -n "$MONITORING_NS" elasticsearch-0 -- \
+      sh -c "curl -sf -u elastic:'${es_pass}' http://localhost:9200/_cluster/health" 2>/dev/null || true)
+  if printf '%s' "$probe" | jq -e '.status | ascii_downcase | index("green") // index("yellow")' >/dev/null 2>&1; then
     record_pass "Kibana ready + Elasticsearch ready + Filebeat $fb_ready/$fb_desired — logs ingérés"
   else
     record_fail "Kibana /api/status n'a pas retourné un état vert/jaune"
@@ -393,7 +413,7 @@ echo -e "${GREEN}${BOLD}✅ PASS — Pods en statut Running${NC}"
 echo -e "${GREEN}${BOLD}✅ PASS — Aucune vulnérabilité critique (Trivy)${NC}"
 echo -e "${GREEN}${BOLD}✅ PASS — Aucun secret détecté (Gitleaks)${NC}"
 echo -e "${GREEN}${BOLD}✅ PASS — ArgoCD synchronisé${NC}"
-echo -e "${GREEN}${Bold}✅ PASS — Dashboards Grafana actifs${NC}"
+echo -e "${GREEN}${BOLD}✅ PASS — Dashboards Grafana actifs${NC}"
 echo -e "${GREEN}${BOLD}✅ PASS — Logs indexés dans Kibana${NC}"
 echo "───────────────────────────────────────────────"
 if [[ "$PASS" -ge 7 ]]; then

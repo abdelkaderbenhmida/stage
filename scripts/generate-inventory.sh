@@ -3,11 +3,11 @@
 #
 # Spec ref: arborescence.md → scripts/generate-inventory.sh
 #
-# Terraform already renders terraform/inventory.ini via the local_file
-# resource in main.tf + inventory.tpl. This script is a convenience wrapper
-# that triggers a `terraform refresh` + `terraform output` so the inventory
-# stays in sync after every apply/destroy, without needing to remember the
-# exact terraform invocation.
+# Terraform renders terraform/inventory.generated.ini via the local_file
+# resource in main.tf + inventory.tpl (never the committed inventory.ini —
+# see main.tf comment). This script refreshes that file, then copies it over
+# ansible/inventory.ini so Ansible (ansible.cfg: inventory = inventory.ini)
+# actually picks up the current Terraform-managed hosts.
 #
 # Usage:
 #   scripts/generate-inventory.sh                 # default
@@ -20,7 +20,8 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TF_DIR="${TF_DIR:-${REPO_ROOT}/terraform}"
-TARGET="${REPO_ROOT}/terraform/inventory.ini"
+GENERATED="${REPO_ROOT}/terraform/inventory.generated.ini"
+TARGET="${REPO_ROOT}/ansible/inventory.ini"
 REFRESH=true
 
 while [[ $# -gt 0 ]]; do
@@ -43,16 +44,17 @@ if [[ "${REFRESH}" == "true" ]]; then
   terraform refresh -input=false
 fi
 
-# The local_file.ansible_inventory resource already writes inventory.ini.
+# The local_file.ansible_inventory resource writes inventory.generated.ini.
 # Trigger it via a targeted apply (cheap — single resource, no external diff).
 echo "→ terraform apply -target local_file.ansible_inventory..."
 terraform apply -input=false -auto-approve -target local_file.ansible_inventory
 
-if [[ -f "${TARGET}" ]]; then
-  echo "✓ Ansible inventory written to: ${TARGET}"
-  echo "  master:  $(awk '/^\[masters\]/{f=1; next} /^\[/{f=0} f && NF {print; exit}' "${TARGET}")"
-  echo "  workers: $(awk '/^\[workers\]/{f=1; next} /^\[/{f=0} f && NF' "${TARGET}" | wc -l)"
-else
-  echo "ERROR: ${TARGET} not generated" >&2
+if [[ ! -f "${GENERATED}" ]]; then
+  echo "ERROR: ${GENERATED} not generated" >&2
   exit 1
 fi
+
+cp "${GENERATED}" "${TARGET}"
+echo "✓ Ansible inventory written to: ${TARGET}"
+echo "  master:  $(awk '/^\[masters\]/{f=1; next} /^\[/{f=0} f && NF {print; exit}' "${TARGET}")"
+echo "  workers: $(awk '/^\[workers\]/{f=1; next} /^\[/{f=0} f && NF' "${TARGET}" | wc -l)"

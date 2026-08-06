@@ -65,8 +65,8 @@ require_tool() {
   return 0
 }
 
-record_pass() { local name="$1"; echo -e "${GREEN}  ✅ PASS${NC} — $name" ; ((PASS++)) ; }
-record_fail() { local name="$1"; echo -e "${RED}  ❌ FAIL${NC} — $name" >&2 ; ((FAIL++)) ; }
+record_pass() { local name="$1"; echo -e "${GREEN}  ✅ PASS${NC} — $name" ; PASS=$((PASS+1)) ; }
+record_fail() { local name="$1"; echo -e "${RED}  ❌ FAIL${NC} — $name" >&2 ; FAIL=$((FAIL+1)) ; }
 
 run_check() {
   # run_check "<name>" <command...>
@@ -87,7 +87,7 @@ echo ""
 echo "1. Gitleaks — no secrets in working tree or history"
 if require_tool gitleaks "https://github.com/gitleaks/gitleaks/releases" ; then
   run_check "Gitleaks zero secrets" \
-    gitleaks detect --source . --config .gitleaks.toml --redact --verbose
+    gitleaks detect --source . --config .gitleaks.toml --redact --no-banner
 fi
 
 # ── Check 2: Trivy image scan ──────────────────────────
@@ -105,17 +105,17 @@ if require_tool trivy "https://aquasecurity.github.io/trivy/latest/install/" ; t
           --ignore-unfixed \
           --quiet \
           "$img"
-        ((scanned++))
+        scanned=$((scanned+1))
       fi
     done
     if [[ $scanned -eq 0 ]]; then
       echo -e "${YELLOW}  ⚠️  SKIP${NC} — no local images with :$IMAGE_TAG found (build with: docker build -t <svc>:$IMAGE_TAG -f app/<svc>/Dockerfile app/)"
-      ((SKIPPED++))
+      SKIPPED=$((SKIPPED+1))
     fi
   else
     echo -e "${YELLOW}  ⚠️  SKIP${NC} — docker not installed; cannot inspect images." >&2
     [[ $CI_MODE == true ]] && exit 1
-    ((SKIPPED++))
+    SKIPPED=$((SKIPPED+1))
   fi
 fi
 
@@ -131,8 +131,8 @@ if require_tool kubectl "https://kubernetes.io/docs/tasks/tools/install-kubectl/
         vault status -format=json 2>/dev/null || true)
       if [[ -n "$STATUS_JSON" ]]; then
         # Parse with jq (no python3 dependency).
-        INITIALIZED=$(printf '%s' "$STATUS_JSON" | jq -r '.initialized // false' 2>/dev/null || echo "false")
-        SEALED=$(printf '%s' "$STATUS_JSON" | jq -r '.sealed // true' 2>/dev/null || echo "true")
+        INITIALIZED=$(printf '%s' "$STATUS_JSON" | jq -r '.initialized' 2>/dev/null || echo "false")
+        SEALED=$(printf '%s' "$STATUS_JSON" | jq -r '.sealed' 2>/dev/null || echo "true")
         if [[ "$INITIALIZED" == "true" && "$SEALED" == "false" ]]; then
           record_pass "Vault initialized and unsealed (sealed=$SEALED)"
         else
@@ -147,7 +147,7 @@ if require_tool kubectl "https://kubernetes.io/docs/tasks/tools/install-kubectl/
   else
     echo -e "${YELLOW}  ⚠️  SKIP${NC} — namespace '$VAULT_NS' not found." >&2
     [[ $CI_MODE == true ]] && exit 1
-    ((SKIPPED++))
+    SKIPPED=$((SKIPPED+1))
   fi
 fi
 
@@ -168,18 +168,14 @@ if command -v kubectl >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
       elif [[ "$TOKEN" == *"INJECT-VIA"* || "$TOKEN" == *"DO-NOT-COMMIT"* ]]; then
         record_fail "Secret still contains the placeholder value — bootstrap with scripts/bootstrap-vault-secret.sh"
       else
-        VAULT_ADDR="http://vault-service.${VAULT_NS}.svc.cluster.local:8200"
-        # Talk to Vault from within the cluster via a one-off pod.
-        body=$(kubectl run -n "$NAMESPACE" vault-token-probe --rm -i \
-            --restart=Never --image=hashicorp/vault:1.15.2 \
-            --env="VAULT_ADDR=$VAULT_ADDR" --env="VAULT_TOKEN=$TOKEN" \
-            --command -- sh -c 'vault token lookup -format=json 2>/dev/null' \
-            2>/dev/null || true)
+        # Talk to Vault via exec into the running vault pod (avoids probe pod
+        # networkpolicy/PSA friction).
+        body=$(kubectl exec -n "$VAULT_NS" "$VAULT_POD" -- \
+          env VAULT_ADDR=http://127.0.0.1:8200 VAULT_TOKEN="$TOKEN" \
+          vault token lookup -format=json 2>/dev/null || true)
         if printf '%s' "$body" | jq -e '.data.id' >/dev/null 2>&1; then
           lifetime=$(printf '%s' "$body" | jq -r '.data.ttl // "unknown"' 2>/dev/null || echo "unknown")
           record_pass "vault-root-token authenticates to Vault (ttl=${lifetime}s)"
-          # Cleanup: remove the probe pod if it didn't auto-cleanup (--rm).
-          kubectl delete pod vault-token-probe -n "$NAMESPACE" --ignore-not-found >/dev/null 2>&1 || true
         else
           record_fail "vault-root-token rejected by Vault (token invalid / expired / unauthenticated)"
         fi
@@ -190,12 +186,12 @@ if command -v kubectl >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
   else
     echo -e "${YELLOW}  ⚠️  SKIP${NC} — namespace '$NAMESPACE' not found." >&2
     [[ $CI_MODE == true ]] && exit 1
-    ((SKIPPED++))
+    SKIPPED=$((SKIPPED+1))
   fi
 else
   echo -e "${YELLOW}  ⚠️  SKIP${NC} — kubectl or jq missing." >&2
   [[ $CI_MODE == true ]] && exit 1
-  ((SKIPPED++))
+  SKIPPED=$((SKIPPED+1))
 fi
 
 # ── Summary ────────────────────────────────────────────

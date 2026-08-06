@@ -18,6 +18,8 @@ terraform/.terraform/terraform.tfstate
 **/.terraform/
 destroy_*
 crash.log
+terraform/inventory.generated.ini
+terraform/plan.out
 crash.*.log
 
 # Ansible

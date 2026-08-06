@@ -45,7 +45,7 @@ variable "network_cidr" {
   }
 
   validation {
-    condition     = anytrue([for r in ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"] : can(cidrsubnet("${r}", 0, 0)) && can(cidrsubnet(var.network_cidr, 0, 0)) ? length(regexall(replace(r, "/.*$", ""), var.network_cidr)) > 0 : false])
+    condition     = startswith(var.network_cidr, "10.") || startswith(var.network_cidr, "172.16.") || startswith(var.network_cidr, "172.17.") || startswith(var.network_cidr, "172.18.") || startswith(var.network_cidr, "172.19.") || startswith(var.network_cidr, "172.20.") || startswith(var.network_cidr, "172.21.") || startswith(var.network_cidr, "172.22.") || startswith(var.network_cidr, "172.23.") || startswith(var.network_cidr, "172.24.") || startswith(var.network_cidr, "172.25.") || startswith(var.network_cidr, "172.26.") || startswith(var.network_cidr, "172.27.") || startswith(var.network_cidr, "172.28.") || startswith(var.network_cidr, "172.29.") || startswith(var.network_cidr, "172.30.") || startswith(var.network_cidr, "172.31.") || startswith(var.network_cidr, "192.168.")
     error_message = "network_cidr should be in RFC1918 private space (10/8, 172.16/12, or 192.168/16)."
   }
 }
@@ -113,9 +113,9 @@ variable "vm_vcpu" {
 }
 
 variable "vm_memory_mb" {
-  description = "Memory allocated to each VM in MB."
+  description = "Memory allocated to each VM in MB. 2048 was the original default but proved insufficient once ELK + ArgoCD + Istio ran concurrently (kubelet on a worker went NodeStatusUnknown under memory pressure) — 4096 is the tested-working floor for this stack."
   type        = number
-  default     = 2048
+  default     = 4096
 
   validation {
     condition     = var.vm_memory_mb >= 512 && var.vm_memory_mb <= 32768

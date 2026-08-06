@@ -90,17 +90,19 @@ fi
 echo "Creating vault-root-token Secret in namespace '$NAMESPACE'..."
 
 if $DRY_RUN; then
+  # Pipe token via stdin to --from-file=- (kubectl reads file content from stdin).
   printf '%s' "$VAULT_DEV_ROOT_TOKEN" | \
     kubectl create secret generic vault-root-token \
       --namespace="$NAMESPACE" \
-      --from-literal=root-token=/dev/stdin \
+      --from-file=root-token=/dev/stdin \
       --dry-run=client -o yaml
   echo "(dry-run — Secret not created)"
 else
+  # Pipe token via stdin to --from-file=- (kubectl reads file content from stdin).
   printf '%s' "$VAULT_DEV_ROOT_TOKEN" | \
     kubectl create secret generic vault-root-token \
       --namespace="$NAMESPACE" \
-      --from-literal=root-token=/dev/stdin \
+      --from-file=root-token=/dev/stdin \
       --dry-run=client -o yaml | \
     kubectl apply -f -
   echo "Secret created. Verify with: kubectl get secret vault-root-token -n $NAMESPACE -o jsonpath='{.data.root-token}' | base64 -d"

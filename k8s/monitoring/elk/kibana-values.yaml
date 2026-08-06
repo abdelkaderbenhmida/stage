@@ -46,28 +46,19 @@ data:
     server.port: 5601
 
     elasticsearch.hosts: ["http://elasticsearch.monitoring.svc.cluster.local:9200"]
-    elasticsearch.username: "kibana_system"
-    elasticsearch.password: "{KIBANA_PASSWORD}"
     elasticsearch.ssl.verificationMode: "none"
 
     monitoring.ui.container.elasticsearch.enabled: true
-    # Default index pattern: matches Logstash output (devops-platform-YYYY.MM.dd).
-    kibana.defaultAppId: "discover"
+    # Trim memory on the 1.9Gi dev nodes: disable unused xpack plugins so the
+    # V8 heap stays well under the container limit.
+    telemetry.enabled: false
+    xpack.reporting.enabled: false
+    xpack.fleet.enabled: false
+    xpack.encryptedSavedObjects.encryptionKey: "00000000000000000000000000000000"
 ---
-# Secret — kibana_system password injected out-of-band via
-# scripts/bootstrap-elasticsearch-secret.sh. The placeholder value FAILS
-# at runtime on purpose so fresh deploys don't silently run with a weak pwd.
-apiVersion: v1
-kind: Secret
-metadata:
-  name: kibana-credentials
-  namespace: monitoring
-  labels:
-    app.kubernetes.io/name: kibana
-    app.kubernetes.io/part-of: devops-platform
-type: Opaque
-stringData:
-  KIBANA_PASSWORD: "DO-NOT-COMMIT-INJECT-VIA-Scripts-bootstrap-elasticsearch-secret.sh"
+# Secret `kibana-credentials` (KIBANA_PASSWORD) is NOT declared here — it is
+# created out-of-band by scripts/bootstrap-elasticsearch-secret.sh.
+# The Deployment below references it and fails closed if it is missing.
 ---
 # Deployment — 1 replica for 3-node dev cluster.
 apiVersion: apps/v1
@@ -90,6 +81,15 @@ spec:
         app.kubernetes.io/part-of: devops-platform
     spec:
       serviceAccountName: kibana
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: node-role.kubernetes.io/control-plane
+                    operator: DoesNotExist
+      nodeSelector:
+        kubernetes.io/hostname: worker-01
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000
@@ -101,8 +101,6 @@ spec:
         - name: kibana
           image: docker.elastic.co/kibana/kibana:8.14.0
           imagePullPolicy: IfNotPresent
-          args:
-            - --elasticsearch.username=kibana_system
           ports:
             - name: http
               containerPort: 5601
@@ -122,13 +120,15 @@ spec:
                   name: kibana-credentials
                   key: KIBANA_PASSWORD
                   optional: false  # fail-closed
+            - name: NODE_OPTIONS
+              value: "--max-old-space-size=320"
           resources:
             requests:
               cpu: 100m
-              memory: 256Mi
+              memory: 192Mi
             limits:
               cpu: 500m
-              memory: 1Gi
+              memory: 768Mi
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: false  # Kibana writes to /usr/share/kibana/data
@@ -141,14 +141,17 @@ spec:
             initialDelaySeconds: 30
             periodSeconds: 10
             timeoutSeconds: 5
-            failureThreshold: 12
+            failureThreshold: 30
           livenessProbe:
-            httpGet:
-              path: /api/status
+            # Kibana 8 returns 503 on /api/status while plugins load (3-4 min on
+            # slow dev nodes); an httpGet liveness probe false-kills it mid-boot.
+            # tcpSocket only asserts the port is listening.
+            tcpSocket:
               port: http
-            initialDelaySeconds: 90
-            periodSeconds: 30
+            initialDelaySeconds: 180
+            periodSeconds: 60
             timeoutSeconds: 5
+            failureThreshold: 3
           volumeMounts:
             - name: config
               mountPath: /usr/share/kibana/config/kibana.yml

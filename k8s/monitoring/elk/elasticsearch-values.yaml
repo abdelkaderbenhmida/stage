@@ -85,29 +85,18 @@ data:
     xpack.security.transport.ssl.enabled: false
     xpack.security.http.ssl.enabled: false
     xpack.ml.enabled: false
-    xpack.monitoring.collection.enabled: true
+    xpack.monitoring.collection.enabled: false
     action.destructive_requires_name: true
+    # Memory trim for 1.9Gi dev nodes: avoid mmap of Lucene segments and cap
+    # the indexing buffer so RSS stays far below the container limit.
+    node.store.allow_mmap: false
+    indices.memory.index_buffer_size: 64mb
+    indices.breaker.total.limit: 40%
 ---
-# Secret — bootstrap elastic + kibana_system passwords.
-# Created out-of-band (see scripts/bootstrap-elasticsearch-secret.sh)
-# so no plaintext secret is shipped in git.
-apiVersion: v1
-kind: Secret
-metadata:
-  name: elasticsearch-credentials
-  namespace: monitoring
-  labels:
-    app.kubernetes.io/name: elasticsearch
-    app.kubernetes.io/part-of: devops-platform
-type: Opaque
-stringData:
-  # DO NOT COMMIT REAL VALUES. Bootstrap out-of-band with:
-  #   kubectl -n monitoring create secret generic elasticsearch-credentials \
-  #     --from-literal=ELASTIC_PASSWORD=$ELASTIC_PASSWORD \
-  #     --from-literal=KIBANA_PASSWORD=$KIBANA_PASSWORD \
-  #     --dry-run=client -o yaml | kubectl apply -f -
-  ELASTIC_PASSWORD: "DO-NOT-COMMIT-INJECT-VIA-Scripts-bootstrap-elasticsearch-secret.sh"
-  KIBANA_PASSWORD: "DO-NOT-COMMIT-INJECT-VIA-Scripts-bootstrap-elasticsearch-secret.sh"
+# Secret `elasticsearch-credentials` (ELASTIC_PASSWORD + KIBANA_PASSWORD) is
+# NOT declared here — it is created out-of-band by
+# scripts/bootstrap-elasticsearch-secret.sh so no plaintext ships in git.
+# The StatefulSet below references it and fails closed if it is missing.
 ---
 # StatefulSet — 1 replica, PVC 10Gi local-path.
 apiVersion: apps/v1
@@ -131,6 +120,14 @@ spec:
         app.kubernetes.io/part-of: devops-platform
     spec:
       serviceAccountName: elasticsearch
+      # Keep ES off the control-plane node to reduce API/DNS instability.
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: node-role.kubernetes.io/control-plane
+                    operator: DoesNotExist
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000
@@ -168,7 +165,7 @@ spec:
               protocol: TCP
           env:
             - name: ES_JAVA_OPTS
-              value: "-Xms512m -Xmx512m"
+              value: "-Xms512m -Xmx512m -XX:ReservedCodeCacheSize=64m -XX:MaxDirectMemorySize=256m -Dio.netty.leakDetectionLevel=disabled"
             - name: ELASTIC_PASSWORD
               valueFrom:
                 secretKeyRef:
@@ -182,30 +179,29 @@ spec:
           resources:
             requests:
               cpu: 200m
-              memory: 1Gi
+              memory: 448Mi
             limits:
               cpu: "1"
-              memory: 2Gi
+              memory: 1024Mi
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: false  # ES writes to /usr/share/elasticsearch/data
             capabilities:
               drop: ["ALL"]
           readinessProbe:
-            httpGet:
-              path: /_cluster/health?local=true
+            tcpSocket:
               port: http
-            initialDelaySeconds: 30
-            periodSeconds: 10
+            initialDelaySeconds: 60
+            periodSeconds: 15
             timeoutSeconds: 5
-            failureThreshold: 6
+            failureThreshold: 8
           livenessProbe:
-            httpGet:
-              path: /_cluster/health?local=true
+            tcpSocket:
               port: http
-            initialDelaySeconds: 90
-            periodSeconds: 30
+            initialDelaySeconds: 240
+            periodSeconds: 60
             timeoutSeconds: 5
+            failureThreshold: 3
           volumeMounts:
             - name: config
               mountPath: /usr/share/elasticsearch/config/elasticsearch.yml

@@ -94,9 +94,10 @@ data:
             - stream
           ignore_missing: true
 
-    output.logstash:
-      hosts: ["logstash.monitoring.svc.cluster.local:5044"]
-      loadbalance: true
+    output.elasticsearch:
+      hosts: ["http://elasticsearch.monitoring.svc.cluster.local:9200"]
+      username: "${ELASTICSEARCH_USERNAME}"
+      password: "${ELASTICSEARCH_PASSWORD}"
       worker: 2
 
     # Block-level: when Logstash is down, hold the events in the spooler
@@ -153,6 +154,14 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: spec.nodeName
+            - name: ELASTICSEARCH_USERNAME
+              value: "elastic"
+            - name: ELASTICSEARCH_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: elasticsearch-credentials
+                  key: ELASTIC_PASSWORD
+                  optional: false
           resources:
             requests:
               cpu: 10m
@@ -168,17 +177,21 @@ spec:
           livenessProbe:
             exec:
               command:
-                - /usr/share/filebeat/bin/filebeat
+                - /usr/share/filebeat/filebeat
                 - test
                 - config
+                - -c
+                - /etc/filebeat/filebeat.yml
             initialDelaySeconds: 30
             periodSeconds: 30
           readinessProbe:
             exec:
               command:
-                - /usr/share/filebeat/bin/filebeat
+                - /usr/share/filebeat/filebeat
                 - test
                 - config
+                - -c
+                - /etc/filebeat/filebeat.yml
             initialDelaySeconds: 10
             periodSeconds: 10
             timeoutSeconds: 5
