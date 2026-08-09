@@ -79,7 +79,7 @@ jobs:
           curl -sSL -o /tmp/kubeconform.tar.gz \
             https://github.com/yannh/kubeconform/releases/download/v0.6.4/kubeconform-linux-amd64.tar.gz
           tar -xzf /tmp/kubeconform.tar.gz -C /tmp kubeconform
-          find k8s/ -name '*.yaml' ! -name 'values.yaml' ! -name 'crds.yaml' -print0 | \
+          find k8s/ -name '*.yaml' ! -name '*values*.yaml' ! -name 'Chart.yaml' ! -name 'crds.yaml' -print0 | \
             xargs -0 /tmp/kubeconform -strict -ignore-missing-schemas -kubernetes-version 1.28.0 \
               -schema-location 'https://raw.githubusercontent.com/yannh/kubernetes-json-schema/master/master-standalone/{{.ResourceKind}}.json'
 
@@ -89,7 +89,7 @@ jobs:
           /tmp/kubeconform -strict -ignore-missing-schemas \
             -kubernetes-version 1.28.0 \
             -schema-location 'https://raw.githubusercontent.com/yannh/kubernetes-json-schema/master/master-standalone/{{.ResourceKind}}.json' \
-            < <(find k8s/ -name '*.yaml' ! -name 'values.yaml' ! -name 'crds.yaml' -exec cat {} +) || true
+            < <(find k8s/ -name '*.yaml' ! -name '*values*.yaml' ! -name 'Chart.yaml' ! -name 'crds.yaml' -exec cat {} +) || true
           pip install conftest 2>/dev/null && conftest test k8s/ --policy k8s/policies/conftest/ 2>/dev/null || echo "conftest not installed — policy-as-code in audit mode"
 
   # ──────────────────────────────────────────────
