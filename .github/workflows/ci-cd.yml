@@ -2,7 +2,9 @@ name: CI/CD Pipeline
 
 on:
   push:
-    branches: [main, develop, clean-main]
+    branches: [main, develop, clean-main, secondary]
+    paths:
+      - "app/**"
       - "k8s/**"
       - "terraform/**"
       - "ansible/**"
@@ -10,7 +12,7 @@ on:
       - "scripts/**"
       - ".gitleaks.toml"
   pull_request:
-    branches: [main, develop]
+    branches: [main, develop, secondary]
   workflow_dispatch:
   schedule:
     # Nightly drift detection — catches new vulnerabilities in dependencies.
