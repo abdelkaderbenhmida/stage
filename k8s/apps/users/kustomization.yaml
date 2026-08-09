@@ -5,5 +5,5 @@ resources:
   - users-service.yaml
 images:
   - name: users-service
-    newName: ghcr.io/abdelkaderbenhmida/users-service
+    newName: ghcr.io/<owner>/users-service
     newTag: latest

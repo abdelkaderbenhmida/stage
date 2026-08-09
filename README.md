@@ -1,117 +1,142 @@
 # DevOps Central Platform
 
-Plateforme DevOps de bout en bout autour de **3 microservices FastAPI** (Users, Products, Orders). Le projet démontre l'ensemble de la chaîne DevOps moderne : provisionnement IaC, configuration automatisée, conteneurisation, orchestration Kubernetes, sécurité du pipeline (DevSecOps), GitOps, et observabilité complète (métriques + logs centralisés).
+[![CI/CD](https://github.com/<owner>/<repo>/actions/workflows/ci-cd.yml/badge.svg)](https://github.com/<owner>/<repo>/actions/workflows/ci-cd.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-> Documentation de spécification complète :
-> - [`docs/DevOps_Central_Platform_Description.md`](docs/DevOps_Central_Platform_Description.md)
-> - [`docs/DevOps_Central_Platform_Etapes_Implementation.md`](docs/DevOps_Central_Platform_Etapes_Implementation.md)
+End-to-end DevOps platform built around **3 FastAPI microservices** (Users, Products, Orders). Demonstrates the full modern DevOps toolchain: Infrastructure as Code, automated configuration, containerization, Kubernetes orchestration, DevSecOps pipeline hardening, GitOps, and complete observability (metrics + centralized logs).
+
+> Full specification (French): [`docs/DevOps_Central_Platform_Description.md`](docs/DevOps_Central_Platform_Description.md) and [`docs/DevOps_Central_Platform_Etapes_Implementation.md`](docs/DevOps_Central_Platform_Etapes_Implementation.md)
+
+> **Note:** Before deploying, replace the `<owner>`/`<repo>` placeholders in the manifests (see [Configure your repo identity](#configure-your-repo-identity)).
 
 ---
 
-## Stack technique
+## Stack
 
-| Couche | Outil |
+| Layer | Tool |
 |---|---|
-| Infrastructure as Code | Terraform (provider libvirt/KVM homelab ou équivalent cloud) |
-| Configuration | Ansible (rôles `docker`, `k8s_common`, `k8s_master`, `k8s_worker`) |
-| Conteneurisation | Docker multi-stage, images non-root + HEALTHCHECK |
-| Orchestration | Kubernetes + Helm (charts Prometheus, Grafana, ELK) |
-| Sécurité | Trivy (image), Gitleaks (code), HashiCorp Vault (secrets dynamiques) |
+| Infrastructure as Code | Terraform (libvirt/KVM homelab provider or equivalent cloud) |
+| Configuration | Ansible (roles `docker`, `k8s_common`, `k8s_master`, `k8s_worker`) |
+| Containerization | Docker multi-stage builds, non-root images + HEALTHCHECK |
+| Orchestration | Kubernetes + Helm (Prometheus, Grafana, ELK charts) |
+| Security | Trivy (image scanning), Gitleaks (secret scanning), HashiCorp Vault (dynamic secrets) |
 | GitOps | GitHub Actions (CI), ArgoCD (sync) |
-| Observabilité | Prometheus (métriques 15s), Grafana (3 dashboards), ELK Stack (logs), AlertManager (SLO rules) |
+| Observability | Prometheus (15s metrics), Grafana (3 dashboards), ELK Stack (logs), AlertManager (SLO rules) |
 
----
-
-## Structure du dépôt
+## Architecture
 
 ```
-devops-central-platform/
-├── terraform/                # Phase 1 — IaC (main, variables, outputs, backend, inventory.tpl)
-├── ansible/                  # Phase 2 — rôles docker + k8s_*
-├── app/                      # Phase 3 — 3 microservices FastAPI
+Terraform ──provisions──▶ 3 VMs (1 master + 2 workers, libvirt/KVM)
+   │
+Ansible ──configures──▶ Docker + Kubernetes 1.28 (containerd, Calico)
+   │
+GitHub Actions CI ──builds & scans──▶ images on GHCR (Trivy, Gitleaks)
+   │
+ArgoCD ──GitOps sync──▶ k8s/apps (3 services) + monitoring stack
+   │
+Prometheus / Grafana / ELK / AlertManager ──observability──▶ SLO dashboards
+```
+
+## Repository layout
+
+```
+├── terraform/                # IaC (main, variables, outputs, backend, inventory.tpl)
+├── ansible/                  # Roles docker + k8s_*
+├── app/                      # 3 FastAPI microservices + shared/ lib
 │   ├── users-service/  products-service/  orders-service/
-│   └── shared/               # lib partagée (vault_client, log_config)
+│   └── shared/               # vault_client, log_config, config
 ├── k8s/
-│   ├── apps/                 # Deployments + Service + HPA + RBAC
-│   ├── monitoring/           # Phase 6 — prometheus, grafana, elk, alertmanager
-│   ├── argocd/applications/  # Phase 5 — Applications CRDs
-│   └── vault/                # Phase 4 — manifests + policy.hcl + values.yaml
-├── .github/workflows/ci-cd.yml  # lint → gitleaks → tests → build → trivy → deploy
-├── scripts/
-│   ├── validate-platform.sh     # Phase 7 — 7 checks + self-heal + rollback + 7/7 PASS
-│   ├── validate-security.sh     # 4 security checks (gitleaks/trivy/vault/token)
-│   ├── bootstrap-vault-secret.sh
-│   ├── bootstrap-elasticsearch-secret.sh
-│   └── generate-inventory.sh   # Regénère terraform/inventory.ini
-├── docs/                     # Spécifications source
-├── .gitleaks.toml
-└── README.md
+│   ├── apps/                 # base/ + per-service kustomizations + overlays (dev/staging/prod)
+│   ├── monitoring/           # Prometheus, Grafana, ELK, AlertManager
+│   ├── argocd/               # Applications CRDs + install
+│   └── vault/                # Vault manifests + policy.hcl
+├── scripts/                  # validate-platform.sh, validate-security.sh, bootstrap-*, generate-inventory.sh
+├── .github/workflows/ci-cd.yml  # lint → gitleaks → test → build → trivy → deploy
+└── docs/                     # Specification and runbooks
 ```
 
----
+## Requirements
 
-## Démarrage rapide
+- `git`, `terraform` (~> 1.5), `ansible`, `docker`, `kubectl`, `helm`, `jq`
+- Homelab: 8 GB RAM + 4 vCPU per node (libvirt/KVM), or an equivalent AWS/GCP/Azure setup
 
-### Prérequis
-- `git`, `terraform`, `ansible`, `docker`, `kubectl`, `helm`, `jq`
-- 8 Go RAM + 4 vCPU (interne libvirt/KVM) ou compte cloud AWS/GCP/Azure
+## Quick start
 
-### Build des images (contexte `app/`)
+### Build images (build context is `app/`)
+
 ```bash
 for svc in users-service products-service orders-service; do
   docker build -t "${svc}:1.0.0" -f "app/${svc}/Dockerfile" app/
 done
 ```
 
-### Provisionnement terraform → ansible → k8s
+### Provision infra → configure → deploy
+
 ```bash
 cd terraform && terraform init && terraform apply
-scripts/generate-inventory.sh
+scripts/generate-inventory.sh        # regenerates ansible/inventory.ini (never hand-edit)
 cd ../ansible && ansible-playbook playbook.yml
 ```
 
-### Déploiement de la plateforme sur le cluster
+### Deploy platform on the cluster
+
 ```bash
 kubectl apply -f k8s/apps/base/namespace.yaml
 kubectl apply -f k8s/vault/manifests.yaml
 scripts/bootstrap-vault-secret.sh
 kubectl apply -f k8s/apps/
-# ArgoCD bootstrap (manual once)
-kubectl apply -k k8s/argocd/install/
-# ArgoCD then syncs the rest of the apps automatically
+kubectl apply -k k8s/argocd/install/   # ArgoCD bootstrap (once), then auto-syncs
 ```
 
-### Validation complète (Phase 7)
+### Validation
+
 ```bash
 scripts/validate-platform.sh                 # summary
 scripts/validate-platform.sh --ci            # gating (exit 1 on failure)
 scripts/validate-platform.sh --skip-incident # skip destructive self-heal/rollback
+scripts/validate-security.sh                 # gitleaks / trivy / vault / token checks
 ```
 
----
+## CI/CD pipeline
 
-## SLOs de référence
+`.github/workflows/ci-cd.yml`:
+
+```
+lint → gitleaks → test → build → trivy-scan → deploy (workflow_dispatch only)
+```
+
+Hardening: `fail-fast: false`, `concurrency: cancel-in-progress`, least-privilege `permissions`, `paths` filters, Trivy `--severity CRITICAL,HIGH --exit-code 1 --ignore-unfixed` + SBOM + SARIF, no mutable `:latest` tags outside the default branch.
+
+## SLOs
 
 | SLI | SLO |
 |---|---|
-| Disponibilité | ≥ 99.9% sur 30 jours |
-| Latence P95 | < 200 ms |
-| Taux d'erreur 5xx | < 1% |
+| Availability | ≥ 99.9% over 30 days |
+| Latency P95 | < 200 ms |
+| 5xx error rate | < 1% |
 | MTTD | < 2 min |
 | MTTR | < 30 min |
 
-Règles implémentées dans [`k8s/monitoring/alertmanager/rules.yaml`](k8s/monitoring/alertmanager/rules.yaml).
+Rules implemented in [`k8s/monitoring/alertmanager/rules.yaml`](k8s/monitoring/alertmanager/rules.yaml).
 
----
+## Configure your repo identity
 
-## Pipeline CI/CD
+The manifests reference images and repositories via placeholders. Before deploying, replace them with your own GitHub owner and repository name:
 
-`.github/workflows/ci-cd.yml` :
-
-```
-lint → gitleaks → test → build → trivy-scan → deploy (workflow_dispatch + protected `production` env)
+```bash
+grep -rn "<owner>\|<repo>" k8s/ app/ docs/ --include="*.yaml" --include="*.md" --include="Dockerfile"
 ```
 
-Trivy : `--severity CRITICAL,HIGH --exit-code 1 --ignore-unfixed` + SBOM SPDX + SARIF.
+Affected files: `k8s/apps/**/kustomization.yaml` (GHCR image paths), `k8s/argocd/**` (repoURLs), `app/*/Dockerfile` (OCI source label), `docs/comprendre-le-projet.md`.
 
-Pipeline durci : `fail-fast: false`, `concurrency: cancel-in-progress`, permissions `contents: read` par défaut + escalation par job, `paths:` filters, `workflow_dispatch` only pour le stage prod.
+## Security
+
+- `terraform.tfstate` and `*.tfvars` are gitignored and never committed
+- Gitleaks scans for secrets (local pre-commit + blocking CI job)
+- Trivy blocks the pipeline on CRITICAL/HIGH vulnerabilities
+- `pip-audit --strict` fails the pipeline on known-vulnerable pinned dependencies
+- Vault secrets fail closed: services refuse to start without a resolvable secret (dev fallback via `ENVIRONMENT=dev`)
+
+## License
+
+[MIT](LICENSE)

@@ -18,7 +18,7 @@ spec:
     # (k8s/monitoring/grafana/Chart.yaml). values.yaml configures datasources +
     # dashboard provider + references the 4 spec'd dashboards (overview/perf/
     # errors/infra-detail) provisioned from k8s/monitoring/grafana/dashboards/.
-    repoURL: https://github.com/abdelkaderbenhmida/stage.git
+    repoURL: https://github.com/<owner>/<repo>.git
     targetRevision: main
     path: k8s/monitoring/grafana
     helm:

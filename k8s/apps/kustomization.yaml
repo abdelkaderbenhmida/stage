@@ -17,11 +17,11 @@ resources:
   - orders/
 images:
   - name: users-service
-    newName: ghcr.io/abdelkaderbenhmida/users-service
+    newName: ghcr.io/<owner>/users-service
     newTag: latest
   - name: products-service
-    newName: ghcr.io/abdelkaderbenhmida/products-service
+    newName: ghcr.io/<owner>/products-service
     newTag: latest
   - name: orders-service
-    newName: ghcr.io/abdelkaderbenhmida/orders-service
+    newName: ghcr.io/<owner>/orders-service
     newTag: latest

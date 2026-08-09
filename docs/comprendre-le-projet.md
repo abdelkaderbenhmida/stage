@@ -459,7 +459,7 @@ helm install vault hashicorp/vault -n vault -f k8s/vault/vault-values.yaml --cre
 ### 5.10 kustomize (variation YAML)
 ### ──────────────────────────────
 
-Le même dossier `k8s/apps/base/` (le "commun" : Namespace, NetworkPolicies, PDB, RBAC, HPA) + des overlays qui ajoutent/modifient. La racine `k8s/apps/kustomization.yaml` agrège `base/` + les 3 sous-kustomizations services (`users/`, `products/`, `orders/`) et **épingle** les images sur le registre `ghcr.io/abdelkaderbenhmida/<svc>:latest`.
+Le même dossier `k8s/apps/base/` (le "commun" : Namespace, NetworkPolicies, PDB, RBAC, HPA) + des overlays qui ajoutent/modifient. La racine `k8s/apps/kustomization.yaml` agrège `base/` + les 3 sous-kustomizations services (`users/`, `products/`, `orders/`) et **épingle** les images sur le registre `ghcr.io/<owner>/<svc>:latest`.
 
 Différences par overlay :
 - `overlays/dev/` : réplicas 2, tags mutables (`latest`) ;
@@ -500,7 +500,7 @@ metadata:
 spec:
   project: devops-platform
   source:
-    repoURL: https://github.com/abdelkaderbenhmida/stage.git
+    repoURL: https://github.com/<owner>/<repo>.git
     targetRevision: main
     path: k8s/apps/users
   destination:
