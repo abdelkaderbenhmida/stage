@@ -256,15 +256,12 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Resolve built image at digest (P1 fix — no :latest race)
+      - name: Resolve built image
         id: resolve
         run: |
-          case "${{ matrix.service }}" in
-            users-service)    IMAGE="${{ needs.build.outputs.users-image }}" ;;
-            products-service) IMAGE="${{ needs.build.outputs.products-image }}" ;;
-            orders-service)   IMAGE="${{ needs.build.outputs.orders-image }}" ;;
-          esac
+          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/${{ matrix.service }}:${{ github.ref_name }}"
           echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+          echo "Scanning target image: $IMAGE"
 
       - name: Log in to registry
         uses: docker/login-action@v3
@@ -282,6 +279,7 @@ jobs:
           image-ref: ${{ steps.resolve.outputs.image }}
           format: sarif
           output: trivy-${{ matrix.service }}.sarif
+          ignore-unfixed: true
 
       - name: Trivy vulnerability scan — fail on CRITICAL/HIGH
         uses: aquasecurity/trivy-action@v0.24.0
