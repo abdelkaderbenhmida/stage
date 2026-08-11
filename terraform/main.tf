@@ -1,10 +1,10 @@
 terraform {
-  required_version = "~> 1.5" # P2: upper-bound to avoid surprise breaking jumps.
+  required_version = "~> 1.5"
 
   required_providers {
-    libvirt = {
-      source  = "dmacvicar/libvirt"
-      version = "~> 0.9"
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.0"
     }
 
     local = {
@@ -14,8 +14,8 @@ terraform {
   }
 }
 
-provider "libvirt" {
-  uri = var.libvirt_uri
+provider "aws" {
+  region = var.aws_region
 }
 
 locals {
@@ -25,140 +25,166 @@ locals {
     )
   )
 
-  network_prefix = var.network_prefix != null ? var.network_prefix : tonumber(split("/", var.network_cidr)[1])
-  gateway_ip     = var.gateway_ip != null ? var.gateway_ip : cidrhost(var.network_cidr, 1)
-
-
   master_node = {
     name = var.master_name
-    ip   = cidrhost(var.network_cidr, 10)
     role = "master"
   }
 
   worker_nodes = [
     for index in range(var.worker_count) : {
       name = format("worker-%02d", index + 1)
-      ip   = cidrhost(var.network_cidr, 11 + index)
       role = "worker"
     }
   ]
+}
 
-  nodes = {
-    for node in concat([local.master_node], local.worker_nodes) : node.name => node
+# ── VPC & Networking ──
+resource "aws_vpc" "platform" {
+  cidr_block           = var.vpc_cidr
+  enable_dns_hostnames = true
+  enable_dns_support   = true
+
+  tags = {
+    Name        = "devops-platform-vpc"
+    Environment = var.environment
   }
 }
 
-resource "libvirt_network" "platform" {
-  name = var.network_name
+resource "aws_subnet" "public" {
+  vpc_id                  = aws_vpc.platform.id
+  cidr_block              = var.subnet_cidr
+  map_public_ip_on_launch = true
 
-  domain = {
-    name       = var.network_domain
-    local_only = "yes"
-  }
-
-  forward = {
-    mode = "nat"
-  }
-
-  ips = [
-    {
-      address = cidrhost(var.network_cidr, 1)
-      netmask = cidrnetmask(var.network_cidr)
-      dhcp = {
-        ranges = [
-          {
-            start = cidrhost(var.network_cidr, 100)
-            end   = cidrhost(var.network_cidr, 200)
-          }
-        ]
-      }
-    }
-  ]
-
-  dns = {
-    enable = "yes"
-    forwarders = [
-      for dns in var.dns_servers : { addr = dns }
-    ]
+  tags = {
+    Name        = "devops-platform-subnet"
+    Environment = var.environment
   }
 }
 
-resource "libvirt_volume" "base" {
-  name = var.base_image_name
-  pool = var.storage_pool
+resource "aws_internet_gateway" "gw" {
+  vpc_id = aws_vpc.platform.id
 
-  target = {
-    format = { type = "qcow2" }
-  }
-
-  create = {
-    content = {
-      url = var.base_image_path
-    }
+  tags = {
+    Name        = "devops-platform-igw"
+    Environment = var.environment
   }
 }
 
-resource "libvirt_volume" "node" {
-  for_each = local.nodes
+resource "aws_route_table" "public" {
+  vpc_id = aws_vpc.platform.id
 
-  name     = "${each.key}.qcow2"
-  pool     = var.storage_pool
-  capacity = var.disk_size_gb * 1024 * 1024 * 1024
-
-  create = {
-    content = {
-      url = var.base_image_path
-    }
+  route {
+    cidr_block = "0.0.0.0/0"
+    gateway_id = aws_internet_gateway.gw.id
   }
 
-  target = {
-    format = { type = "qcow2" }
-    permissions = {
-      owner = var.libvirt_volume_owner_uid
-      group = var.libvirt_volume_group_gid
-      mode  = "0600"
-    }
+  tags = {
+    Name        = "devops-platform-rt"
+    Environment = var.environment
   }
-
-
 }
 
-resource "libvirt_cloudinit_disk" "init" {
-  for_each = local.nodes
-
-  name = "${each.key}-init.iso"
-
-  user_data = templatefile("${path.module}/cloud-init.tpl", {
-    hostname       = each.key
-    ssh_user       = var.ssh_user
-    ssh_public_key = local.ssh_public_key
-  })
-
-  meta_data = yamlencode({
-    instance-id    = each.key
-    local-hostname = each.key
-  })
-
-  network_config = templatefile("${path.module}/network-config.tpl", {
-    interface_name = var.network_interface
-    ip             = each.value.ip
-    prefix         = local.network_prefix
-    gateway        = local.gateway_ip
-    dns_servers    = var.dns_servers
-  })
+resource "aws_route_table_association" "public" {
+  subnet_id      = aws_subnet.public.id
+  route_table_id = aws_route_table.public.id
 }
 
-resource "libvirt_volume" "cloudinit_iso" {
-  for_each = local.nodes
+# ── Security Group ──
+resource "aws_security_group" "k8s" {
+  name        = "devops-platform-sg"
+  description = "Security group for Kubernetes cluster nodes"
+  vpc_id      = aws_vpc.platform.id
 
-  name = "${each.key}-cloudinit.iso"
-  pool = var.storage_pool
-
-  create = {
-    content = {
-      url = libvirt_cloudinit_disk.init[each.key].path
-    }
+  # Internal node-to-node communication (all protocols/ports)
+  ingress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    self        = true
+    description = "Allow all node-to-node communication"
   }
+
+  # SSH access (restricted via var.admin_cidr_blocks)
+  ingress {
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = var.admin_cidr_blocks
+    description = "Allow SSH access"
+  }
+
+  # Kubernetes API server
+  ingress {
+    from_port   = 6443
+    to_port     = 6443
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+    description = "Allow Kubernetes API server"
+  }
+
+  # HTTP
+  ingress {
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+    description = "Allow HTTP traffic"
+  }
+
+  # HTTPS
+  ingress {
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+    description = "Allow HTTPS traffic"
+  }
+
+  # Kubernetes NodePorts range (30000-32767)
+  ingress {
+    from_port   = 30000
+    to_port     = 32767
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+    description = "Allow Kubernetes NodePorts"
+  }
+
+  # Egress: allow all outbound traffic
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+    description = "Allow all outbound traffic"
+  }
+
+  tags = {
+    Name        = "devops-platform-sg"
+    Environment = var.environment
+  }
+}
+
+# ── AMI Lookup (Ubuntu 22.04 LTS) ──
+data "aws_ami" "ubuntu" {
+  most_recent = true
+
+  filter {
+    name   = "name"
+    values = ["ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-*"]
+  }
+
+  filter {
+    name   = "virtualization-type"
+    values = ["hvm"]
+  }
+
+  owners = ["099720109477"] # Canonical
+}
+
+# ── SSH Key Pair ──
+resource "aws_key_pair" "deployer" {
+  key_name   = "devops-platform-key"
+  public_key = local.ssh_public_key
 }
 
 resource "terraform_data" "ssh_key_guard" {
@@ -172,96 +198,62 @@ resource "terraform_data" "ssh_key_guard" {
   }
 }
 
-resource "libvirt_domain" "node" {
-  for_each = local.nodes
+# ── EC2 Compute Instances ──
+resource "aws_instance" "master" {
+  ami                    = data.aws_ami.ubuntu.id
+  instance_type          = var.aws_instance_type_master
+  subnet_id              = aws_subnet.public.id
+  vpc_security_group_ids = [aws_security_group.k8s.id]
+  key_name               = aws_key_pair.deployer.key_name
 
-  name        = each.key
-  type        = "kvm"
-  memory      = var.vm_memory_mb
-  memory_unit = "MiB"
-  vcpu        = var.vm_vcpu
-
-  os = {
-    type         = "hvm"
-    type_arch    = "x86_64"
-    type_machine = "q35"
+  root_block_device {
+    volume_size           = var.disk_size_gb
+    volume_type           = "gp3"
+    delete_on_termination = true
   }
 
-  devices = {
-    disks = [
-      {
-        source = {
-          volume = {
-            pool   = libvirt_volume.node[each.key].pool
-            volume = libvirt_volume.node[each.key].name
-          }
-        }
-        target = {
-          dev = "vda"
-          bus = "virtio"
-        }
-        driver = {
-          type = "qcow2"
-        }
-      },
-      {
-        device = "cdrom"
-        source = {
-          volume = {
-            pool   = libvirt_volume.cloudinit_iso[each.key].pool
-            volume = libvirt_volume.cloudinit_iso[each.key].name
-          }
-        }
-        target = {
-          dev = "sda"
-          bus = "sata"
-        }
-      },
-    ]
-
-    interfaces = [
-      {
-        model = { type = "virtio" }
-        source = {
-          network = {
-            network = libvirt_network.platform.name
-          }
-        }
-      },
-    ]
-
-    consoles = [
-      {
-        type        = "pty"
-        target_port = "0"
-        target_type = "serial"
-      },
-    ]
-
-    graphics = [
-      {
-        vnc = {
-          auto_port = true
-          listen    = "127.0.0.1"
-        }
-      },
-    ]
+  tags = {
+    Name        = local.master_node.name
+    Role        = "master"
+    Environment = var.environment
   }
-
-  running = true
 }
 
+resource "aws_instance" "worker" {
+  count                  = var.worker_count
+  ami                    = data.aws_ami.ubuntu.id
+  instance_type          = var.aws_instance_type_worker
+  subnet_id              = aws_subnet.public.id
+  vpc_security_group_ids = [aws_security_group.k8s.id]
+  key_name               = aws_key_pair.deployer.key_name
 
+  root_block_device {
+    volume_size           = var.disk_size_gb
+    volume_type           = "gp3"
+    delete_on_termination = true
+  }
 
+  tags = {
+    Name        = format("worker-%02d", count.index + 1)
+    Role        = "worker"
+    Environment = var.environment
+  }
+}
+
+# ── Ansible Inventory Generation ──
 resource "local_file" "ansible_inventory" {
-  # Audit fix: never overwrite the committed inventory.ini. .generated suffix
-  # is gitignored-friendly (existing *.ini not gitignored — we add it via
-  # scripts/generate-inventory.sh chmod + minimal override, not commit).
   filename = "${path.module}/inventory.generated.ini"
   content = templatefile("${path.module}/inventory.tpl", {
-    master_name = local.master_node.name
-    master_ip   = local.master_node.ip
-    workers     = local.worker_nodes
-    ssh_user    = var.ssh_user
+    master_name       = local.master_node.name
+    master_public_ip  = aws_instance.master.public_ip
+    master_private_ip = aws_instance.master.private_ip
+    workers = [
+      for index, instance in aws_instance.worker : {
+        name       = format("worker-%02d", index + 1)
+        public_ip  = instance.public_ip
+        private_ip = instance.private_ip
+      }
+    ]
+    ssh_user = var.ssh_user
   })
 }

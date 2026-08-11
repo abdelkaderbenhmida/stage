@@ -1,7 +1,7 @@
 package main
 
 # Enforce readOnlyRootFilesystem on all containers
-deny[msg] {
+deny contains msg if {
   input.kind == "Deployment"
   container := input.spec.template.spec.containers[_]
   not container.securityContext.readOnlyRootFilesystem
@@ -9,7 +9,7 @@ deny[msg] {
 }
 
 # Enforce drop ALL capabilities
-deny[msg] {
+deny contains msg if {
   input.kind == "Deployment"
   container := input.spec.template.spec.containers[_]
   caps := container.securityContext.capabilities.drop[_]
@@ -18,7 +18,7 @@ deny[msg] {
 }
 
 # Enforce runAsNonRoot
-deny[msg] {
+deny contains msg if {
   input.kind == "Deployment"
   input.spec.template.spec.securityContext.runAsNonRoot != true
   msg := sprintf("Deployment %s must set runAsNonRoot: true", [input.metadata.name])

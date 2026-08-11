@@ -880,3 +880,87 @@ done
 echo ""
 echo "═══════════════════════════════════════════"
 ```
+
+
+
+
+
+
+
+Complete test chain, Terraform → all tools. Run from /home/gadour/Desktop/stage. Order matters:
+0. Pre-flight
+terraform version && ansible --version && kubectl cluster-info
+virsh list --all
+ls -lh /var/lib/libvirt/images/ubuntu-*.img
+groups
+1. Terraform (VMs provision)
+cd terraform && cp terraform.tfvars.example terraform.tfvars
+terraform init && terraform validate && terraform fmt -check -recursive .
+terraform plan -out=plan.out && terraform apply plan.out
+virsh list --all
+cd .. && ./scripts/generate-inventory.sh
+2. Ansible (VMs config + K8s bootstrap)
+ansible-galaxy collection install -r ansible/requirements.yml
+ansible-playbook ansible/playbook.yml --syntax-check
+ansible-playbook ansible/playbook.yml --check --diff
+ansible-playbook ansible/playbook.yml
+3. Docker images
+for svc in users-service products-service orders-service; do
+  docker build -t "$svc:latest" -f "app/$svc/Dockerfile" app/
+done
+4. Kubernetes + deploy all tools
+kubectl get nodes -o wide && kubectl get pods -A
+kubectl apply -f k8s/apps/base/namespace.yaml
+kubectl apply -k k8s/apps/
+kubectl apply -f k8s/vault/manifests.yaml
+kubectl apply -k k8s/monitoring/
+kubectl apply -k k8s/argocd/install/
+kubectl -n devops-platform rollout status deploy/users-service products-service orders-service
+5. Vault
+./scripts/bootstrap-vault-secret.sh
+VP=$(kubectl get pods -n vault -l app.kubernetes.io/name=vault -o jsonpath='{.items[0].metadata.name}')
+kubectl exec -n vault "$VP" -- vault status
+kubectl exec -n vault "$VP" -- vault secrets list
+kubectl exec -n vault "$VP" -- sh -c "VAULT_ADDR=http://127.0.0.1:8200 vault kv put secret/devops-platform/users-service DATABASE_URL='sqlite:///:memory:' JWT_SECRET_KEY='dev-secret'"
+6. Microservices (endpoints)
+kubectl port-forward -n devops-platform deploy/users-service 18000:8000 &
+curl -s http://127.0.0.1:18000/livez && curl -s http://127.0.0.1:18000/users
+kill %1
+7. Prometheus
+kubectl port-forward -n monitoring deploy/prometheus 9090:9090 &
+curl -s http://127.0.0.1:9090/api/v1/targets | jq '.data.activeTargets[] | select(.health=="up") | .labels.job'
+curl -s 'http://127.0.0.1:9090/api/v1/query?query=sum(http_requests_total)'
+kill %1
+8. Grafana
+kubectl port-forward -n monitoring deploy/grafana 3000:3000 &
+curl -s http://127.0.0.1:3000/api/health
+kubectl get secret grafana-admin -n monitoring -o jsonpath='{.data.admin-password}' | base64 -d
+kill %1
+9. Alertmanager
+kubectl port-forward -n monitoring deploy/alertmanager 9093:9093 &
+curl -s http://127.0.0.1:9093/api/v2/status
+kill %1
+10. ELK (Elasticsearch + Kibana)
+./scripts/bootstrap-elasticsearch-secret.sh
+kubectl port-forward -n monitoring elasticsearch-0 9200:9200 &
+curl -s http://127.0.0.1:9200/_cluster/health
+kill %1
+kubectl port-forward -n monitoring deploy/kibana 5601:5601 &
+curl -s http://127.0.0.1:5601/api/status
+kill %1
+11. ArgoCD
+kubectl port-forward -n argocd deploy/argocd-server 8080:8080 &
+curl -s http://127.0.0.1:8080/api/version
+kubectl get secret argocd-initial-admin-secret -n argocd -o jsonpath='{.data.password}' | base64 -d
+kubectl get applications -A
+kill %1
+12. Security scans
+gitleaks detect --source . --config .gitleaks.toml --redact --no-banner
+for svc in users-service products-service orders-service; do trivy image --severity CRITICAL,HIGH --exit-code 1 "$svc:latest"; done
+conftest test --policy k8s/policies/conftest/ k8s/apps/
+13. Automated validation (all-in-one)
+./scripts/validate-platform.sh --skip-incident    # 7 checks + self-heal
+./scripts/validate-security.sh                    # gitleaks/trivy/vault
+./scripts/smoke-test.sh                           # live cluster E2E
+./scripts/stress-hpa.sh                           # HPA autoscaling
+Full documented version with every curl per service: docs/test.md.

@@ -60,9 +60,9 @@
     daemon_reload: true
   tags: docker
 
-- name: Add devops user to docker group
+- name: Add cluster user to docker group
   ansible.builtin.user:
-    name: devops
+    name: "{{ docker_user }}"
     groups: docker
     append: true
   tags: docker

@@ -1,37 +1,39 @@
-# Example tfvars — copy to terraform.tfvars (gitignored) and edit.
-# Backend (remote S3 + locking): pass via `terraform init -backend-config=...`
-# instead of tfvars. Bucket must have versioning + SSE-KMS + public access blocked
-# and a DynamoDB table "terraform-locks" with a LockID primary key.
+# Example tfvars for AWS EC2 Deployment — copy to terraform.tfvars (gitignored) and edit.
 #
+# Remote S3 Backend (see backend.tf — bootstrap bucket + lock table once, then):
 #   terraform init \
-#     -backend-config="bucket=stage-terraform-state" \
-#     -backend-config="key=stage/terraform.tfstate" \
+#     -backend-config="bucket=devops-platform-tfstate" \
+#     -backend-config="key=devops-platform/terraform.tfstate" \
 #     -backend-config="region=eu-west-1"
 
-# ── VM specs ──
-vm_vcpu      = 2
-vm_memory_mb = 4096
-disk_size_gb = 20
+# ── AWS Region & Environment ──
+aws_region  = "eu-west-1"
+environment = "dev"
 
-# ── Cluster topology ──
+# ── Networking (AWS VPC) ──
+vpc_cidr    = "10.0.0.0/16"
+subnet_cidr = "10.0.1.0/24"
+
+# ── EC2 Compute Specs ──
+# t3.medium (~$0.0416/h each) is the kubeadm/Calico minimum; NOT in the free tier.
+# For a free-tier try-out use t2.micro (1 vCPU/1GB — likely too small for a full
+# control plane + Calico). worker_count x master cost roughly = rate x 24 x 30.
+aws_instance_type_master = "t3.medium"
+aws_instance_type_worker = "t3.medium"
+disk_size_gb             = 20
+
+# ── Cluster Topology ──
 master_name  = "master-01"
 worker_count = 2
 
-# ── Network (RFC1918 only — see variables.tf validation) ──
-network_cidr  = "192.168.56.0/24"
-network_name  = "devops-platform-net"
-network_domain = "devops.local"
+# ── SSH Access ──
+# SSH user for Ubuntu AMI on AWS EC2
+ssh_user = "ubuntu"
 
-# ── Base image ──
-# Path is host-specific. Override to match your libvirt storage layout.
-base_image_path  = "/var/lib/libvirt/images/ubuntu-22.04-server-cloudimg-amd64.img"
-storage_pool     = "default"
-
-# ── SSH access ──
-ssh_user = "devops"
 # Public key authorized on the nodes. Leave null to auto-detect from ~/.ssh.
 # Override with your own: ssh_public_key = "ssh-ed25519 AAAA... user@host"
 ssh_public_key = null
 
-# ── DNS ──
-dns_servers = ["1.1.1.1", "8.8.8.8"]
+# CIDR blocks allowed SSH access. Open to the world for the demo; restrict to
+# your office/home IP in production (e.g. ["203.0.113.7/32"]).
+admin_cidr_blocks = ["0.0.0.0/0"]

@@ -8,7 +8,7 @@
       WARNING: This will DESTROY the Kubernetes cluster on ALL nodes.
       - kubeadm reset -f
       - Remove /etc/kubernetes, /var/lib/etcd, /var/lib/kubelet, /var/lib/cni
-      - Remove devops ~/.kube config
+      - Remove cluster user ~/.kube config
       - Flush iptables
       Press ENTER to continue or Ctrl+C to abort
   when: ansible_play_hosts | length > 0
@@ -37,9 +37,9 @@
     - /opt/cni/bin
   tags: reset
 
-- name: Remove devops user kubeconfig
+- name: Remove cluster user kubeconfig
   ansible.builtin.file:
-    path: /home/devops/.kube
+    path: "{{ cluster_user_home }}/.kube"
     state: absent
   tags: reset
 

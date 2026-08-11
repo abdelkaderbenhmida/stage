@@ -8,5 +8,6 @@ docker_packages:
 docker_keyring_dir: /etc/apt/keyrings
 docker_gpg_key_path: /etc/apt/keyrings/docker.gpg
 containerd_config_path: /etc/containerd/config.toml
-# Hardcoded group the devops user is added to.
-docker_user: devops
+# User granted docker group membership. Defaults to the cluster admin user
+# (devops on libvirt homelab, ubuntu on AWS EC2).
+docker_user: "{{ cluster_user | default('devops') }}"

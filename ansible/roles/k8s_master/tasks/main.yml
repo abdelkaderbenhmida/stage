@@ -3,7 +3,7 @@
   ansible.builtin.command:
     cmd: >
       kubeadm init
-      --apiserver-advertise-address={{ ansible_host }}
+      --apiserver-advertise-address={{ private_ip | default(ansible_host) }}
       --pod-network-cidr={{ pod_cidr }}
       --service-cidr={{ service_cidr }}
       --cri-socket={{ cri_endpoint }}
@@ -14,21 +14,21 @@
   register: kubeadm_init_result
   tags: master
 
-- name: Create .kube directory for devops user
+- name: Create .kube directory for cluster user
   ansible.builtin.file:
-    path: /home/devops/.kube
+    path: "{{ cluster_user_home }}/.kube"
     state: directory
     mode: "0755"
-    owner: devops
-    group: devops
+    owner: "{{ cluster_user }}"
+    group: "{{ cluster_user }}"
   tags: master
 
-- name: Copy admin kubeconfig to devops user
+- name: Copy admin kubeconfig to cluster user
   ansible.builtin.copy:
     src: /etc/kubernetes/admin.conf
-    dest: /home/devops/.kube/config
-    owner: devops
-    group: devops
+    dest: "{{ cluster_user_home }}/.kube/config"
+    owner: "{{ cluster_user }}"
+    group: "{{ cluster_user }}"
     mode: "0600"
     remote_src: true
   tags: master
@@ -153,8 +153,8 @@
       #!/bin/bash
       {{ kubeadm_join_command.stdout }}
     dest: "{{ kubeadm_join_sh | default('/tmp/kubeadm-join.sh') }}"
-    owner: devops
-    group: devops
+    owner: "{{ cluster_user }}"
+    group: "{{ cluster_user }}"
     mode: "0700"
   no_log: true  # inherit no_log from upstream token command — token in content.
   tags: master
@@ -163,8 +163,8 @@
   ansible.builtin.copy:
     content: "{{ kubeadm_join_command.stdout }}"
     dest: "{{ kubeadm_join_txt | default('/tmp/kubeadm-join.txt') }}"
-    owner: devops
-    group: devops
+    owner: "{{ cluster_user }}"
+    group: "{{ cluster_user }}"
     mode: "0600"   # P2: was 0644 — plaintext-readable by any local user.
   no_log: true  # inherit no_log from upstream token command.
   tags: master

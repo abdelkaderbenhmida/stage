@@ -1,29 +1,47 @@
-output "master_ip" {
-  description = "IP address of the master node."
-  value       = local.master_node.ip
-  sensitive   = true # IPs no longer echoed in plain `terraform plan` output.
-}
-
-output "worker_ips" {
-  description = "IP addresses of the worker nodes."
-  value       = [for worker in local.worker_nodes : worker.ip]
+output "master_public_ip" {
+  description = "Public IP address of the Kubernetes master node."
+  value       = aws_instance.master.public_ip
   sensitive   = true
 }
 
-output "node_ips" {
-  description = "All node names and their IP addresses."
-  value       = { for name, node in local.nodes : name => node.ip }
+output "master_private_ip" {
+  description = "Private IP address of the Kubernetes master node."
+  value       = aws_instance.master.private_ip
+  sensitive   = true
+}
+
+output "worker_public_ips" {
+  description = "Public IP addresses of the Kubernetes worker nodes."
+  value = {
+    for index, instance in aws_instance.worker :
+    format("worker-%02d", index + 1) => instance.public_ip
+  }
+  sensitive = true
+}
+
+output "worker_private_ips" {
+  description = "Private IP addresses of the Kubernetes worker nodes."
+  value = {
+    for index, instance in aws_instance.worker :
+    format("worker-%02d", index + 1) => instance.private_ip
+  }
+  sensitive = true
+}
+
+output "ssh_master_command" {
+  description = "SSH command to connect to the master node."
+  value       = "ssh ${var.ssh_user}@${aws_instance.master.public_ip}"
   sensitive   = true
 }
 
 output "ansible_inventory_file" {
   description = "Generated Ansible inventory file path."
   value       = local_file.ansible_inventory.filename
-  sensitive   = true # generated positional artifact; do not surface in logs.
+  sensitive   = true
 }
 
 output "ansible_inventory_content" {
-  description = "Rendered Ansible inventory content (contains IPs + user)."
+  description = "Rendered Ansible inventory content."
   value       = local_file.ansible_inventory.content
   sensitive   = true
 }

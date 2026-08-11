@@ -6,3 +6,7 @@ pod_cidr: "192.168.0.0/16"
 service_cidr: "10.96.0.0/12"
 containerd_socket: "/run/containerd/containerd.sock"
 cri_endpoint: "unix:///run/containerd/containerd.sock"
+# Administrative user provisioned on the nodes (devops on libvirt homelab,
+# ubuntu on AWS EC2). Resolved from the inventory per host.
+cluster_user: "{{ ansible_user | default('devops') }}"
+cluster_user_home: "/home/{{ cluster_user }}"

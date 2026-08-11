@@ -36,4 +36,4 @@ DevOps Central Platform — homelab (libvirt/KVM) platform using Terraform + Ans
 - CI triggers only on `paths` in `.github/workflows/ci-cd.yml` (`app/`, `k8s/`, `terraform/`, `ansible/`, `scripts/`, `.gitleaks.toml`, workflow itself) — docs/tests-only changes skip CI.
 - Terraform pinned `~> 1.5` (`required_version` in `terraform/main.tf`, CI matrix 1.5.7). Do not bump to 1.6+.
 - Images tagged branch-name + `commit-<sha>`; no mutable `:latest` outside default branch. Trivy scans by tag from `github.ref_name` — matrix rows must not race on the same tag.
-- Nightly `schedule` jobs: drift scan (pip-audit style re-check) + k6 load test. Note: `tests/k6/load-test.js` referenced by `load-test` job does not exist yet — job fails on schedule runs.
+- Nightly `schedule` jobs: drift scan (pip-audit style re-check) + k6 load test (`tests/k6/load-test.js`, `BASE_URL` env-driven, defaults to `users-service` ClusterIP).
