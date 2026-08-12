@@ -16,7 +16,7 @@
 #     policies=devops-platform-<svc> ttl=1h
 
 # Read the KV v2 secret value for the service's own secret path.
-# `${svc}` must be substituted at apply time (users-service | products-service | orders-service).
+# `${svc}` must be substituted at apply time — one service per discovered app dir.
 path "secret/data/devops-platform/${svc}" {
   capabilities = ["read"]
 }

@@ -1,0 +1,88 @@
+{{- range .Values.services }}
+{{- $svc := . }}
+{{- $port := $svc.port | default 8000 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $svc.name }}
+  namespace: {{ $.Values.namespace }}
+  labels:
+    app.kubernetes.io/name: {{ $svc.name }}
+    {{- include "apps-common.labels" $ | nindent 4 }}
+spec:
+  selector:
+    app.kubernetes.io/name: {{ $svc.name }}
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      protocol: TCP
+  type: ClusterIP
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $svc.name }}-sa
+  namespace: {{ $.Values.namespace }}
+  labels:
+    app.kubernetes.io/name: {{ $svc.name }}
+    {{- include "apps-common.labels" $ | nindent 4 }}
+automountServiceAccountToken: false
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ $svc.name }}
+  namespace: {{ $.Values.namespace }}
+  labels:
+    app.kubernetes.io/name: {{ $svc.name }}
+    {{- include "apps-common.labels" $ | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ $svc.name }}
+  minReplicas: {{ $.Values.hpa.min }}
+  maxReplicas: {{ $.Values.hpa.max }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ $.Values.hpa.cpu }}
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: {{ $.Values.hpa.memory }}
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 30
+      policies:
+        - type: Percent
+          value: 100
+          periodSeconds: 30
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Percent
+          value: 25
+          periodSeconds: 60
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ $svc.name }}-pdb
+  namespace: {{ $.Values.namespace }}
+  labels:
+    app.kubernetes.io/name: {{ $svc.name }}
+    {{- include "apps-common.labels" $ | nindent 4 }}
+spec:
+  minAvailable: {{ $.Values.pdbMinAvailable }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ $svc.name }}
+{{- end }}

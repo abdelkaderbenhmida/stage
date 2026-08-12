@@ -129,8 +129,10 @@ scripts/validate-security.sh
 ## Security posture (changes from audit)
 
 - **Root token out of git** — rotated via `scripts/bootstrap-vault-secret.sh`.
-- **Per-service SAs** — app pods now run as `users-service-sa`,
-  `products-service-sa`, `orders-service-sa` (`k8s/apps/rbac.yaml`).
+- **Per-service SAs** — each discovered app service gets its own
+  `<service>-sa` ServiceAccount (rendered by `k8s/apps/chart`); the
+  `vault-setup` job derives services from the `devops-service-list`
+  ConfigMap synced by CI, so no service name is hardcoded.
 - **Fail-closed `optional: false`** on the `VAULT_TOKEN` `secretKeyRef` — pods
   refuse to start when the Secret is absent/empty.
 - **Restricted Pod Security Admission** label on both namespaces enforces

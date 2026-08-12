@@ -14,11 +14,14 @@ spec:
   groups:
     # ── Availability: up metric < 99.9% over 30 days ──
     # Recording rule pre-computes avg_over_time to keep raw eval cheap.
+    # Generic across ALL service targets: the shared ServiceMonitor relabels
+    # app.kubernetes.io/part-of into the `part_of` label, so any discovered
+    # service is covered — add/remove services, the rule adapts.
     - name: slo-availability-recording
       interval: 5m
       rules:
         - record: service:availability_30d:ratio
-          expr: avg_over_time(up{job=~"users-service|products-service|orders-service"}[30d])
+          expr: avg_over_time(up{part_of="devops-platform"}[30d])
     - name: slo-availability
       interval: 5m
       rules:

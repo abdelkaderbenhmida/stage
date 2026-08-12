@@ -19,6 +19,8 @@ repos:
       - id: check-yaml
         # Allow long lines — many Helm/K8s values are run-on by design.
         args: ["--allow-multiple-documents"]
+        # Helm chart templates are Go-template files, not plain YAML.
+        exclude: '^k8s/apps/chart/templates/'
       - id: end-of-file-fixer
       - id: trailing-whitespace
       - id: check-merge-conflict
@@ -37,6 +39,8 @@ repos:
       - id: yamllint
         args: ["-d", "{rules: {line-length: disable}, comments: {require-starting-space: true}}"]
         files: '^(k8s|.*\.github).*\.ya?ml$'
+        # Helm chart templates are Go-template files, not plain YAML.
+        exclude: '^k8s/apps/chart/templates/'
 
   - repo: https://github.com/gitleaks/gitleaks
     rev: v8.18.0

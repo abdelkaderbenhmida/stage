@@ -1,0 +1,34 @@
+# Least-privilege self-read role + binding for every discovered service SA.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: app-read-self
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: app-read-self
+    app.kubernetes.io/part-of: devops-platform
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get"]
+{{- if .Values.services }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: apps-read-self
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: apps-read-self
+    app.kubernetes.io/part-of: devops-platform
+subjects:
+{{- range .Values.services }}
+  - kind: ServiceAccount
+    name: {{ .name }}-sa
+    namespace: {{ $.Values.namespace }}
+{{- end }}
+roleRef:
+  kind: Role
+  name: app-read-self
+  apiGroup: rbac.authorization.k8s.io
+{{- end }}

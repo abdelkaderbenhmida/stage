@@ -42,13 +42,17 @@ Prometheus / Grafana / ELK / AlertManager ──observability──▶ SLO dashb
 ```
 ├── terraform/                # IaC (main, variables, outputs, backend, inventory.tpl)
 ├── ansible/                  # Roles docker + k8s_*
-├── app/                      # 3 FastAPI microservices + shared/ lib
+├── app/                      # Services auto-discovered by main.py presence
+│   ├── Dockerfile            # ONE generic Dockerfile (SERVICE_NAME build-arg)
 │   ├── users-service/  products-service/  orders-service/
 │   └── shared/               # vault_client, log_config, config
 ├── k8s/
-│   ├── apps/                 # base/ + per-service kustomizations + overlays (dev/staging/prod)
+│   ├── apps/
+│   │   ├── base/                # Namespace + NetworkPolicies (static)
+│   │   └── chart/               # Generic Helm chart — one Deployment/Service/
+│   │                            #   SA/HPA/PDB per discovered service
 │   ├── monitoring/           # Prometheus, Grafana, ELK, AlertManager
-│   ├── argocd/               # Applications CRDs + install
+│   ├── argocd/               # ApplicationSet + Applications + install
 │   └── vault/                # Vault manifests + policy.hcl
 ├── scripts/                  # validate-platform.sh, validate-security.sh, bootstrap-*, generate-inventory.sh
 ├── .github/workflows/ci-cd.yml  # lint → gitleaks → test → build → trivy → deploy
@@ -62,11 +66,16 @@ Prometheus / Grafana / ELK / AlertManager ──observability──▶ SLO dashb
 
 ## Quick start
 
-### Build images (build context is `app/`)
+### Build images (one generic Dockerfile, SERVICE_NAME build-arg)
 
 ```bash
+# app/Dockerfile is the ONLY Dockerfile — the service dir name is injected.
 for svc in users-service products-service orders-service; do
-  docker build -t "${svc}:1.0.0" -f "app/${svc}/Dockerfile" app/
+  docker build -t "${svc}:1.0.0" --build-arg SERVICE_NAME=$svc -f app/Dockerfile app/
+done
+# Or build whatever is discovered, automatically:
+for d in app/*/; do
+  [ -f "$d/main.py" ] && docker build -t "$(basename "$d"):1.0.0" --build-arg SERVICE_NAME="$(basename "$d")" -f app/Dockerfile app/
 done
 ```
 
@@ -81,12 +90,28 @@ cd ../ansible && ansible-playbook playbook.yml
 ### Deploy platform on the cluster
 
 ```bash
-kubectl apply -f k8s/apps/base/namespace.yaml
+# 1. Static base (namespace, network policies)
+kubectl apply -k k8s/apps/base/
+
+# 2. Vault (secrets are injected out-of-band, fail-closed)
 kubectl apply -f k8s/vault/manifests.yaml
 scripts/bootstrap-vault-secret.sh
-kubectl apply -f k8s/apps/
-kubectl apply -k k8s/argocd/install/   # ArgoCD bootstrap (once), then auto-syncs
-```
+
+# 3. App services — discovery-driven Helm chart.
+#    ANY directory under app/ with a main.py is a service:
+#    no names are hardcoded anywhere.
+for svc in app/*/; do
+  [ -f "$svc/main.py" ] && printf '  - name: %s\n' "$(basename "$svc")"
+done > /tmp/services.yaml
+helm template apps k8s/apps/chart -f <(printf 'services:\n'; cat /tmp/services.yaml) | kubectl apply --server-side -f -
+
+# 4. Keyed provisioning: fresh services get empty placeholder keys —
+#    write real secrets with:
+#      vault kv put secret/devops-platform/<service> <KEY>=<value>
+
+# 5. GitOps bootstrap (once), then ArgoCD auto-syncs: one Application per
+#    discovered service (see k8s/argocd/applicationset.yaml)
+kubectl apply -k k8s/argocd/install/
 
 ### Validation
 
@@ -127,7 +152,7 @@ The manifests reference images and repositories via placeholders. Before deployi
 grep -rn "<owner>\|<repo>" k8s/ app/ docs/ --include="*.yaml" --include="*.md" --include="Dockerfile"
 ```
 
-Affected files: `k8s/apps/**/kustomization.yaml` (GHCR image paths), `k8s/argocd/**` (repoURLs), `app/*/Dockerfile` (OCI source label), `docs/comprendre-le-projet.md`.
+Affected files: `k8s/argocd/**` (repoURLs), `app/Dockerfile` (OCI source label), `docs/comprendre-le-projet.md`.
 
 ## Security
 

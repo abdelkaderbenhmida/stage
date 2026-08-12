@@ -1,0 +1,28 @@
+# One ServiceMonitor for ALL app services — matches by part-of label, so the
+# service count never matters. Prometheus (monitoring ns) scrapes every service
+# in the app namespace that carries app.kubernetes.io/part-of=devops-platform.
+# The relabeling exports the part-of label into Prometheus labels so SLO rules can
+# select services generically (part_of="devops-platform").
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: devops-platform-apps
+  namespace: {{ .Values.smNamespace }}
+  labels:
+    app.kubernetes.io/name: devops-platform-apps
+    app.kubernetes.io/part-of: devops-platform
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/part-of: devops-platform
+  namespaceSelector:
+    matchNames:
+      - {{ .Values.namespace }}
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 15s
+      scrapeTimeout: 10s
+      relabelings:
+        - sourceLabels: [__meta_kubernetes_service_label_app_kubernetes_io_part_of]
+          targetLabel: part_of

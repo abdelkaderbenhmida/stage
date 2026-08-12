@@ -1,0 +1,38 @@
+# Generic defaults. The services list is injected by discovery (CI deploy job
+# or ArgoCD ApplicationSet) — never hardcode a service name in this file.
+namespace: devops-platform
+registry: ghcr.io/<owner>
+imageTag: latest
+replicas: 2
+environment: production
+
+pdbMinAvailable: 1
+
+hpa:
+  min: 2
+  max: 5
+  cpu: 70
+  memory: 80
+
+resources:
+  requests:
+    cpu: "100m"
+    memory: "128Mi"
+  limits:
+    cpu: "250m"
+    memory: "256Mi"
+
+vault:
+  addr: "http://vault-service.vault.svc.cluster.local:8200"
+  tokenSecret: vault-root-token
+
+# Namespace where the shared ServiceMonitor lives (Prometheus Operator).
+smNamespace: monitoring
+
+# services:
+#   - name: my-service
+#     # image: sha256:...    # digest override (immutable, set by CI)
+#     # tag: branch-x        # tag override
+#     # replicas: 3
+#     # port: 8000
+#     # secrets env names are per-service; Vault path is secret/devops-platform/<name>

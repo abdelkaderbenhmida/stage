@@ -211,8 +211,14 @@ data:
       kubernetes_host="https://kubernetes.default.svc.cluster.local" \
       kubernetes_ca_cert=@/var/run/secrets/kubernetes.io/serviceaccount/ca.crt || true
 
-    # ── Per-service policies ───────────────────────────────────────────────
-    for svc in users-service products-service orders-service; do
+    # ── Per-service provisioning — discovery-driven ────────────────────────
+    # Service names come from the `devops-service-list` ConfigMap (synced by
+    # the CI deploy job from app/*/Dockerfile scan). No service name is
+    # hardcoded here: add/remove a service dir and this loops adapts.
+    for svc in $SERVICES; do
+      echo "Provisioning Vault access for $svc ..."
+
+      # Least-privilege read-only policy scoped to the service's KV path.
       cat <<EOF | vault policy write "devops-platform-${svc}" -
     path "secret/data/devops-platform/${svc}" {
       capabilities = ["read"]
@@ -221,38 +227,23 @@ data:
       capabilities = ["read", "list"]
     }
     EOF
-    done
 
-    # Bind each app ServiceAccount to its Vault policy via Kubernetes auth.
-    for svc in users-service products-service orders-service; do
+      # Bind the app ServiceAccount to its Vault policy via Kubernetes auth.
       vault write "auth/kubernetes/role/${svc}" \
         bound_service_account_names="${svc}-sa" \
         bound_service_account_namespaces="devops-platform" \
         policies="devops-platform-${svc}" \
         ttl="1h" || true
+
+      # Seed the path with an empty placeholder so policies match; the app
+      # fails closed until the operator writes real secrets out-of-band.
+      # Secret KEYS are the app's own contract (get_secret(<name>) in its
+      # code) — the platform provisions ACCESS, not secret content.
+      vault kv put secret/devops-platform/${svc} DATABASE_URL="" || true
     done
 
-    # ── Vault KV paths initialized — no secrets committed in git ─────────────
-    # Real secrets MUST be written to Vault out-of-band by an operator
-    # (via the Vault CLI, SOPS + vault write, or SealedSecrets).
-    # The paths below are created empty so policies match; services will
-    # fail-closed on startup until secrets are injected.
-    echo "Creating empty Vault KV paths for per-service secrets..."
-
-    vault kv put secret/devops-platform/users-service \
-      DATABASE_URL="" \
-      JWT_SECRET_KEY=""
-
-    vault kv put secret/devops-platform/products-service \
-      DATABASE_URL="" \
-      API_KEY=""
-
-    vault kv put secret/devops-platform/orders-service \
-      DATABASE_URL="" \
-      PAYMENT_GATEWAY_KEY=""
-
     echo "Vault setup complete. Sealed: $(vault status | grep Sealed | awk '{print $2}')"
-    echo "!! Secrets are EMPTY — inject real values out-of-band before deploying services."
+    echo "!! Secrets are EMPTY — inject real values out-of-band for every service before deploying."
 ---
 # Job — Runs the setup script once Vault is running
 apiVersion: batch/v1
@@ -301,6 +292,13 @@ spec:
                 secretKeyRef:
                   name: vault-root-token
                   key: root-token
+            # Service list synced by the CI deploy job (discovery of
+            # app/*/Dockerfile). Required: the Job fails fast if missing.
+            - name: SERVICES
+              valueFrom:
+                configMapKeyRef:
+                  name: devops-service-list
+                  key: services
           resources:
             requests:
               cpu: "50m"
