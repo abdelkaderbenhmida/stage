@@ -339,6 +339,27 @@ pre.code .tk-dim { color: var(--dim); }
 }
 .add-svc input:focus { border-color: var(--border-hi); }
 
+.add-svc-panel {
+  margin-top: 14px; padding: 12px; background: rgba(76,194,255,.05);
+  border: 1px dashed var(--border-hi); border-radius: 10px;
+}
+.add-svc-label { font-size: 12px; font-weight: 600; color: var(--muted); margin-bottom: 8px; }
+.add-svc-label b { color: var(--accent); }
+
+.new-app-panel {
+  display: flex; gap: 28px; flex-wrap: wrap; padding: 22px;
+  background: linear-gradient(90deg, rgba(76,194,255,.06), rgba(122,92,255,.04));
+  border-color: var(--border-hi);
+}
+.new-app-step { display: flex; gap: 14px; flex: 1; min-width: 260px; }
+.step-num {
+  width: 30px; height: 30px; border-radius: 50%; background: var(--accent); color: #fff;
+  font-weight: 800; font-size: 14px; display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0;
+}
+.step-title { font-weight: 700; font-size: 14px; margin-bottom: 2px; }
+.step-sub { font-size: 12px; color: var(--muted); }
+
 .toast {
   position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(20px);
   background: var(--panel-solid); border: 1px solid var(--border-hi);
@@ -360,6 +381,22 @@ pre.code .tk-dim { color: var(--dim); }
 .act-btn.danger:hover { color: var(--red); border-color: rgba(248,113,113,.4); background: rgba(248,113,113,.08); }
 
 .kbd { font-family: var(--mono); font-size: 11px; color: var(--dim); border: 1px solid var(--border); border-radius: 5px; padding: 1px 6px; background: var(--panel2); }
+
+/* ─────────── Platform Health ─────────── */
+.health-row {
+  display: grid; grid-template-columns: 1fr 120px 120px 120px;
+  align-items: center; gap: 12px; padding: 14px 16px;
+  border-bottom: 1px solid var(--border); cursor: pointer; transition: background .12s;
+}
+.health-row:last-child { border-bottom: none; }
+.health-row:hover { background: var(--panel2); }
+.health-head {
+  cursor: default; font-size: 11px; font-weight: 700; text-transform: uppercase;
+  color: var(--muted); letter-spacing: .4px; background: var(--panel2);
+}
+.health-head:hover { background: var(--panel2); }
+.health-col { text-align: center; }
+.health-label { font-size: 9px; color: var(--dim); text-transform: uppercase; margin-bottom: 4px; }
 
 /* ─────────── Configuration ─────────── */
 .cfg-tabs {

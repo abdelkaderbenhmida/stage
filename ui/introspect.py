@@ -860,25 +860,51 @@ def argocd_refresh(app_name: str) -> dict[str, Any]:
 
 # ─── Vault — real seal/health status + KV listing ───
 
+VAULT_PROXY = "/api/v1/namespaces/vault/services/vault-service:8200/proxy"
+
+
+def _vault_root_token() -> str | None:
+    res = _run(
+        ["kubectl", "get", "secret", "vault-root-token", "-n", "vault", "-o", "jsonpath={.data.root-token}"],
+        timeout=KUBECTL_TIMEOUT,
+    )
+    if not res["ok"] or not res["stdout"]:
+        return None
+    import base64
+    try:
+        return base64.b64decode(res["stdout"]).decode()
+    except Exception:
+        return None
+
+
 def vault_status() -> dict[str, Any]:
-    res = _run(["vault", "status", "-format=json"], timeout=6)
-    if not res["stdout"]:
-        return {"reachable": False, "error": res["stderr"] or "VAULT_ADDR not reachable"}
+    res = _run(["kubectl", "get", "--raw", f"{VAULT_PROXY}/v1/sys/seal-status"], timeout=KUBECTL_TIMEOUT)
+    if not res["ok"]:
+        return {"reachable": False, "error": res["stderr"] or "vault unreachable via cluster proxy"}
     try:
         data = json.loads(res["stdout"])
     except json.JSONDecodeError:
-        return {"reachable": False, "error": res["stderr"] or "could not parse vault output"}
+        return {"reachable": False, "error": "could not parse vault output"}
     return {
         "reachable": True,
         "sealed": data.get("sealed"),
         "initialized": data.get("initialized"),
         "version": data.get("version"),
-        "ha_enabled": data.get("ha_enabled"),
+        "ha_enabled": data.get("ha_enabled", False),
     }
 
 
-def vault_secrets(path: str = "secret/devops-platform") -> dict[str, Any]:
-    res = _run(["vault", "kv", "list", "-format=json", path], timeout=6)
+def vault_secrets(path: str = "devops-platform") -> dict[str, Any]:
+    token = _vault_root_token()
+    if not token:
+        return {"reachable": False, "error": "could not read vault-root-token secret", "keys": []}
+    # kubectl get --raw can't send custom headers (needed for X-Vault-Token),
+    # so exec the vault CLI inside the pod instead — same effective path.
+    res = _run(
+        ["kubectl", "exec", "-n", "vault", "deploy/vault", "--",
+         "env", f"VAULT_TOKEN={token}", "vault", "kv", "list", "-format=json", f"secret/{path}"],
+        timeout=10,
+    )
     if not res["ok"]:
         return {"reachable": False, "error": res["stderr"] or "cannot list secrets", "keys": []}
     try:

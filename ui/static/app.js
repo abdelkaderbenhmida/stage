@@ -191,143 +191,122 @@ function topoArrows() {
 }
 
 function renderTopology() {
-  const d = state.data;
-  const svcs = d.services;
-  const ov = d.overview;
-  const CI = "#a78bfa", ARGO = "#f472b6", HELM = "#fbbf24", VAULT = "#fb923c", MON = "#34d399", SLO = "#4cc2ff";
-
-  const X_REPO = 30, X_SVC = 330, X_LAYER = 630;
-  const W = 250, H = 54;
-  const LAYER_GAP = 96;
-  const svcH = 62;
-
-  const parts = [];
-  parts.push(topoArrows());
-
-  let y = 30;
-  parts.push(topoNode(X_REPO, y, W, H, "app/*/main.py", "discovery — source of truth", "#34d399", {
-    id: "repo",
-    tooltip: `<div class="tt-title">Discovery contract</div>
-      <div class="tt-row">repo: ${esc(ov.repo)}</div>
-      <div class="tt-row">branch: ${esc(ov.revision.branch)} @ ${esc(ov.revision.commit)}</div>
-      <div class="tt-row">any dir with main.py = a service</div>
-      <div class="tt-row">0 hardcoded names in the platform</div>`,
-  }));
-
-  const repoY = y + H;
-
-  y = 150;
-  svcs.forEach((s, i) => {
-    const yy = y + i * (svcH + 22);
-    parts.push(topoNode(X_SVC, yy, W, svcH, s.name, `v${s.version} · ${s.endpoints.length} routes`, "#4cc2ff", {
-      id: `svc-${s.name}`,
-      view: "services",
-      search: s.name,
-      tooltip: `<div class="tt-title">${esc(s.title)}</div>
-        <div class="tt-row">${s.loc} LOC · ${s.requirements_num} pinned deps</div>
-        <div class="tt-row">vault: ${s.uses_vault ? "yes" : "no"} · endpoints: ${s.endpoints.join(" ")}</div>`,
-    }));
-    parts.push(topoEdge(d, X_REPO + W, repoY, X_SVC + 10, yy + svcH / 2, "#34d399", 0.35));
-  });
-  const svcCenters = svcs.map((_, i) => 150 + i * (svcH + 22) + svcH / 2);
-
-  const layers = [
-    { key: "ci", label: "CI / CD", sub: `${d.ci.jobs.length} jobs · fromJSON matrix`, color: CI, view: "ci",
-      tooltip: `<div class="tt-title">CI/CD</div>
-        <div class="tt-row">discover job → matrix per service</div>
-        <div class="tt-row">lint · test · build · trivy · deploy</div>
-        <div class="tt-row">fromJSON: ${d.ci.uses_fromjson.join(", ")}</div>` },
-    { key: "argocd", label: "ArgoCD", sub: `git files app/*/main.py · 1 app/service`, color: ARGO, view: "argocd",
-      tooltip: `<div class="tt-title">ApplicationSet</div>
-        <div class="tt-row">generator: git files ${esc((d.argocd.files_pattern || []).map((f) => f.path).join(", "))}</div>
-        <div class="tt-row">sync: ${esc(JSON.stringify(d.argocd.sync_policy?.automated ?? {}))}</div>
-        <div class="tt-row">delete dir → app pruned → cascade delete</div>` },
-    { key: "helm", label: "Helm Chart", sub: `${d.helm.formula} · ${d.helm.total} objects`, color: HELM, view: "helm",
-      tooltip: `<div class="tt-title">Generic chart</div>
-        <div class="tt-row">${d.helm.formula} rendered objects</div>
-        <div class="tt-row">per service: ${esc(d.helm.expected_per_service.join(" · "))}</div>
-        <div class="tt-row">shared: ${esc(d.helm.expected_shared.join(" · "))}</div>` },
-    { key: "vault", label: "Vault", sub: `policies + k8s-auth roles per service`, color: VAULT, view: "vault",
-      tooltip: `<div class="tt-title">Secret provisioning</div>
-        <div class="tt-row">loop from devops-service-list ConfigMap</div>
-        <div class="tt-row">policy: devops-platform-&lt;svc&gt;</div>
-        <div class="tt-row">role bound to &lt;svc&gt;-sa, ttl 1h</div>` },
-    { key: "monitoring", label: "Prometheus", sub: `ServiceMonitor part-of → ${d.monitoring.rules.length} SLO rules`, color: MON, view: "monitoring",
-      tooltip: `<div class="tt-title">Observability</div>
-        <div class="tt-row">matchLabels: part-of=devops-platform</div>
-        <div class="tt-row">${d.monitoring.rules.length} alert/record rules</div>
-        <div class="tt-row">scrape /metrics 15s · relabel part_of</div>` },
-  ];
-
-  const layerY0 = 130;
-  layers.forEach((L, i) => {
-    const yy = layerY0 + i * (H + LAYER_GAP);
-    parts.push(topoNode(X_LAYER, yy, W, H, L.label, L.sub, L.color, {
-      id: L.key, view: L.view,
-      tooltip: L.tooltip,
-    }));
-    svcCenters.forEach((cy, si) => {
-      parts.push(topoEdge(d, X_SVC + W, cy, X_LAYER + 10, yy + H / 2, L.color, 0.4));
-    });
-    if (L.key === "argocd") {
-      const helmY = layerY0 + 1 * (H + LAYER_GAP);
-      parts.push(topoEdge(d, X_LAYER + W, yy + H, X_LAYER + W, helmY, ARGO, 0.3));
-    }
-  });
-
-  const width = X_LAYER + W + 40;
-  const height = layerY0 + (layers.length - 1) * (H + LAYER_GAP) + H + 40;
-
   $("view-topology").innerHTML = `
-    ${explainer(`One picture of the whole platform. <b>Left:</b> your code (app/*/main.py). <b>Right:</b> what the platform does automatically for each service — build (CI), deploy (ArgoCD + Helm), secrets (Vault), monitoring (Prometheus). Add a service folder → new boxes appear. Nothing else to change.`)}
     <div class="head">
       <div>
-        <h1>Platform Topology</h1>
-        <div class="sub">One discovery point (<span class="mono">app/*/main.py</span>) fans out to every platform layer.
-        Add a service — every downstream node in this map grows. Delete it — they shrink. Nothing else changes.</div>
+        <h1>Platform Health</h1>
+        <div class="sub">Real status, right now — pods, CI, ArgoCD sync, and firing alerts per service. Click a service to act on it.</div>
       </div>
-      <div class="header-actions legend">
-        <div class="lg"><span class="sw" style="background:#34d399"></span> source of truth</div>
-        <div class="lg"><span class="sw" style="background:#4cc2ff"></span> services</div>
-        <div class="lg"><span class="sw" style="background:#a78bfa"></span> pipelines</div>
-        <div class="lg"><span class="sw" style="background:#fbbf24"></span> k8s</div>
-        <div class="lg"><span class="sw" style="background:#fb923c"></span> secrets</div>
-        <div class="lg"><span class="sw" style="background:#34d399"></span> observability</div>
+      <button class="act-btn" onclick="renderTopology()">↻ refresh</button>
+    </div>
+    <div id="health-body"><div class="cfg-loading">loading live status…</div></div>`;
+  loadHealthBoard();
+}
+
+async function loadHealthBoard() {
+  const body = $("health-body");
+  if (!body) return;
+  const d = state.data;
+  const svcs = d.services;
+
+  let ci = { reachable: false, runs: [] };
+  let argo = { reachable: false, apps: [] };
+  let alerts = { reachable: false, alerts: [] };
+  let pods = { reachable: false, pods: [] };
+  try {
+    [ci, argo, alerts, pods] = await Promise.all([
+      api("GET", "/api/live/ci").catch(() => ci),
+      api("GET", "/api/live/argocd").catch(() => argo),
+      api("GET", "/api/live/alerts").catch(() => alerts),
+      api("GET", "/api/live/pods?namespace=devops-platform").catch(() => pods),
+    ]);
+  } catch (e) { /* keep defaults, render offline state per-source */ }
+
+  const lastRun = ci.reachable ? ci.runs[0] : null;
+  const ciBadge = !ci.reachable ? pill("offline", "muted")
+    : lastRun.status !== "completed" ? pill(lastRun.status, "amber")
+    : lastRun.conclusion === "success" ? pill("passing", "green") : pill("failing", "red");
+
+  const alertsByService = {};
+  (alerts.alerts || []).forEach((a) => {
+    const k = a.service || "platform";
+    alertsByService[k] = (alertsByService[k] || 0) + 1;
+  });
+
+  const podsByService = {};
+  (pods.pods || []).forEach((p) => {
+    const svc = p.name.replace(/-[a-f0-9]+-[a-z0-9]{5}$/, "");
+    (podsByService[svc] = podsByService[svc] || []).push(p);
+  });
+
+  const argoByService = {};
+  (argo.apps || []).forEach((a) => { argoByService[a.name] = a; });
+
+  const rows = svcs.map((s) => {
+    const myPods = Object.entries(podsByService).find(([k]) => k.includes(s.name) || s.name.includes(k))?.[1] || [];
+    const podsUp = myPods.filter((p) => p.ready).length;
+    const podHealth = !pods.reachable ? pill("cluster offline", "muted")
+      : myPods.length === 0 ? pill("no pods", "red")
+      : podsUp === myPods.length ? pill(`${podsUp}/${myPods.length} up`, "green") : pill(`${podsUp}/${myPods.length} up`, "amber");
+
+    const argoApp = argoByService[s.name] || argoByService[s.name.replace(/^default-/, "")];
+    const argoBadge = !argo.reachable ? pill("offline", "muted")
+      : !argoApp ? pill("not deployed", "muted")
+      : argoApp.sync_status === "Synced" ? pill("synced", "green") : pill(argoApp.sync_status, "amber");
+
+    const nAlerts = alertsByService[s.name] || 0;
+    const alertBadge = nAlerts > 0 ? pill(`${nAlerts} firing`, "red") : pill("clear", "green");
+
+    return `
+      <div class="health-row" onclick="showDetail('${esc(s.name)}')">
+        <div class="health-name">
+          <div class="mono" style="font-weight:800;color:var(--accent)">${esc(s.name)}</div>
+          <div class="muted small">${esc(s.title)} · v${esc(s.version)}</div>
+        </div>
+        <div class="health-col"><div class="health-label">pods</div>${podHealth}</div>
+        <div class="health-col"><div class="health-label">argocd</div>${argoBadge}</div>
+        <div class="health-col"><div class="health-label">alerts</div>${alertBadge}</div>
+      </div>`;
+  }).join("");
+
+  body.innerHTML = `
+    <div class="grid kpis mb">
+      <div class="kpi">
+        <div class="k"><span>CI/CD</span></div>
+        <div class="v">${ciBadge}</div>
+        <div class="d">${lastRun ? esc(lastRun.workflowName) + " · " + esc(lastRun.headBranch) : "no data"}</div>
+      </div>
+      <div class="kpi">
+        <div class="k"><span>ArgoCD apps</span></div>
+        <div class="v ${argo.reachable ? "green" : ""}">${argo.reachable ? argo.apps.filter((a) => a.sync_status === "Synced").length + "/" + argo.apps.length : "–"}</div>
+        <div class="d">synced</div>
+      </div>
+      <div class="kpi">
+        <div class="k"><span>Alerts firing</span></div>
+        <div class="v ${alerts.reachable && alerts.alerts.length ? "" : "green"}" style="${alerts.reachable && alerts.alerts.length ? "color:var(--red)" : ""}">${alerts.reachable ? alerts.alerts.length : "–"}</div>
+        <div class="d">${alerts.reachable ? (alerts.alerts.length ? "needs attention" : "all clear") : "alertmanager offline"}</div>
+      </div>
+      <div class="kpi">
+        <div class="k"><span>Pods running</span></div>
+        <div class="v">${pods.reachable ? pods.pods.filter((p) => p.ready).length + "/" + pods.pods.length : "–"}</div>
+        <div class="d">devops-platform ns</div>
       </div>
     </div>
-    <div class="topo-card">
-      <svg id="topo" viewBox="0 0 ${width} ${height}">${parts.join("")}</svg>
-    </div>`;
 
-  const svg = $("topo");
-  if (svg) {
-    svg.querySelectorAll(".topo-node").forEach((n) => {
-      n.addEventListener("mouseenter", (e) => {
-        const tt = $("topo-tooltip");
-        tt.innerHTML = n.dataset.tooltip || "";
-        tt.style.opacity = "1";
-      });
-      n.addEventListener("mousemove", (e) => {
-        const tt = $("topo-tooltip");
-        tt.style.left = Math.min(e.clientX + 14, window.innerWidth - 280) + "px";
-        tt.style.top = e.clientY + 14 + "px";
-      });
-      n.addEventListener("mouseleave", () => {
-        $("topo-tooltip").style.opacity = "0";
-      });
-      n.addEventListener("click", () => {
-        if (n.dataset.view) {
-          if (n.dataset.search) {
-            state.search = n.dataset.search;
-            renderServices();
-          }
-          switchView(n.dataset.view);
-          const inp = $("svc-search");
-          if (inp && n.dataset.search) inp.value = n.dataset.search;
-        }
-      });
-    });
-  }
+    <div class="card mb" style="padding:16px 20px">
+      <div style="font-weight:700;margin-bottom:4px">Need to fix something running right now?</div>
+      <div class="muted small">Open <b>Operations</b> in the sidebar — trigger a CI rerun, sync an ArgoCD app, restart a pod, or open the real Grafana/Prometheus/ArgoCD dashboards.</div>
+    </div>
+
+    <div class="card">
+      <div class="health-row health-head">
+        <div class="health-name">Service</div>
+        <div class="health-col">Pods</div>
+        <div class="health-col">ArgoCD</div>
+        <div class="health-col">Alerts</div>
+      </div>
+      ${rows || `<div class="empty">no services discovered</div>`}
+    </div>`;
 }
 
 /* ═══════════ APPS (management console) ═══════════ */
@@ -336,8 +315,8 @@ function slugify(name) {
   return name.toLowerCase().replace(/[^a-z0-9-]/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "").slice(0, 40);
 }
 
-async function createAppFlow() {
-  const raw = prompt("New app name (e.g. checkout):");
+async function createAppFlow(rawInput) {
+  const raw = rawInput ?? prompt("New app name (e.g. checkout):");
   if (!raw) return;
   const name = slugify(raw);
   if (!name) { toast("invalid app name", false); return; }
@@ -348,6 +327,8 @@ async function createAppFlow() {
     await refresh();
     state.search = "";
     switchView("apps");
+    const inp = $("new-app-input");
+    if (inp) inp.value = "";
   } catch (e) { toast("✕ " + e.message, false); }
 }
 
@@ -418,9 +399,12 @@ function renderApps() {
           <button class="btn danger sm" onclick="event.stopPropagation()" data-del-app="${esc(a.name)}" ${isDefault ? "disabled title='legacy flat group — not deletable'" : ""}>delete app</button>
         </div>
         ${svcList || `<div class="empty">no services yet</div>`}
-        <div class="add-svc">
-          <input placeholder="new service name…" id="add-svc-${esc(a.name)}" onkeydown="if(event.key==='Enter'){const inp=event.target;addServiceFlow('${esc(a.name)}',inp.value)}">
-          <button class="btn ghost sm" data-add-svc="${esc(a.name)}">＋ add service</button>
+        <div class="add-svc-panel" onclick="event.stopPropagation()">
+          <div class="add-svc-label">＋ Add a service to <b>${esc(a.name)}</b></div>
+          <div class="add-svc">
+            <input placeholder="e.g. cart, payments…" id="add-svc-${esc(a.name)}" onkeydown="if(event.key==='Enter'){addServiceFlow('${esc(a.name)}',event.target.value)}">
+            <button class="btn sm" onclick="addServiceFlow('${esc(a.name)}',$('add-svc-${esc(a.name)}').value)">Add</button>
+          </div>
         </div>
       </div>`;
   }).join("");
@@ -432,18 +416,34 @@ function renderApps() {
         <h1>Apps &amp; Services</h1>
         <div class="sub">Create and delete apps + services live. Every change lands in the repo — commit and push to trigger the full pipeline.</div>
       </div>
-      <div class="header-actions">
-        <span class="kbd">created files are local — git add/commit/push to activate</span>
-        <button class="btn" onclick="createAppFlow()">＋ New app</button>
-      </div>
     </div>
+
+    <div class="card new-app-panel mb">
+      <div class="new-app-step">
+        <div class="step-num">1</div>
+        <div class="step-body">
+          <div class="step-title">Create a new app</div>
+          <div class="step-sub">A folder under <span class="mono">app/</span> that groups related services.</div>
+          <div class="add-svc mt1">
+            <input placeholder="e.g. checkout, billing…" id="new-app-input" onkeydown="if(event.key==='Enter'){createAppFlow(event.target.value)}">
+            <button class="btn" onclick="createAppFlow($('new-app-input').value)">＋ Create app</button>
+          </div>
+        </div>
+      </div>
+      <div class="new-app-step">
+        <div class="step-num">2</div>
+        <div class="step-body">
+          <div class="step-title">Add services inside it</div>
+          <div class="step-sub">Scroll down to any app card below — type a service name in its box and press Enter.</div>
+        </div>
+      </div>
+      <div class="kbd" style="align-self:flex-start;margin-top:4px">created files are local — git add/commit/push to activate CI, ArgoCD, Vault, monitoring</div>
+    </div>
+
     <div class="grid cards">${cards || `<div class="card empty">no apps</div>`}</div>`;
 
   $("view-apps").querySelectorAll("[data-del-app]").forEach((b) => {
     b.addEventListener("click", () => deleteAppFlow(b.dataset.delApp));
-  });
-  $("view-apps").querySelectorAll("[data-add-svc]").forEach((b) => {
-    b.addEventListener("click", () => addServiceFlow(b.dataset.addSvc));
   });
   $("view-apps").querySelectorAll("[data-del-svc]").forEach((b) => {
     b.addEventListener("click", () => deleteServiceFlow(b.dataset.delSvc, b.dataset.svc));
