@@ -8,8 +8,8 @@
 # or it will fight every other per-service Application over ownership.
 renderShared: true
 namespace: devops-platform
-registry: ghcr.io/<owner>
-imageTag: latest
+registry: ghcr.io/abdelkaderbenhmida
+imageTag: secondary
 replicas: 2
 environment: production
 
