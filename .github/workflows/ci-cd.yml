@@ -59,6 +59,11 @@ jobs:
               SERVICES="$SERVICES $(basename "$d")"
             fi
           done
+          for d in app/*/*/; do
+            if [ -f "$d/main.py" ]; then
+              SERVICES="$SERVICES $(basename "$(dirname "$d")")-$(basename "$d")"
+            fi
+          done
           echo "services=$(echo "$SERVICES" | jq -R 'gsub("^ +";"") | gsub(" +";" ") | split(" ") | map(select(length > 0))')" >> "$GITHUB_OUTPUT"
           echo "Discovered: $SERVICES"
 

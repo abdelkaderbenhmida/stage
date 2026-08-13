@@ -1,7 +1,8 @@
 # One ArgoCD Application per discovered service — the git `files` generator
-# scans `app/*/main.py`, so ANY directory under app/ that implements the
-# service contract becomes an app. `app/shared` is excluded automatically
-# (no main.py). No service name appears anywhere in this file.
+# scans `app/*/main.py` (flat) and `app/*/*/main.py` (grouped apps), so ANY
+# directory under app/ that implements the service contract becomes an app.
+# `app/shared` is excluded automatically (no main.py). Nested services get
+# the k8s name "<app>-<service>". No service name appears anywhere in this file.
 apiVersion: argoproj.io/v1alpha1
 kind: ApplicationSet
 metadata:
@@ -18,11 +19,12 @@ spec:
         revision: main
         files:
           - path: "app/*/main.py"
+          - path: "app/*/*/main.py"
   template:
     metadata:
-      name: "{{ index (splitList \"/\" .path) 1 }}"
+      name: '{{ $p := splitList "/" .path }}{{ if eq (len $p) 4 }}{{ index $p 1 }}-{{ index $p 2 }}{{ else }}{{ index $p 1 }}{{ end }}'
       labels:
-        app.kubernetes.io/name: "{{ index (splitList \"/\" .path) 1 }}"
+        app.kubernetes.io/name: '{{ $p := splitList "/" .path }}{{ if eq (len $p) 4 }}{{ index $p 1 }}-{{ index $p 2 }}{{ else }}{{ index $p 1 }}{{ end }}'
         app.kubernetes.io/part-of: devops-platform
       finalizers:
         - resources-finalizer.argocd.argoproj.io
@@ -35,7 +37,7 @@ spec:
         helm:
           parameters:
             - name: services[0].name
-              value: "{{ index (splitList \"/\" .path) 1 }}"
+              value: '{{ $p := splitList "/" .path }}{{ if eq (len $p) 4 }}{{ index $p 1 }}-{{ index $p 2 }}{{ else }}{{ index $p 1 }}{{ end }}'
       destination:
         server: https://kubernetes.default.svc
         namespace: devops-platform
