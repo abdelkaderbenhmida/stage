@@ -587,7 +587,7 @@ function offlineCard(label, err) {
 }
 
 function renderConfig() {
-  const tabs = ["ci", "argocd", "vault", "monitoring", "run", "drift"];
+  const tabs = ["ci", "argocd", "vault", "monitoring", "run", "drift", "logs"];
   const tabHtml = tabs.map((t) => `
     <button class="cfg-tab ${t === state.configTab ? "active" : ""}" onclick="switchConfigTab('${t}')">
       ${t.toUpperCase()}
@@ -620,6 +620,7 @@ async function loadConfigTab(tab) {
     else if (tab === "monitoring") await renderMonitoringTab(body);
     else if (tab === "run") await renderRunTab(body);
     else if (tab === "drift") await renderDriftTab(body);
+    else if (tab === "logs") await renderLogsTab(body);
   } catch (e) {
     body.innerHTML = offlineCard(tab, e.message);
   }
@@ -1069,6 +1070,56 @@ async function renderDriftTab(body) {
     </div>
     <div class="cfg-stat">Checked: ${esc(data.namespaces.join(", "))} · ${pill(data.counts["argocd"] || 0, "green")} argocd-managed · ${pill(data.counts["in-git-not-gitops"] || 0, "amber")} in-git-not-gitops · ${pill(untracked, "red")} untracked</div>
     <div class="run-list mt">${rows || `<div class="empty">nothing found</div>`}</div>`;
+}
+
+/* ─── Logs: pipeline health + native ES search + Kibana embed ─── */
+
+async function renderLogsTab(body) {
+  body.innerHTML = `<div class="cfg-loading">checking log pipeline…</div>`;
+  const health = await api("GET", "/api/live/logs/pipeline");
+
+  const links = health.reachable ? health.links.map((l) => `
+    <div class="cfg-item"><span>${esc(l.name)}</span><span class="val ${l.ok ? "" : "critical"}">${l.ok ? "✓" : "✕"} ${esc(l.detail)}</span></div>
+  `).join("") : offlineCard("log pipeline", health.error);
+
+  const svcOptions = (state.data.services || []).map((s) => `<option value="${esc(s.name)}">${esc(s.name)}</option>`).join("");
+
+  body.innerHTML = `
+    <div class="cfg-toolbar">
+      <span class="cfg-repo">log pipeline status</span>
+      <span class="sp"></span>
+      <button class="btn sm" onclick="openDashboard('kibana','Kibana')">⧉ open Kibana</button>
+      <button class="act-btn" onclick="refreshConfigTab()">↻ refresh</button>
+    </div>
+    <div class="cfg-section"><h3>Pipeline health</h3>${links}</div>
+
+    <div class="cfg-section">
+      <h3>Search logs (Elasticsearch, direct — no Kibana login needed)</h3>
+      <div class="add-svc mb">
+        <select id="log-svc" style="background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:7px 12px;color:var(--text);font-family:var(--mono);font-size:12.5px">
+          <option value="">all services</option>
+          ${svcOptions}
+        </select>
+        <input id="log-query" placeholder="filter text (optional)…" onkeydown="if(event.key==='Enter')searchLogs()">
+        <button class="btn sm" onclick="searchLogs()">Search</button>
+      </div>
+      <div id="log-results" class="empty">enter a query and press Search</div>
+    </div>`;
+}
+
+async function searchLogs() {
+  const service = $("log-svc")?.value || "";
+  const q = $("log-query")?.value || "";
+  const box = $("log-results");
+  if (!box) return;
+  box.innerHTML = `<div class="cfg-loading">searching…</div>`;
+  try {
+    const r = await api("GET", `/api/live/logs/search?service=${encodeURIComponent(service)}&q=${encodeURIComponent(q)}&limit=100`);
+    if (!r.reachable) { box.innerHTML = offlineCard("elasticsearch", r.error); return; }
+    box.innerHTML = `
+      <div class="muted small mb">${r.hits} matches (showing up to 100)</div>
+      <pre class="cfg-code" style="max-height:50vh;overflow:auto">${esc(r.lines.join("\n")) || "(no results)"}</pre>`;
+  } catch (e) { box.innerHTML = offlineCard("elasticsearch", e.message); }
 }
 
 /* ═══════════ DETAIL PANEL ═══════════ */

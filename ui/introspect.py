@@ -1113,6 +1113,7 @@ DASHBOARDS = {
     "prometheus": {"namespace": "monitoring", "service": "svc/prometheus", "remote_port": 9090, "scheme": "http", "label": "Prometheus"},
     "alertmanager": {"namespace": "monitoring", "service": "svc/alertmanager", "remote_port": 9093, "scheme": "http", "label": "Alertmanager"},
     "vault": {"namespace": "vault", "service": "svc/vault-service", "remote_port": 8200, "scheme": "https", "label": "Vault"},
+    "kibana": {"namespace": "monitoring", "service": "svc/kibana", "remote_port": 5601, "scheme": "http", "label": "Kibana"},
 }
 
 _port_forwards: dict[str, dict[str, Any]] = {}
@@ -1483,3 +1484,128 @@ def stop_script(key: str) -> dict[str, Any]:
         return {"ok": True, "message": f"'{key}' is not running"}
     job["proc"].terminate()
     return {"ok": True, "message": f"stop requested for '{key}'"}
+
+
+# ──────────────────────────────────────────────────────────────
+# Logs — Elasticsearch via kubectl exec (kubectl get --raw can't
+# send an Authorization header, same constraint as _vault_root_token
+# above). Filebeat ships straight to ES (no Logstash in the path,
+# confirmed by its own DaemonSet config) into the filebeat-* index —
+# NOT devops-platform-* as the index naming might suggest. Loki is
+# also deployed but has no streams (promtail misconfigured) — both
+# facts are surfaced honestly via log_pipeline_health() rather than
+# assumed.
+# ──────────────────────────────────────────────────────────────
+
+def _es_credentials() -> str | None:
+    res = _run(
+        ["kubectl", "get", "secret", "elasticsearch-credentials", "-n", "monitoring",
+         "-o", "jsonpath={.data.ELASTIC_PASSWORD}"],
+        timeout=KUBECTL_TIMEOUT,
+    )
+    if not res["ok"] or not res["stdout"]:
+        return None
+    import base64
+    try:
+        return base64.b64decode(res["stdout"]).decode()
+    except Exception:
+        return None
+
+
+def es_status() -> dict[str, Any]:
+    pw = _es_credentials()
+    if not pw:
+        return {"reachable": False, "error": "could not read elasticsearch-credentials secret"}
+    res = _run(
+        ["kubectl", "exec", "-n", "monitoring", "elasticsearch-0", "--",
+         "curl", "-s", "-u", f"elastic:{pw}", "http://localhost:9200/_cat/indices/filebeat-*?format=json"],
+        timeout=15,
+    )
+    if not res["ok"]:
+        return {"reachable": False, "error": res["stderr"] or "elasticsearch unreachable"}
+    try:
+        indices = json.loads(res["stdout"])
+    except json.JSONDecodeError:
+        return {"reachable": False, "error": "could not parse elasticsearch output"}
+    doc_count = sum(int(i.get("docs.count") or 0) for i in indices)
+    return {"reachable": True, "indices": [i.get("index") for i in indices], "doc_count": doc_count}
+
+
+def es_search_logs(service: str, query: str = "", limit: int = 100, since: str = "now-1h") -> dict[str, Any]:
+    pw = _es_credentials()
+    if not pw:
+        return {"reachable": False, "error": "could not read elasticsearch-credentials secret", "lines": []}
+    must = [{"range": {"@timestamp": {"gte": since}}}]
+    if service:
+        must.append({"match_phrase": {"kubernetes.container.name": service}})
+    if query:
+        must.append({"match": {"message": query}})
+    body = {
+        "size": limit,
+        "sort": [{"@timestamp": "desc"}],
+        "query": {"bool": {"must": must}},
+    }
+    res = _run(
+        ["kubectl", "exec", "-i", "-n", "monitoring", "elasticsearch-0", "--",
+         "curl", "-s", "-u", f"elastic:{pw}", "-H", "Content-Type: application/json",
+         "-X", "POST", "http://localhost:9200/filebeat-*/_search", "-d", "@-"],
+        timeout=15, input_=json.dumps(body),
+    )
+    if not res["ok"]:
+        return {"reachable": False, "error": res["stderr"] or "elasticsearch query failed", "lines": []}
+    try:
+        data = json.loads(res["stdout"])
+    except json.JSONDecodeError:
+        return {"reachable": False, "error": "could not parse elasticsearch output", "lines": []}
+    hits = data.get("hits", {}).get("hits", [])
+    lines = []
+    for h in hits:
+        src = h.get("_source", {})
+        pod = src.get("kubernetes", {}).get("pod", {}).get("name", "")
+        ts = src.get("@timestamp", "")
+        msg = str(src.get("message", "")).strip()
+        lines.append(f"{ts}  {pod}  {msg}")
+    total = data.get("hits", {}).get("total", {})
+    return {"reachable": True, "hits": total.get("value", len(hits)) if isinstance(total, dict) else total, "lines": lines}
+
+
+def log_pipeline_health() -> dict[str, Any]:
+    links = []
+
+    fb = _run(["kubectl", "get", "ds", "filebeat", "-n", "monitoring", "-o", "json"], timeout=KUBECTL_TIMEOUT)
+    if fb["ok"]:
+        try:
+            d = json.loads(fb["stdout"])
+            ready = d.get("status", {}).get("numberReady", 0)
+            desired = d.get("status", {}).get("desiredNumberScheduled", 0)
+            links.append({"name": "filebeat", "ok": ready == desired and desired > 0, "detail": f"{ready}/{desired} ready"})
+        except json.JSONDecodeError:
+            links.append({"name": "filebeat", "ok": False, "detail": "could not parse status"})
+    else:
+        links.append({"name": "filebeat", "ok": False, "detail": "not found"})
+
+    ls = _run(["kubectl", "get", "deploy", "logstash", "-n", "monitoring"], timeout=KUBECTL_TIMEOUT)
+    links.append({"name": "logstash", "ok": ls["ok"], "detail": "not deployed — filebeat ships straight to elasticsearch" if not ls["ok"] else "deployed"})
+
+    es = es_status()
+    links.append({
+        "name": "elasticsearch",
+        "ok": es.get("reachable") and es.get("doc_count", 0) > 0,
+        "detail": f"{es.get('doc_count', 0):,} log docs in filebeat-*" if es.get("reachable") else es.get("error", "unreachable"),
+    })
+
+    loki = _run(["kubectl", "get", "--raw", "/api/v1/namespaces/monitoring/services/loki:3100/proxy/ready"], timeout=KUBECTL_TIMEOUT)
+    labels = _run(["kubectl", "get", "--raw", "/api/v1/namespaces/monitoring/services/loki:3100/proxy/loki/api/v1/labels"], timeout=KUBECTL_TIMEOUT)
+    has_streams = False
+    if labels["ok"]:
+        try:
+            has_streams = bool(json.loads(labels["stdout"]).get("data"))
+        except json.JSONDecodeError:
+            pass
+    links.append({
+        "name": "loki",
+        "ok": loki["ok"] and has_streams,
+        "detail": "ready but no log streams (promtail misconfigured)" if loki["ok"] and not has_streams else ("ready" if loki["ok"] else "unreachable"),
+    })
+
+    return {"reachable": True, "links": links}

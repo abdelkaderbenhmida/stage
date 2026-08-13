@@ -222,6 +222,23 @@ def api_live_drift(namespaces: str = "") -> dict:
     return introspect.drift_report(ns_list)
 
 
+# ─── Logs ───
+
+@app.get("/api/live/logs/status")
+def api_logs_status() -> dict:
+    return introspect.es_status()
+
+
+@app.get("/api/live/logs/pipeline")
+def api_logs_pipeline() -> dict:
+    return introspect.log_pipeline_health()
+
+
+@app.get("/api/live/logs/search")
+def api_logs_search(service: str = "", q: str = "", limit: int = 100, since: str = "now-1h") -> dict:
+    return introspect.es_search_logs(service, q, limit, since)
+
+
 # ─── Dashboards (on-demand port-forward) ───
 
 @app.post("/api/live/dashboard/{tool}/open")
