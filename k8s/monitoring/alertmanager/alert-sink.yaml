@@ -1,0 +1,161 @@
+# Minimal in-cluster webhook receiver for Alertmanager. Fills the gap left by
+# alertmanager-config.yaml's "TODO: deploy an AlertManager receiver" — without
+# an external SaaS account (Slack/PagerDuty), alerts were firing into nothing.
+#
+# Buffers the last 500 alert deliveries (firing + resolved) in memory and
+# serves them at GET /alerts for the platform UI. Stdlib-only http.server,
+# no build step, no external image beyond the base Python runtime.
+#
+# CAVEAT — memory only: history is lost on pod restart. Acceptable for a dev
+# platform surfacing "did this fire and did it resolve", not for durable
+# incident audit. Upgrade path: emptyDir + JSONL append, or a small PVC.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: alert-sink
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: alert-sink
+    app.kubernetes.io/part-of: devops-platform
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: alert-sink-code
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: alert-sink
+    app.kubernetes.io/part-of: devops-platform
+data:
+  app.py: |
+    """Stdlib-only Alertmanager webhook sink. Buffers recent deliveries in
+    memory; GET /alerts returns them for the platform UI to render."""
+    import json
+    from collections import deque
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    HISTORY = deque(maxlen=500)
+
+    class Handler(BaseHTTPRequestHandler):
+        def _json(self, code, body):
+            payload = json.dumps(body).encode()
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def do_GET(self):
+            if self.path.startswith("/healthz"):
+                self._json(200, {"status": "ok", "buffered": len(HISTORY)})
+                return
+            if self.path.startswith("/alerts"):
+                self._json(200, {"alerts": list(HISTORY)})
+                return
+            self._json(404, {"error": "not found"})
+
+        def do_POST(self):
+            if not self.path.startswith("/alerts"):
+                self._json(404, {"error": "not found"})
+                return
+            length = int(self.headers.get("Content-Length", 0))
+            try:
+                payload = json.loads(self.rfile.read(length) or b"{}")
+            except json.JSONDecodeError:
+                self._json(400, {"error": "invalid json"})
+                return
+            for alert in payload.get("alerts", []):
+                HISTORY.appendleft({
+                    "name": alert.get("labels", {}).get("alertname"),
+                    "severity": alert.get("labels", {}).get("severity"),
+                    "service": alert.get("labels", {}).get("service") or alert.get("labels", {}).get("app"),
+                    "status": alert.get("status"),
+                    "starts_at": alert.get("startsAt"),
+                    "ends_at": alert.get("endsAt"),
+                    "received_at": __import__("datetime").datetime.utcnow().isoformat() + "Z",
+                })
+            self._json(200, {"ok": True})
+
+        def log_message(self, fmt, *args):
+            pass  # quiet — avoid noisy per-request stdout
+
+    if __name__ == "__main__":
+        ThreadingHTTPServer(("0.0.0.0", 8080), Handler).serve_forever()
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: alert-sink
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: alert-sink
+    app.kubernetes.io/part-of: devops-platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: alert-sink
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: alert-sink
+        app.kubernetes.io/part-of: devops-platform
+    spec:
+      serviceAccountName: alert-sink
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: alert-sink
+          image: python:3.12-alpine
+          command: ["python", "/app/app.py"]
+          ports:
+            - containerPort: 8080
+              name: http
+          resources:
+            requests:
+              cpu: 20m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: code
+              mountPath: /app
+              readOnly: true
+          readinessProbe:
+            httpGet: { path: /healthz, port: 8080 }
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /healthz, port: 8080 }
+            initialDelaySeconds: 5
+            periodSeconds: 20
+      volumes:
+        - name: code
+          configMap:
+            name: alert-sink-code
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: alert-sink
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: alert-sink
+    app.kubernetes.io/part-of: devops-platform
+spec:
+  selector:
+    app.kubernetes.io/name: alert-sink
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080

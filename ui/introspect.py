@@ -983,6 +983,18 @@ def prometheus_query(promql: str, namespace: str = "monitoring", svc: str = "pro
     return {"reachable": True, "result": data.get("data", {}).get("result", [])}
 
 
+def alert_history(limit: int = 100) -> dict[str, Any]:
+    raw_path = f"/api/v1/namespaces/monitoring/services/alert-sink:8080/proxy/alerts?limit={limit}"
+    res = _run(["kubectl", "get", "--raw", raw_path], timeout=KUBECTL_TIMEOUT)
+    if not res["ok"]:
+        return {"reachable": False, "error": res["stderr"], "alerts": []}
+    try:
+        data = json.loads(res["stdout"])
+    except json.JSONDecodeError:
+        return {"reachable": False, "error": "could not parse alert-sink output", "alerts": []}
+    return {"reachable": True, "alerts": data.get("alerts", [])[:limit]}
+
+
 def alerts_firing() -> dict[str, Any]:
     raw_path = "/api/v1/namespaces/monitoring/services/alertmanager-operated:9093/proxy/api/v2/alerts"
     res = _run(["kubectl", "get", "--raw", raw_path], timeout=KUBECTL_TIMEOUT)

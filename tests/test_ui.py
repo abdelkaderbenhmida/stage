@@ -192,6 +192,40 @@ def test_parse_rollout_history():
     ]
 
 
+def test_alertmanager_receiver_is_wired():
+    """Regression guard: this was silently dropping every alert before this
+    session — receivers must not be an empty webhook list, and the URL
+    must point at the alert-sink Service actually deployed alongside it."""
+    import yaml
+
+    cfg_path = os.path.join(REPO_ROOT, "k8s/monitoring/alertmanager/alertmanager-config.yaml")
+    with open(cfg_path) as f:
+        cfg = yaml.safe_load(f)
+    receivers = cfg["spec"]["receivers"]
+    default = next(r for r in receivers if r["name"] == "default")
+    assert default["webhookConfigs"], "receiver has no webhook — alerts are silently dropped"
+    url = default["webhookConfigs"][0]["url"]
+    assert "alert-sink" in url
+
+    sink_path = os.path.join(REPO_ROOT, "k8s/monitoring/alertmanager/alert-sink.yaml")
+    with open(sink_path) as f:
+        sink_docs = list(yaml.safe_load_all(f))
+    svc_names = {d["metadata"]["name"] for d in sink_docs if d.get("kind") == "Service"}
+    assert "alert-sink" in svc_names
+
+
+def test_alertmanager_cr_loads_the_config():
+    """Regression guard for the actual bug: an AlertmanagerConfig with a
+    real webhook does nothing if the Alertmanager CR never selects it."""
+    import yaml
+
+    am_path = os.path.join(REPO_ROOT, "k8s/monitoring/alertmanager/alertmanager.yaml")
+    with open(am_path) as f:
+        docs = [d for d in yaml.safe_load_all(f) if d and d.get("kind") == "Alertmanager"]
+    spec = docs[0]["spec"]
+    assert "alertmanagerConfiguration" in spec or "alertmanagerConfigSelector" in spec
+
+
 def test_rollout_undo_rejects_invalid_deployment_names():
     for bad in ["../../etc/passwd", "; rm -rf /", "UPPER_CASE", ""]:
         try:

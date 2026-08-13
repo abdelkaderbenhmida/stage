@@ -21,8 +21,6 @@ spec:
     repeatInterval: 4h
   receivers:
     - name: default
-      # webhook commented — no alertlogger Deployment in repo (silent drop risk).
-      # TODO: deploy an AlertManager receiver (Slack / PagerDuty / Mattermost webhook)
-      # and re-enable. Until then, alerts surface only via kubectl+Prometheus UI.
-      webhookConfigs: []
-      # - url: http://alertlogger.monitoring.svc.cluster.local/alert
+      webhookConfigs:
+        - url: http://alert-sink.monitoring.svc.cluster.local:8080/alerts
+          sendResolved: true

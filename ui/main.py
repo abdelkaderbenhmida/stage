@@ -211,6 +211,11 @@ def api_live_alerts() -> dict:
     return introspect.alerts_firing()
 
 
+@app.get("/api/live/alerts/history")
+def api_live_alerts_history(limit: int = 100) -> dict:
+    return introspect.alert_history(limit)
+
+
 # ─── Dashboards (on-demand port-forward) ───
 
 @app.post("/api/live/dashboard/{tool}/open")

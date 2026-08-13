@@ -1,7 +1,10 @@
 # Alertmanager instance managed by Prometheus Operator.
 # 1 replica, PVC 2Gi for notification state, ns=monitoring.
-# Loaded config is stored in alertmanager-config Secret (commit 11).
-# Until then the operator ships a default empty config.
+# alertmanagerConfiguration.name wires in the AlertmanagerConfig CR from
+# alertmanager-config.yaml (must live in this same namespace). Preferred
+# over alertmanagerConfigSelector: the selector path makes the operator
+# inject a namespace="monitoring" matcher into every route, silently
+# dropping alerts labelled with other namespaces.
 ---
 apiVersion: monitoring.coreos.com/v1
 kind: Alertmanager
@@ -12,6 +15,8 @@ metadata:
     app.kubernetes.io/name: alertmanager
     app.kubernetes.io/part-of: devops-platform
 spec:
+  alertmanagerConfiguration:
+    name: alertmanager
   image: quay.io/prometheus/alertmanager:v0.27.0
   version: v0.27.0
   replicas: 1

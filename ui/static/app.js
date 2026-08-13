@@ -900,11 +900,32 @@ async function renderMonitoringTab(body) {
     <div class="run-list">${rows || `<div class="empty">no alerts firing — all green</div>`}</div>
 
     <div class="cfg-section mt">
+      <h3>Alert history (received by alert-sink)</h3>
+      <div id="alert-history"><div class="cfg-loading">loading history…</div></div>
+    </div>
+
+    <div class="cfg-section mt">
       <h3>Pod health (monitoring namespace)</h3>
       <div id="mon-pods"><div class="cfg-loading">loading pods…</div></div>
     </div>`;
 
   loadMonitoringPods();
+  loadAlertHistory();
+}
+
+async function loadAlertHistory() {
+  const box = $("alert-history");
+  if (!box) return;
+  try {
+    const r = await api("GET", "/api/live/alerts/history?limit=50");
+    if (!r.reachable) { box.innerHTML = offlineCard("alert-sink", r.error); return; }
+    const sevCls = (s) => s === "critical" ? "red" : s === "warning" ? "amber" : "muted";
+    box.innerHTML = r.alerts.map((a) => `
+      <div class="cfg-item">
+        <span>${pill(a.status, a.status === "firing" ? "red" : "green")} ${pill(a.severity || "info", sevCls(a.severity))} ${esc(a.name)} <span class="muted small">${esc(a.service || "")}</span></span>
+        <span class="val small">${esc(new Date(a.received_at).toLocaleString())}</span>
+      </div>`).join("") || `<div class="empty">no history yet</div>`;
+  } catch (e) { box.innerHTML = offlineCard("alert-sink", e.message); }
 }
 
 async function loadMonitoringPods() {
