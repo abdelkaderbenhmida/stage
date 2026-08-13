@@ -998,6 +998,86 @@ def alert_history(limit: int = 100) -> dict[str, Any]:
     return {"reachable": True, "alerts": data.get("alerts", [])[:limit]}
 
 
+# ──────────────────────────────────────────────────────────────
+# Cluster drift detection — what's running vs. what git declares.
+# Two signals, not one: ArgoCD's own status.resources (what it thinks
+# it manages) plus a raw repo-file scan (what's declared anywhere in
+# k8s/, whether or not ArgoCD applied it). Three shared objects had
+# their argocd.argoproj.io/tracking-id annotation deliberately removed
+# earlier this session (to stop per-service Applications fighting over
+# ownership) — they land in "in-git-not-gitops" here, correctly, not as
+# false "untracked" drift.
+# ──────────────────────────────────────────────────────────────
+
+DRIFT_KINDS = "deployments,statefulsets,daemonsets,services"
+
+
+def repo_declared_objects() -> set[tuple[str, str]]:
+    """(kind, name) for every object declared anywhere under k8s/. Pure
+    file scan, no cluster access — safe to unit test without a cluster."""
+    declared: set[tuple[str, str]] = set()
+    k8s_dir = ROOT / "k8s"
+    if not k8s_dir.is_dir():
+        return declared
+    for path in k8s_dir.rglob("*.yaml"):
+        for doc in _load_yaml_docs(path):
+            kind = doc.get("kind")
+            name = (doc.get("metadata") or {}).get("name")
+            if kind and name:
+                declared.add((kind, name))
+    return declared
+
+
+def drift_report(namespaces: list[str] | None = None) -> dict[str, Any]:
+    namespaces = namespaces or ["devops-platform", "monitoring"]
+
+    argo_res = _run(["kubectl", "get", "applications.argoproj.io", "-n", "argocd", "-o", "json"], timeout=KUBECTL_TIMEOUT)
+    if not argo_res["ok"]:
+        return {"reachable": False, "error": argo_res["stderr"], "objects": []}
+    try:
+        argo_data = json.loads(argo_res["stdout"])
+    except json.JSONDecodeError:
+        return {"reachable": False, "error": "could not parse kubectl output", "objects": []}
+    argo_managed: set[tuple[str, str, str]] = set()
+    for app in argo_data.get("items", []):
+        for r in app.get("status", {}).get("resources", []):
+            argo_managed.add((r.get("kind"), r.get("name"), r.get("namespace")))
+
+    repo_declared = repo_declared_objects()
+
+    objects = []
+    for ns in namespaces:
+        res = _run(["kubectl", "get", DRIFT_KINDS, "-n", ns, "-o", "json"], timeout=KUBECTL_TIMEOUT)
+        if not res["ok"]:
+            continue
+        try:
+            data = json.loads(res["stdout"])
+        except json.JSONDecodeError:
+            continue
+        for o in data.get("items", []):
+            if o.get("metadata", {}).get("ownerReferences"):
+                continue  # skip controller-owned objects (RS/pods etc.)
+            kind = o["kind"]
+            name = o["metadata"]["name"]
+            annotations = o["metadata"].get("annotations", {})
+            key3 = (kind, name, ns)
+            if key3 in argo_managed:
+                status = "argocd"
+            elif "argocd.argoproj.io/tracking-id" in annotations:
+                status = "argocd-annotated"
+            elif (kind, name) in repo_declared:
+                status = "in-git-not-gitops"
+            else:
+                status = "untracked"
+            objects.append({"kind": kind, "name": name, "namespace": ns, "status": status})
+
+    counts: dict[str, int] = {}
+    for o in objects:
+        counts[o["status"]] = counts.get(o["status"], 0) + 1
+    objects.sort(key=lambda o: {"untracked": 0, "in-git-not-gitops": 1, "argocd-annotated": 2, "argocd": 3}.get(o["status"], 9))
+    return {"reachable": True, "namespaces": namespaces, "objects": objects, "counts": counts}
+
+
 def alerts_firing() -> dict[str, Any]:
     raw_path = "/api/v1/namespaces/monitoring/services/alertmanager-operated:9093/proxy/api/v2/alerts"
     res = _run(["kubectl", "get", "--raw", raw_path], timeout=KUBECTL_TIMEOUT)

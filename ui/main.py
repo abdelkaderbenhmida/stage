@@ -216,6 +216,12 @@ def api_live_alerts_history(limit: int = 100) -> dict:
     return introspect.alert_history(limit)
 
 
+@app.get("/api/live/drift")
+def api_live_drift(namespaces: str = "") -> dict:
+    ns_list = [n.strip() for n in namespaces.split(",") if n.strip()] or None
+    return introspect.drift_report(ns_list)
+
+
 # ─── Dashboards (on-demand port-forward) ───
 
 @app.post("/api/live/dashboard/{tool}/open")

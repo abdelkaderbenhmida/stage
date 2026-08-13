@@ -587,7 +587,7 @@ function offlineCard(label, err) {
 }
 
 function renderConfig() {
-  const tabs = ["ci", "argocd", "vault", "monitoring", "run"];
+  const tabs = ["ci", "argocd", "vault", "monitoring", "run", "drift"];
   const tabHtml = tabs.map((t) => `
     <button class="cfg-tab ${t === state.configTab ? "active" : ""}" onclick="switchConfigTab('${t}')">
       ${t.toUpperCase()}
@@ -619,6 +619,7 @@ async function loadConfigTab(tab) {
     else if (tab === "vault") await renderVaultTab(body);
     else if (tab === "monitoring") await renderMonitoringTab(body);
     else if (tab === "run") await renderRunTab(body);
+    else if (tab === "drift") await renderDriftTab(body);
   } catch (e) {
     body.innerHTML = offlineCard(tab, e.message);
   }
@@ -1034,6 +1035,40 @@ function viewScriptOutput(key) {
   };
   poll();
   state.runTimer = setInterval(poll, 1200);
+}
+
+/* ─── Cluster drift: what's running vs. what git declares ─── */
+
+async function renderDriftTab(body) {
+  body.innerHTML = `<div class="cfg-loading">comparing cluster vs. git…</div>`;
+  const data = await api("GET", "/api/live/drift");
+  if (!data.reachable) { body.innerHTML = offlineCard("drift check", data.error); return; }
+
+  const statusPill = (s) =>
+    s === "untracked" ? pill("not in git", "red") :
+    s === "in-git-not-gitops" ? pill("in git · not GitOps", "amber") :
+    s === "argocd-annotated" ? pill("argocd (annotated)", "green") :
+    pill("argocd", "green");
+
+  const rows = data.objects.map((o) => `
+    <div class="app-row">
+      <div class="app-row-main">
+        <div class="app-row-name">${esc(o.kind)} / ${esc(o.name)}</div>
+        <div class="app-row-meta">ns: ${esc(o.namespace)}</div>
+      </div>
+      ${statusPill(o.status)}
+    </div>`).join("");
+
+  const untracked = data.counts["untracked"] || 0;
+  body.innerHTML = `
+    <div class="cfg-toolbar">
+      <span class="status-dot ${untracked ? "bad" : "ok"}"></span>
+      <span class="cfg-repo">${untracked} object${untracked === 1 ? "" : "s"} running but not in git</span>
+      <span class="sp"></span>
+      <button class="act-btn" onclick="refreshConfigTab()">↻ refresh</button>
+    </div>
+    <div class="cfg-stat">Checked: ${esc(data.namespaces.join(", "))} · ${pill(data.counts["argocd"] || 0, "green")} argocd-managed · ${pill(data.counts["in-git-not-gitops"] || 0, "amber")} in-git-not-gitops · ${pill(untracked, "red")} untracked</div>
+    <div class="run-list mt">${rows || `<div class="empty">nothing found</div>`}</div>`;
 }
 
 /* ═══════════ DETAIL PANEL ═══════════ */

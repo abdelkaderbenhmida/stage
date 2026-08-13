@@ -242,6 +242,15 @@ def test_script_allowlist_paths_all_exist_and_are_executable():
         assert os.access(path, os.X_OK), f"{key}: {cfg['path']} is not executable"
 
 
+def test_repo_declares_elk_but_not_loki():
+    """Loki + promtail have been running in the cluster for weeks with zero
+    manifests in git — this is the drift this feature exists to catch."""
+    decl = introspect.repo_declared_objects()
+    assert ("Deployment", "kibana") in decl
+    assert ("StatefulSet", "loki") not in decl
+    assert ("DaemonSet", "promtail") not in decl
+
+
 def test_rollout_undo_rejects_invalid_deployment_names():
     for bad in ["../../etc/passwd", "; rm -rf /", "UPPER_CASE", ""]:
         try:
