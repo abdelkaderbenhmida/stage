@@ -459,9 +459,12 @@ def parse_monitoring() -> dict[str, Any]:
 def parse_argocd() -> dict[str, Any]:
     docs = load_yaml_docs("k8s/argocd/applicationset.yaml")
     apps = next((d for d in docs if d.get("kind") == "ApplicationSet"), {})
-    gen = (apps.get("spec", {}).get("generators") or [{}])[0]
-    git_gen = gen.get("git", {}) if isinstance(gen, dict) else {}
-    files = git_gen.get("files") or []
+    generators = apps.get("spec", {}).get("generators") or [{}]
+    git_gens = [g.get("git", {}) for g in generators if isinstance(g, dict) and g.get("git")]
+    git_gen = git_gens[0] if git_gens else {}
+    directories: list[dict[str, Any]] = []
+    for g in git_gens:
+        directories.extend(g.get("directories") or [])
     app_manifests = []
     if (ROOT / "k8s/argocd/applications").is_dir():
         for p in sorted((ROOT / "k8s/argocd/applications").glob("*.yaml")):
@@ -481,9 +484,9 @@ def parse_argocd() -> dict[str, Any]:
         "generator_type": "git" if git_gen else "unknown",
         "repo_url": git_gen.get("repoURL"),
         "revision": git_gen.get("revision"),
-        "files_pattern": files,
+        "files_pattern": [d for d in directories if not d.get("exclude")],
         "app_name_template": tmpl.get("metadata", {}).get("name"),
-        "scoped_to": "1 Application per app/*/main.py (flat) or app/*/*/main.py (nested)",
+        "scoped_to": "1 Application per app/* (flat) or app/*/* (nested), by directory presence",
         "sync_policy": (tmpl.get("spec", {}) or {}).get("syncPolicy"),
         "static_applications": app_manifests,
         "part_of_label": (apps.get("metadata", {}).get("labels", {})).get("app.kubernetes.io/part-of"),

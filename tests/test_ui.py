@@ -128,7 +128,8 @@ def test_monitoring_matches_any_service_count():
 def test_argocd_generates_one_app_per_service():
     argocd = introspect.parse_argocd()
     assert argocd["generator_type"] == "git"
-    assert "app/*/main.py" in [f.get("path") for f in argocd["files_pattern"]]
+    assert "app/*" in [f.get("path") for f in argocd["files_pattern"]]
+    assert "app/*/*" in [f.get("path") for f in argocd["files_pattern"]]
     assert argocd["sync_policy"]["automated"]["prune"] is True
 
 
