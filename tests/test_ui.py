@@ -226,6 +226,22 @@ def test_alertmanager_cr_loads_the_config():
     assert "alertmanagerConfiguration" in spec or "alertmanagerConfigSelector" in spec
 
 
+def test_script_allowlist_rejects_unknown_keys():
+    for bad in ["../../etc/passwd", "/bin/sh", "smoke-test.sh", ""]:
+        try:
+            introspect.run_script(bad)
+            assert False, f"expected ServiceError for {bad!r}"
+        except introspect.ServiceError:
+            pass
+
+
+def test_script_allowlist_paths_all_exist_and_are_executable():
+    for key, cfg in introspect.SCRIPTS.items():
+        path = introspect.ROOT / cfg["path"]
+        assert path.is_file(), f"{key}: {cfg['path']} does not exist"
+        assert os.access(path, os.X_OK), f"{key}: {cfg['path']} is not executable"
+
+
 def test_rollout_undo_rejects_invalid_deployment_names():
     for bad in ["../../etc/passwd", "; rm -rf /", "UPPER_CASE", ""]:
         try:

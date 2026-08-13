@@ -587,7 +587,7 @@ function offlineCard(label, err) {
 }
 
 function renderConfig() {
-  const tabs = ["ci", "argocd", "vault", "monitoring"];
+  const tabs = ["ci", "argocd", "vault", "monitoring", "run"];
   const tabHtml = tabs.map((t) => `
     <button class="cfg-tab ${t === state.configTab ? "active" : ""}" onclick="switchConfigTab('${t}')">
       ${t.toUpperCase()}
@@ -605,6 +605,7 @@ function renderConfig() {
 }
 
 function switchConfigTab(t) {
+  if (state.runTimer) { clearInterval(state.runTimer); state.runTimer = null; }
   state.configTab = t;
   renderConfig();
 }
@@ -617,6 +618,7 @@ async function loadConfigTab(tab) {
     else if (tab === "argocd") await renderArgocdTab(body);
     else if (tab === "vault") await renderVaultTab(body);
     else if (tab === "monitoring") await renderMonitoringTab(body);
+    else if (tab === "run") await renderRunTab(body);
   } catch (e) {
     body.innerHTML = offlineCard(tab, e.message);
   }
@@ -947,6 +949,91 @@ async function loadMonitoringPods() {
         </div>
       </div>`).join("") || `<div class="empty">no pods</div>`;
   } catch (e) { /* ignore */ }
+}
+
+/* ─── Ops scripts: run + stream live output ─── */
+
+async function renderRunTab(body) {
+  body.innerHTML = `<div class="cfg-loading">loading scripts…</div>`;
+  const data = await api("GET", "/api/live/scripts");
+  const rows = data.scripts.map((s) => `
+    <div class="run-row">
+      <div class="run-main">
+        ${s.running ? pill("running", "amber") : s.last_exit_code === null ? pill("never run", "muted") : s.last_exit_code === 0 ? pill("last: ok", "green") : pill("last: failed", "red")}
+        <div>
+          <div class="run-title">${esc(s.label)}${s.destructive ? " ⚠️" : ""}</div>
+          <div class="run-meta">${s.key}${s.destructive ? " · generates real load" : ""}</div>
+        </div>
+      </div>
+      <div class="run-actions">
+        <button class="act-btn" onclick="runScript('${s.key}', ${s.destructive})" ${s.running ? "disabled" : ""}>▶ run</button>
+        ${s.running ? `<button class="act-btn danger" onclick="stopScript('${s.key}')">✕ stop</button>` : ""}
+        <button class="act-btn" onclick="viewScriptOutput('${s.key}')">▤ output</button>
+      </div>
+    </div>`).join("");
+
+  body.innerHTML = `
+    <div class="cfg-toolbar">
+      <span class="cfg-repo">scripts/*.sh — non-interactive --ci mode</span>
+      <span class="sp"></span>
+      <button class="act-btn" onclick="refreshConfigTab()">↻ refresh</button>
+    </div>
+    <div class="run-list">${rows}</div>
+    <div class="cfg-section mt" id="run-output-section" style="display:none">
+      <h3 id="run-output-title">Output</h3>
+      <pre class="cfg-code" id="run-out" style="max-height:55vh;overflow:auto"></pre>
+    </div>`;
+}
+
+async function runScript(key, destructive) {
+  if (destructive && !confirm(`'${key}' generates real load against the cluster. Run it?`)) return;
+  try {
+    loading(true);
+    const r = await api("POST", "/api/live/scripts/run", { script: key });
+    toast("✓ " + r.message, true);
+    viewScriptOutput(key);
+  } catch (e) { toast("✕ " + e.message, false); }
+}
+
+async function stopScript(key) {
+  if (!confirm(`Stop '${key}'?`)) return;
+  try {
+    const r = await api("POST", `/api/live/scripts/${key}/stop`);
+    toast("✓ " + r.message, true);
+    refreshConfigTab();
+  } catch (e) { toast("✕ " + e.message, false); }
+}
+
+function viewScriptOutput(key) {
+  if (state.runTimer) clearInterval(state.runTimer);
+  const section = $("run-output-section");
+  const out = $("run-out");
+  if (!section || !out) return;
+  section.style.display = "";
+  $("run-output-title").textContent = `Output — ${key}`;
+  out.textContent = "";
+  let offset = 0;
+
+  const poll = async () => {
+    try {
+      const r = await api("GET", `/api/live/scripts/${key}/output?offset=${offset}`);
+      if (r.lines.length) {
+        out.textContent += r.lines.join("\n") + "\n";
+        out.scrollTop = out.scrollHeight;
+        offset = r.offset;
+      }
+      if (!r.running) {
+        clearInterval(state.runTimer);
+        state.runTimer = null;
+        const code = r.exit_code;
+        out.textContent += `\n${code === 0 ? "✓" : "✕"} exit=${code} · ${fmtDur(Math.round(r.duration_s))}\n`;
+        out.scrollTop = out.scrollHeight;
+        refreshConfigTab();
+      }
+    } catch (e) { /* keep last output */ }
+  };
+  poll();
+  state.runTimer = setInterval(poll, 1200);
 }
 
 /* ═══════════ DETAIL PANEL ═══════════ */

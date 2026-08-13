@@ -13,9 +13,12 @@ The Kubernetes/registry/Vault name of a nested service is "<app>-<service>".
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
+import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -1286,3 +1289,117 @@ def ci_run_logs(run_id: str) -> dict[str, Any]:
     if not res["ok"] and not res["stdout"]:
         return {"reachable": False, "error": res["stderr"], "log": ""}
     return {"reachable": True, "log": res["stdout"][-8000:]}
+
+
+# ──────────────────────────────────────────────────────────────
+# Ops script runner — run scripts/*.sh from the UI with streamed
+# output. Allowlisted only; never accept a client-supplied path.
+# Popen'd (not _run, which blocks) since these take minutes; a
+# background reader thread drains stdout into a growing buffer
+# the frontend polls by offset.
+# ──────────────────────────────────────────────────────────────
+
+SCRIPTS: dict[str, dict[str, Any]] = {
+    "smoke-test": {
+        "path": "scripts/smoke-test.sh", "args": ["--ci"],
+        "label": "Smoke test (live E2E)", "destructive": False,
+    },
+    "validate-platform": {
+        "path": "scripts/validate-platform.sh", "args": ["--ci", "--skip-incident"],
+        "label": "Platform gate (7 checks)", "destructive": False,
+    },
+    "validate-security": {
+        "path": "scripts/validate-security.sh", "args": ["--ci"],
+        "label": "Security gate", "destructive": False,
+    },
+    "stress-hpa": {
+        "path": "scripts/stress-hpa.sh", "args": ["--ci", "--no-watch"],
+        "label": "HPA stress (generates real load)", "destructive": True,
+    },
+}
+
+MAX_SCRIPT_LINES = 4000
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
+_jobs: dict[str, dict[str, Any]] = {}
+_jobs_lock = threading.Lock()
+
+
+def _script_reader(key: str, proc: subprocess.Popen) -> None:
+    job = _jobs[key]
+    try:
+        for line in iter(proc.stdout.readline, ""):
+            clean = _ANSI_RE.sub("", line.rstrip("\n"))
+            with _jobs_lock:
+                job["lines"].append(clean)
+                if len(job["lines"]) > MAX_SCRIPT_LINES:
+                    job["lines"] = job["lines"][-MAX_SCRIPT_LINES:]
+                    job["offset_base"] += 1
+    finally:
+        proc.wait()
+        with _jobs_lock:
+            job["exit_code"] = proc.returncode
+            job["finished_at"] = time.time()
+
+
+def list_scripts() -> dict[str, Any]:
+    out = []
+    for key, cfg in SCRIPTS.items():
+        job = _jobs.get(key)
+        running = bool(job and job["exit_code"] is None)
+        out.append({
+            "key": key, "label": cfg["label"], "destructive": cfg["destructive"],
+            "running": running,
+            "last_exit_code": job["exit_code"] if job else None,
+        })
+    return {"scripts": out}
+
+
+def run_script(key: str) -> dict[str, Any]:
+    cfg = SCRIPTS.get(key)
+    if not cfg:
+        raise ServiceError(f"unknown script '{key}'")
+    script_path = ROOT / cfg["path"]
+    if not script_path.is_file():
+        raise ServiceError(f"script not found on disk: {cfg['path']}")
+
+    with _jobs_lock:
+        existing = _jobs.get(key)
+        if existing and existing["exit_code"] is None:
+            raise ServiceError(f"'{key}' is already running")
+
+        proc = subprocess.Popen(
+            ["bash", str(script_path), *cfg["args"]],
+            cwd=str(ROOT), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, bufsize=1,
+            env={**os.environ, "NO_COLOR": "1", "TERM": "dumb"},
+        )
+        _jobs[key] = {
+            "proc": proc, "lines": [], "offset_base": 0,
+            "exit_code": None, "started_at": time.time(), "finished_at": None,
+        }
+    threading.Thread(target=_script_reader, args=(key, proc), daemon=True).start()
+    return {"ok": True, "message": f"'{cfg['label']}' started"}
+
+
+def script_output(key: str, offset: int = 0) -> dict[str, Any]:
+    job = _jobs.get(key)
+    if not job:
+        return {"reachable": True, "running": False, "lines": [], "offset": 0, "exit_code": None, "duration_s": None}
+    with _jobs_lock:
+        visible_offset = max(offset, job["offset_base"])
+        new_lines = job["lines"][visible_offset - job["offset_base"]:]
+        running = job["exit_code"] is None
+        duration = (job["finished_at"] or time.time()) - job["started_at"]
+        return {
+            "reachable": True, "running": running, "lines": new_lines,
+            "offset": job["offset_base"] + len(job["lines"]),
+            "exit_code": job["exit_code"], "duration_s": round(duration, 1),
+        }
+
+
+def stop_script(key: str) -> dict[str, Any]:
+    job = _jobs.get(key)
+    if not job or job["exit_code"] is not None:
+        return {"ok": True, "message": f"'{key}' is not running"}
+    job["proc"].terminate()
+    return {"ok": True, "message": f"stop requested for '{key}'"}

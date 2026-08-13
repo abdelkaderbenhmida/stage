@@ -303,6 +303,32 @@ def api_ci_run_logs(run_id: str) -> dict:
     return introspect.ci_run_logs(run_id)
 
 
+# ─── Ops script runner ───
+
+class ScriptRun(BaseModel):
+    script: str
+
+
+@app.get("/api/live/scripts")
+def api_scripts_list() -> dict:
+    return introspect.list_scripts()
+
+
+@app.post("/api/live/scripts/run")
+def api_scripts_run(body: ScriptRun) -> dict:
+    return _guard(introspect.run_script, body.script)
+
+
+@app.get("/api/live/scripts/{script}/output")
+def api_scripts_output(script: str, offset: int = 0) -> dict:
+    return introspect.script_output(script, offset)
+
+
+@app.post("/api/live/scripts/{script}/stop")
+def api_scripts_stop(script: str) -> dict:
+    return _guard(introspect.stop_script, script)
+
+
 def _guard(fn: Callable[..., dict[str, Any]], *args: Any) -> dict[str, Any]:
     try:
         return fn(*args)
