@@ -960,15 +960,27 @@ async function loadConfigTab(tab) {
 
 function refreshConfigTab() { loadConfigTab(state.configTab); }
 
-/* ─── shared: open real dashboard via on-demand port-forward ─── */
+/* ─── shared: embed real dashboard inline, no login, no new tab ─── */
 
 async function openDashboard(tool, label) {
   try {
     loading(true);
     const r = await api("POST", `/api/live/dashboard/${tool}/open`);
-    toast(`✓ ${label} ready at ${r.url}`, true);
-    window.open(r.url, "_blank");
+    toast(`✓ ${label} live`, true);
+    showEmbeddedDashboard(tool, label, r.url);
   } catch (e) { toast("✕ " + e.message, false); }
+}
+
+function showEmbeddedDashboard(tool, label, url) {
+  $("detail-title").textContent = label;
+  $("detail-content").innerHTML = `
+    <div class="embed-bar">
+      <span class="mono small muted">${esc(url)}</span>
+      <a class="act-btn" href="${esc(url)}" target="_blank" rel="noopener">↗ full tab</a>
+    </div>
+    <iframe class="embed-frame" src="${esc(url)}" sandbox="allow-scripts allow-same-origin allow-forms allow-popups"></iframe>`;
+  $("detail-panel").classList.add("show", "wide");
+  $("detail-overlay").classList.add("show");
 }
 
 /* ─── shared: log viewer modal ─── */
@@ -1092,9 +1104,9 @@ async function renderArgocdTab(body) {
 
   const rows = (data.apps || []).map((a) => `
     <div class="app-row">
-      <div class="app-row-main">
+      <div class="app-row-main clickable" onclick="showArgoResources('${esc(a.name)}')">
         <div class="app-row-name">${esc(a.name)}</div>
-        <div class="app-row-meta">${esc(a.path)} @ ${esc(a.revision || "–")}</div>
+        <div class="app-row-meta">${esc(a.path)} @ ${esc(a.revision || "–")} · click for resources</div>
       </div>
       ${pill(a.sync_status, syncCls(a.sync_status))}
       ${pill(a.health_status, healthCls(a.health_status))}
@@ -1131,6 +1143,27 @@ async function argoRefresh(name) {
     const r = await api("POST", "/api/live/argocd/refresh", { name });
     toast("✓ " + r.message, true);
     setTimeout(refreshConfigTab, 1500);
+  } catch (e) { toast("✕ " + e.message, false); }
+}
+
+async function showArgoResources(appName) {
+  try {
+    loading(true);
+    const r = await api("GET", `/api/live/argocd/${appName}/resources`);
+    if (!r.reachable) { toast("✕ " + r.error, false); return; }
+    const lines = r.resources.map((res) =>
+      `${(res.kind || "").padEnd(24)} ${(res.name || "").padEnd(30)} ${res.status || ""}  ${res.health || ""}`);
+    showLogs(`${appName} — resources (${r.resources.length})`, lines.join("\n"));
+  } catch (e) { toast("✕ " + e.message, false); }
+}
+
+async function showVaultSecretMeta(service) {
+  try {
+    loading(true);
+    const r = await api("GET", `/api/live/vault/secrets/${service}`);
+    if (!r.reachable) { toast("✕ " + r.error, false); return; }
+    showLogs(`${service} — secret metadata`,
+      `version: ${r.version}\ncreated: ${r.created_time}\nfields: ${r.field_names.join(", ")}\n\n(values are never shown here — read-only metadata for audit)`);
   } catch (e) { toast("✕ " + e.message, false); }
 }
 
@@ -1171,7 +1204,7 @@ async function renderVaultTab(body) {
     const box = $("vault-secrets");
     if (!box) return;
     if (!sec.reachable) { box.innerHTML = offlineCard("secret listing", sec.error); return; }
-    box.innerHTML = (sec.keys || []).map((k) => `<div class="cfg-item"><span class="mono">${esc(k)}</span></div>`).join("") || `<div class="empty">no keys</div>`;
+    box.innerHTML = (sec.keys || []).map((k) => `<div class="cfg-item clickable" onclick="showVaultSecretMeta('${esc(k)}')"><span class="mono">${esc(k)}</span><span class="val">view metadata →</span></div>`).join("") || `<div class="empty">no keys</div>`;
   } catch (e) { /* leave loading state message */ }
 }
 
@@ -1303,7 +1336,7 @@ function showDetail(serviceName) {
 
 function closeDetail() {
   state.detail = null;
-  $("detail-panel").classList.remove("show");
+  $("detail-panel").classList.remove("show", "wide");
   $("detail-overlay").classList.remove("show");
 }
 

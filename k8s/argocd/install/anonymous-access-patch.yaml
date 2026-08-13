@@ -1,0 +1,35 @@
+# Read-only anonymous access — lets the platform UI embed the ArgoCD web
+# console directly (iframe) without a separate login. Scoped to `role:readonly`
+# (view-only: no sync, no edit, no secrets) via the built-in RBAC role.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: argocd-cm
+  namespace: argocd
+data:
+  users.anonymous.enabled: "true"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: argocd-rbac-cm
+  namespace: argocd
+data:
+  policy.default: role:readonly
+---
+# Disable frame-blocking headers so the platform UI can embed the ArgoCD
+# console in an iframe (view-only, matches the anonymous role:readonly above).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: argocd-server
+  namespace: argocd
+spec:
+  template:
+    spec:
+      containers:
+        - name: argocd-server
+          args:
+            - /usr/local/bin/argocd-server
+            - --x-frame-options=
+            - --content-security-policy=

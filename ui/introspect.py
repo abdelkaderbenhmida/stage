@@ -820,6 +820,27 @@ def argocd_apps() -> dict[str, Any]:
     return {"reachable": True, "apps": apps}
 
 
+def argocd_app_resources(app_name: str) -> dict[str, Any]:
+    res = _run(["kubectl", "get", "application", app_name, "-n", "argocd", "-o", "json"], timeout=KUBECTL_TIMEOUT)
+    if not res["ok"]:
+        return {"reachable": False, "error": res["stderr"], "resources": []}
+    try:
+        data = json.loads(res["stdout"])
+    except json.JSONDecodeError:
+        return {"reachable": False, "error": "could not parse kubectl output", "resources": []}
+    resources = [
+        {
+            "kind": r.get("kind"),
+            "name": r.get("name"),
+            "namespace": r.get("namespace"),
+            "status": r.get("status"),
+            "health": (r.get("health") or {}).get("status"),
+        }
+        for r in data.get("status", {}).get("resources", [])
+    ]
+    return {"reachable": True, "resources": resources}
+
+
 def argocd_sync(app_name: str) -> dict[str, Any]:
     patch = json.dumps({"operation": {"sync": {"revision": "HEAD", "prune": True}}})
     res = _run(
@@ -912,6 +933,32 @@ def vault_secrets(path: str = "devops-platform") -> dict[str, Any]:
     except json.JSONDecodeError:
         return {"reachable": False, "error": "could not parse vault output", "keys": []}
     return {"reachable": True, "path": path, "keys": keys}
+
+
+def vault_secret_metadata(service: str, path: str = "devops-platform") -> dict[str, Any]:
+    token = _vault_root_token()
+    if not token:
+        return {"reachable": False, "error": "could not read vault-root-token secret"}
+    res = _run(
+        ["kubectl", "exec", "-n", "vault", "deploy/vault", "--",
+         "env", f"VAULT_TOKEN={token}", "vault", "kv", "get", "-format=json", f"secret/{path}/{service}"],
+        timeout=10,
+    )
+    if not res["ok"]:
+        return {"reachable": False, "error": res["stderr"] or "cannot read secret metadata"}
+    try:
+        data = json.loads(res["stdout"])
+    except json.JSONDecodeError:
+        return {"reachable": False, "error": "could not parse vault output"}
+    meta = data.get("data", {}).get("metadata", {})
+    field_names = sorted((data.get("data", {}).get("data") or {}).keys())
+    return {
+        "reachable": True,
+        "service": service,
+        "version": meta.get("version"),
+        "created_time": meta.get("created_time"),
+        "field_names": field_names,
+    }
 
 
 # ─── Prometheus — queried through the k8s apiserver proxy, no port-forward needed ───

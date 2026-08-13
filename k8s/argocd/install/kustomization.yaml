@@ -11,6 +11,9 @@ metadata:
 resources:
   - https://github.com/argoproj/argo-cd/manifests/core-install?ref=v2.7.16
 
+patches:
+  - path: anonymous-access-patch.yaml
+
 namespace: argocd
 
 # Harden install: set explicit namespace override on resources that hardcode

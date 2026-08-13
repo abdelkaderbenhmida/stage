@@ -167,6 +167,11 @@ def api_live_argocd() -> dict:
     return introspect.argocd_apps()
 
 
+@app.get("/api/live/argocd/{app_name}/resources")
+def api_live_argocd_resources(app_name: str) -> dict:
+    return introspect.argocd_app_resources(app_name)
+
+
 class AppRef(BaseModel):
     name: str
 
@@ -192,8 +197,13 @@ def api_live_vault() -> dict:
 
 
 @app.get("/api/live/vault/secrets")
-def api_live_vault_secrets(path: str = "secret/devops-platform") -> dict:
+def api_live_vault_secrets(path: str = "devops-platform") -> dict:
     return introspect.vault_secrets(path)
+
+
+@app.get("/api/live/vault/secrets/{service}")
+def api_live_vault_secret_meta(service: str) -> dict:
+    return introspect.vault_secret_metadata(service)
 
 
 @app.get("/api/live/alerts")
