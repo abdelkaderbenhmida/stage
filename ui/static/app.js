@@ -881,8 +881,9 @@ async function renderMonitoringTab(body) {
   if (!data.reachable) { body.innerHTML = offlineCard("Alertmanager", data.error); return; }
 
   const sevCls = (s) => s === "critical" ? "red" : s === "warning" ? "amber" : "muted";
-  const rows = (data.alerts || []).map((a) => `
-    <div class="app-row">
+  window._alertsData = data.alerts || [];
+  const rows = (data.alerts || []).map((a, i) => `
+    <div class="app-row clickable" onclick="showFiringAlertDetail(${i})">
       <div class="app-row-main">
         <div class="app-row-name">${esc(a.name)}</div>
         <div class="app-row-meta">${esc(a.service || "–")} · firing since ${esc(new Date(a.starts_at).toLocaleString())}</div>
@@ -923,13 +924,35 @@ async function loadAlertHistory() {
   try {
     const r = await api("GET", "/api/live/alerts/history?limit=50");
     if (!r.reachable) { box.innerHTML = offlineCard("alert-sink", r.error); return; }
+    window._alertHistory = r.alerts;
     const sevCls = (s) => s === "critical" ? "red" : s === "warning" ? "amber" : "muted";
-    box.innerHTML = r.alerts.map((a) => `
-      <div class="cfg-item">
+    box.innerHTML = r.alerts.map((a, i) => `
+      <div class="cfg-item clickable" onclick="showAlertHistoryDetail(${i})">
         <span>${pill(a.status, a.status === "firing" ? "red" : "green")} ${pill(a.severity || "info", sevCls(a.severity))} ${esc(a.name)} <span class="muted small">${esc(a.service || "")}</span></span>
         <span class="val small">${esc(new Date(a.received_at).toLocaleString())}</span>
       </div>`).join("") || `<div class="empty">no history yet</div>`;
   } catch (e) { box.innerHTML = offlineCard("alert-sink", e.message); }
+}
+
+function showFiringAlertDetail(i) {
+  const a = (window._alertsData || [])[i];
+  if (!a) return;
+  const lines = [
+    `alert: ${a.name}`, `state: ${a.state}`, `severity: ${a.severity || "–"}`,
+    `service: ${a.service || "–"}`, `firing since: ${a.starts_at}`, "",
+    "labels:", ...Object.entries(a.labels || {}).map(([k, v]) => `  ${k} = ${v}`), "",
+    "annotations:", ...Object.entries(a.annotations || {}).map(([k, v]) => `  ${k}: ${v}`),
+  ];
+  showLogs(a.name, lines.join("\n"));
+}
+
+function showAlertHistoryDetail(i) {
+  const a = (window._alertHistory || [])[i];
+  if (!a) return;
+  showLogs(`${a.name} — history entry`, [
+    `status: ${a.status}`, `severity: ${a.severity || "–"}`, `service: ${a.service || "–"}`,
+    `starts_at: ${a.starts_at}`, `ends_at: ${a.ends_at}`, `received_at: ${a.received_at}`,
+  ].join("\n"));
 }
 
 async function loadMonitoringPods() {
@@ -940,9 +963,9 @@ async function loadMonitoringPods() {
     if (!r.reachable) { box.innerHTML = offlineCard("pods", r.error); return; }
     box.innerHTML = r.pods.map((p) => `
       <div class="app-row">
-        <div class="app-row-main">
+        <div class="app-row-main clickable" onclick="showMonitoringPodDetail('${esc(p.name)}')">
           <div class="app-row-name">${esc(p.name)}</div>
-          <div class="app-row-meta">${esc(p.phase)} · restarts: ${p.restarts}</div>
+          <div class="app-row-meta">${esc(p.phase)} · restarts: ${p.restarts}${p.waiting_reason ? " · " + esc(p.waiting_reason) : ""}</div>
         </div>
         ${pill(p.ready ? "ready" : "not ready", p.ready ? "green" : "red")}
         <div class="run-actions">
@@ -951,6 +974,27 @@ async function loadMonitoringPods() {
         </div>
       </div>`).join("") || `<div class="empty">no pods</div>`;
   } catch (e) { /* ignore */ }
+}
+
+async function showMonitoringPodDetail(podName) {
+  try {
+    loading(true);
+    const [detail, events] = await Promise.all([
+      api("GET", `/api/live/pods/monitoring/${podName}/detail`),
+      api("GET", `/api/live/pods/monitoring/${podName}/events?limit=15`),
+    ]);
+    if (!detail.reachable) { toast("✕ " + detail.error, false); return; }
+    const c = detail.containers[0] || {};
+    const lines = [
+      `pod: ${detail.name}`, `phase: ${detail.phase}`, `node: ${detail.node}`, `started: ${detail.start_time}`, "",
+      `container: ${c.name}`, `image: ${c.image}`, `ready: ${c.ready}`, `restarts: ${c.restart_count}`,
+      c.waiting_reason ? `waiting: ${c.waiting_reason} — ${c.waiting_message || ""}` : "",
+      c.last_terminated_reason ? `last terminated: ${c.last_terminated_reason} (exit ${c.last_terminated_exit_code})` : "",
+      "", "recent events:",
+      ...(events.reachable ? events.events.map((e) => `  [${e.type}] ${e.reason}: ${e.message}`) : ["  (unavailable)"]),
+    ].filter(Boolean);
+    showLogs(podName, lines.join("\n"));
+  } catch (e) { toast("✕ " + e.message, false); }
 }
 
 /* ─── Ops scripts: run + stream live output ─── */

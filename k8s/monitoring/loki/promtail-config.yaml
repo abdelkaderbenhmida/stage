@@ -1,0 +1,57 @@
+# promtail-config — the only piece of the Loki/promtail deployment
+# committed so far. The rest (StatefulSet, DaemonSet, RBAC, Services)
+# runs live in the cluster with no manifest anywhere in git — that's
+# real drift, correctly flagged by the platform UI's Drift tab, not
+# something to paper over by guessing at the rest of the spec here.
+#
+# Bug this fixes: the original scrape_configs had no relabel rule
+# setting __path__, so promtail discovered every pod via k8s SD but
+# never knew which log file to tail — zero streams reached Loki despite
+# promtail itself reporting healthy. Kubelet writes container logs to
+# /var/log/pods/<ns>_<pod>_<uid>/<container>/*.log; since the UID is
+# globally unique, `*$1/*.log` with $1=uid correctly globs to the right
+# file regardless of namespace/pod-name prefix.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: promtail-config
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: promtail
+    app.kubernetes.io/part-of: devops-platform
+data:
+  promtail.yaml: |
+    server:
+      http_listen_port: 9080
+      grpc_listen_port: 0
+    positions:
+      filename: /tmp/positions.yaml
+    clients:
+      - url: http://loki.monitoring.svc.cluster.local:3100/loki/api/v1/push
+    scrape_configs:
+      - job_name: kubernetes-pods
+        kubernetes_sd_configs:
+          - role: pod
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_namespace]
+            target_label: namespace
+          - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name]
+            target_label: service
+          - source_labels: [__meta_kubernetes_pod_container_name]
+            target_label: container
+          - action: drop
+            regex: loki
+            source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name]
+          - source_labels: [__meta_kubernetes_pod_uid, __meta_kubernetes_pod_container_name]
+            target_label: __path__
+            separator: /
+            replacement: /var/log/pods/*$1/*.log
+        pipeline_stages:
+          - json:
+              expressions:
+                level: level
+                message: message
+                timestamp: timestamp
+          - labels:
+              level:
+              service:

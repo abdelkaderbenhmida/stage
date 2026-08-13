@@ -1094,6 +1094,9 @@ def alerts_firing() -> dict[str, Any]:
             "service": a.get("labels", {}).get("service") or a.get("labels", {}).get("app"),
             "state": a.get("status", {}).get("state"),
             "starts_at": a.get("startsAt"),
+            "labels": a.get("labels", {}),
+            "annotations": a.get("annotations", {}),
+            "generator_url": a.get("generatorURL"),
         }
         for a in data if isinstance(data, list)
     ]
