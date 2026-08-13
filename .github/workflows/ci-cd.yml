@@ -64,7 +64,7 @@ jobs:
               SERVICES="$SERVICES $(basename "$(dirname "$d")")-$(basename "$d")"
             fi
           done
-          echo "services=$(echo "$SERVICES" | jq -R 'gsub("^ +";"") | gsub(" +";" ") | split(" ") | map(select(length > 0))')" >> "$GITHUB_OUTPUT"
+          echo "services=$(printf '%s\n' $SERVICES | jq -cnR '[inputs | select(length > 0)]')" >> "$GITHUB_OUTPUT"
           echo "Discovered: $SERVICES"
 
   # ──────────────────────────────────────────────
