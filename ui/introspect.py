@@ -784,13 +784,21 @@ def pods_status(namespace: str | None = None) -> dict[str, Any]:
     for p in data.get("items", []):
         st = p.get("status", {})
         ready_conds = [c for c in st.get("conditions", []) if c["type"] == "Ready"]
-        restarts = sum(cs.get("restartCount", 0) for cs in st.get("containerStatuses", []))
+        cstatuses = st.get("containerStatuses", [])
+        restarts = sum(cs.get("restartCount", 0) for cs in cstatuses)
+        waiting = next(
+            (cs["state"]["waiting"] for cs in cstatuses if "waiting" in cs.get("state", {})), None
+        )
         pods.append({
             "name": p["metadata"]["name"],
             "namespace": p["metadata"]["namespace"],
+            "service": p.get("metadata", {}).get("labels", {}).get("app.kubernetes.io/name"),
             "phase": st.get("phase"),
             "ready": bool(ready_conds) and ready_conds[0]["status"] == "True",
             "restarts": restarts,
+            "image": cstatuses[0].get("image") if cstatuses else None,
+            "waiting_reason": (waiting or {}).get("reason"),
+            "waiting_message": (waiting or {}).get("message"),
         })
     return {"reachable": True, "pods": pods}
 
@@ -1084,6 +1092,176 @@ def find_pod(namespace: str, name_prefix: str) -> str | None:
         if name.startswith(name_prefix):
             return name
     return None
+
+
+def pod_detail(namespace: str, pod: str) -> dict[str, Any]:
+    res = _run(["kubectl", "get", "pod", pod, "-n", namespace, "-o", "json"], timeout=KUBECTL_TIMEOUT)
+    if not res["ok"]:
+        return {"reachable": False, "error": res["stderr"]}
+    try:
+        p = json.loads(res["stdout"])
+    except json.JSONDecodeError:
+        return {"reachable": False, "error": "could not parse kubectl output"}
+    st = p.get("status", {})
+    containers = []
+    for cs in st.get("containerStatuses", []):
+        state = cs.get("state", {})
+        last = cs.get("lastState", {}).get("terminated")
+        containers.append({
+            "name": cs.get("name"),
+            "image": cs.get("image"),
+            "ready": cs.get("ready"),
+            "restart_count": cs.get("restartCount"),
+            "waiting_reason": state.get("waiting", {}).get("reason"),
+            "waiting_message": state.get("waiting", {}).get("message"),
+            "last_terminated_reason": (last or {}).get("reason"),
+            "last_terminated_exit_code": (last or {}).get("exitCode"),
+            "last_terminated_at": (last or {}).get("finishedAt"),
+        })
+    return {
+        "reachable": True,
+        "name": p["metadata"]["name"],
+        "phase": st.get("phase"),
+        "node": p.get("spec", {}).get("nodeName"),
+        "start_time": st.get("startTime"),
+        "containers": containers,
+    }
+
+
+def pod_events(namespace: str, name: str, limit: int = 30) -> dict[str, Any]:
+    res = _run(
+        ["kubectl", "get", "events", "-n", namespace,
+         "--field-selector", f"involvedObject.name={name}", "-o", "json"],
+        timeout=KUBECTL_TIMEOUT,
+    )
+    if not res["ok"]:
+        return {"reachable": False, "error": res["stderr"], "events": []}
+    try:
+        data = json.loads(res["stdout"])
+    except json.JSONDecodeError:
+        return {"reachable": False, "error": "could not parse kubectl output", "events": []}
+    events = [
+        {
+            "type": e.get("type"),
+            "reason": e.get("reason"),
+            "message": e.get("message"),
+            "count": e.get("count"),
+            "last_timestamp": e.get("lastTimestamp"),
+        }
+        for e in data.get("items", [])
+    ]
+    events.sort(key=lambda e: e["last_timestamp"] or "", reverse=True)
+    return {"reachable": True, "events": events[:limit]}
+
+
+def _parse_top_output(text: str) -> dict[str, dict[str, str]]:
+    """Parses `kubectl top pods --no-headers` output (no -o json support)."""
+    metrics: dict[str, dict[str, str]] = {}
+    for line in text.splitlines():
+        parts = line.split()
+        if len(parts) >= 3:
+            metrics[parts[0]] = {"cpu": parts[1], "memory": parts[2]}
+    return metrics
+
+
+def pod_metrics(namespace: str) -> dict[str, Any]:
+    res = _run(["kubectl", "top", "pods", "-n", namespace, "--no-headers"], timeout=10)
+    if not res["ok"]:
+        return {"reachable": False, "error": res["stderr"] or "metrics-server unavailable", "metrics": {}}
+    return {"reachable": True, "metrics": _parse_top_output(res["stdout"])}
+
+
+def _parse_rollout_history(text: str) -> list[dict[str, Any]]:
+    """Parses `kubectl rollout history deploy/<d>` tabular output."""
+    revisions = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith(("REVISION", "deployment.apps", "daemonset.apps", "statefulset.apps")):
+            continue
+        parts = line.split(None, 1)
+        if parts and parts[0].isdigit():
+            revisions.append({
+                "revision": int(parts[0]),
+                "change_cause": parts[1].strip() if len(parts) > 1 else None,
+            })
+    return revisions
+
+
+def rollout_history(namespace: str, deployment: str) -> dict[str, Any]:
+    res = _run(["kubectl", "rollout", "history", f"deploy/{deployment}", "-n", namespace], timeout=KUBECTL_TIMEOUT)
+    if not res["ok"]:
+        return {"reachable": False, "error": res["stderr"], "revisions": []}
+    revisions = _parse_rollout_history(res["stdout"])
+    rs_res = _run(
+        ["kubectl", "get", "rs", "-n", namespace, "-l", f"app.kubernetes.io/name={deployment}", "-o", "json"],
+        timeout=KUBECTL_TIMEOUT,
+    )
+    images_by_rev: dict[int, str] = {}
+    if rs_res["ok"]:
+        try:
+            rs_data = json.loads(rs_res["stdout"])
+            for rs in rs_data.get("items", []):
+                rev = rs.get("metadata", {}).get("annotations", {}).get("deployment.kubernetes.io/revision")
+                containers = rs.get("spec", {}).get("template", {}).get("spec", {}).get("containers", [])
+                if rev and containers:
+                    images_by_rev[int(rev)] = containers[0].get("image")
+        except (json.JSONDecodeError, ValueError, TypeError):
+            pass
+    for r in revisions:
+        r["image"] = images_by_rev.get(r["revision"])
+    return {"reachable": True, "revisions": revisions}
+
+
+_K8S_NAME_RE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
+
+
+def rollout_undo(namespace: str, deployment: str, to_revision: int | None = None) -> dict[str, Any]:
+    if not _K8S_NAME_RE.match(deployment):
+        raise ServiceError(f"invalid deployment name '{deployment}'")
+    cmd = ["kubectl", "rollout", "undo", f"deploy/{deployment}", "-n", namespace]
+    if to_revision:
+        cmd.append(f"--to-revision={to_revision}")
+    res = _run(cmd, timeout=KUBECTL_TIMEOUT)
+    if not res["ok"]:
+        raise ServiceError(res["stderr"] or f"rollback failed for {deployment}")
+    return {"ok": True, "message": f"rolled back '{deployment}'" + (f" to revision {to_revision}" if to_revision else "")}
+
+
+def service_drilldown(service: str, namespace: str = "devops-platform") -> dict[str, Any]:
+    """One aggregate call for the service detail panel: pods (by label
+    selector, not name-prefix guessing), each pod's detail, recent events,
+    live metrics, and deployment rollout history."""
+    pods_res = _run(
+        ["kubectl", "get", "pods", "-n", namespace, "-l", f"app.kubernetes.io/name={service}", "-o", "json"],
+        timeout=KUBECTL_TIMEOUT,
+    )
+    if not pods_res["ok"]:
+        return {"reachable": False, "error": pods_res["stderr"]}
+    try:
+        pods_data = json.loads(pods_res["stdout"])
+    except json.JSONDecodeError:
+        return {"reachable": False, "error": "could not parse kubectl output"}
+
+    pod_names = [p["metadata"]["name"] for p in pods_data.get("items", [])]
+    pods = [pod_detail(namespace, name) for name in pod_names]
+    events = [pod_events(namespace, name, limit=10) for name in pod_names]
+    metrics = pod_metrics(namespace)
+    history = rollout_history(namespace, service)
+
+    all_events = []
+    for e in events:
+        if e.get("reachable"):
+            all_events.extend(e["events"])
+    all_events.sort(key=lambda e: e["last_timestamp"] or "", reverse=True)
+
+    return {
+        "reachable": True,
+        "service": service,
+        "pods": pods,
+        "events": all_events[:20],
+        "metrics": metrics.get("metrics", {}) if metrics.get("reachable") else {},
+        "rollout": history,
+    }
 
 
 # ─── CI log viewer ───

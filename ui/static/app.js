@@ -986,12 +986,77 @@ function showDetail(serviceName) {
       <div class="detail-section-title">CI Pipeline</div>
       ${ci.length ? `<span class="chip">${ci[0].name}</span> ${ci.length} matrix jobs` : "<span class='muted'>– no CI</span>"}
     </div>
+
+    <div class="detail-section">
+      <div class="detail-section-title">Live runtime</div>
+      <div id="detail-runtime"><div class="cfg-loading">loading pods, events, rollout history…</div></div>
+    </div>
   `;
 
   $("detail-title").textContent = svc.name;
   $("detail-content").innerHTML = content;
   $("detail-panel").classList.add("show");
   $("detail-overlay").classList.add("show");
+
+  loadServiceRuntime(svc.name);
+}
+
+async function loadServiceRuntime(service) {
+  const box = $("detail-runtime");
+  if (!box) return;
+  try {
+    const r = await api("GET", `/api/live/services/${service}/drilldown`);
+    if (!r.reachable) { box.innerHTML = offlineCard("cluster", r.error); return; }
+
+    const podRows = r.pods.map((p) => {
+      if (!p.reachable) return `<div class="app-row"><div class="app-row-main">${offlineCard(p.name || "pod", p.error)}</div></div>`;
+      const c = p.containers[0] || {};
+      const m = r.metrics[p.name];
+      const notReady = c.waiting_reason && `<span class="val" style="color:var(--red)">${esc(c.waiting_reason)}${c.waiting_message ? ": " + esc(c.waiting_message) : ""}</span>`;
+      return `
+        <div class="app-row">
+          <div class="app-row-main">
+            <div class="app-row-name">${esc(p.name)}</div>
+            <div class="app-row-meta mono small">${esc(c.image || "–")}</div>
+          </div>
+          ${pill(p.phase, p.phase === "Running" ? "green" : "amber")}
+          ${notReady || pill(c.ready ? "ready" : "not ready", c.ready ? "green" : "red")}
+          <span class="mono small muted">${m ? `${m.cpu} · ${m.memory}` : "–"}</span>
+          <span class="mono small muted">restarts: ${c.restart_count ?? 0}</span>
+          <div class="run-actions">
+            <button class="act-btn" onclick="viewPodLogs('devops-platform','${esc(p.name)}','${esc(p.name)} logs')">▤ logs</button>
+            <button class="act-btn danger" onclick="restartPod('devops-platform','${esc(p.name)}')">↻ restart</button>
+          </div>
+        </div>`;
+    }).join("") || `<div class="empty">no pods running</div>`;
+
+    const eventRows = r.events.map((e) => `
+      <div class="cfg-item"><span>${pill(e.reason, e.type === "Warning" ? "red" : "muted")} ${esc(e.message)}</span><span class="val small">${e.count > 1 ? `×${e.count}` : ""}</span></div>
+    `).join("") || `<div class="empty">no recent events</div>`;
+
+    const revRows = (r.rollout.reachable ? r.rollout.revisions : []).slice().reverse().map((rev) => `
+      <div class="cfg-item">
+        <span>rev ${rev.revision} <span class="mono small muted">${esc(rev.image || "")}</span></span>
+        <button class="act-btn" onclick="rollbackDeployment('devops-platform','${esc(service)}',${rev.revision})">↩ rollback here</button>
+      </div>`).join("") || `<div class="empty">no rollout history</div>`;
+
+    box.innerHTML = `
+      <div class="detail-section"><div class="detail-section-title">Pods (${r.pods.length})</div>${podRows}</div>
+      <div class="detail-section"><div class="detail-section-title">Recent events</div>${eventRows}</div>
+      <div class="detail-section"><div class="detail-section-title">Rollout history</div>${revRows}</div>`;
+  } catch (e) {
+    box.innerHTML = offlineCard("cluster", e.message);
+  }
+}
+
+async function rollbackDeployment(namespace, deployment, revision) {
+  if (!confirm(`Roll back '${deployment}' to revision ${revision}? This changes what's running right now.`)) return;
+  try {
+    loading(true);
+    const r = await api("POST", "/api/live/rollout/undo", { namespace, deployment, to_revision: revision });
+    toast("✓ " + r.message, true);
+    setTimeout(() => loadServiceRuntime(deployment), 2000);
+  } catch (e) { toast("✕ " + e.message, false); }
 }
 
 function closeDetail() {

@@ -251,6 +251,46 @@ def api_pod_find(namespace: str, prefix: str) -> dict:
     return {"pod": name}
 
 
+@app.get("/api/live/pods/{namespace}/{pod}/detail")
+def api_pod_detail(namespace: str, pod: str) -> dict:
+    return introspect.pod_detail(namespace, pod)
+
+
+@app.get("/api/live/pods/{namespace}/{pod}/events")
+def api_pod_events(namespace: str, pod: str, limit: int = 30) -> dict:
+    return introspect.pod_events(namespace, pod, limit)
+
+
+@app.get("/api/live/metrics/pods")
+def api_pod_metrics(namespace: str) -> dict:
+    return introspect.pod_metrics(namespace)
+
+
+# ─── Service drill-down (aggregates pods + events + metrics + rollout) ───
+
+@app.get("/api/live/services/{service}/drilldown")
+def api_service_drilldown(service: str, namespace: str = "devops-platform") -> dict:
+    return introspect.service_drilldown(service, namespace)
+
+
+# ─── Rollout history / rollback ───
+
+class RolloutRef(BaseModel):
+    namespace: str
+    deployment: str
+    to_revision: int | None = None
+
+
+@app.get("/api/live/rollout/{namespace}/{deployment}/history")
+def api_rollout_history(namespace: str, deployment: str) -> dict:
+    return introspect.rollout_history(namespace, deployment)
+
+
+@app.post("/api/live/rollout/undo")
+def api_rollout_undo(body: RolloutRef) -> dict:
+    return _guard(introspect.rollout_undo, body.namespace, body.deployment, body.to_revision)
+
+
 # ─── CI run logs ───
 
 @app.get("/api/live/ci/{run_id}/logs")

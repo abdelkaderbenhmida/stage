@@ -162,3 +162,40 @@ def test_api_endpoints():
     assert ov["status"] == "ready"
     svc = client.get("/api/services").json()
     assert svc["count"] == len(introspect.discover_services())
+
+
+def test_parse_top_output():
+    text = (
+        "orders-service-7fcd59d998-qv798    3m    43Mi\n"
+        "products-service-96d467b44-hnfhl   3m    44Mi\n"
+    )
+    metrics = introspect._parse_top_output(text)
+    assert metrics["orders-service-7fcd59d998-qv798"] == {"cpu": "3m", "memory": "43Mi"}
+    assert len(metrics) == 2
+
+
+def test_parse_top_output_ignores_malformed_lines():
+    assert introspect._parse_top_output("\n  \ntoo-few-fields\n") == {}
+
+
+def test_parse_rollout_history():
+    text = (
+        "deployment.apps/users-service\n"
+        "REVISION  CHANGE-CAUSE\n"
+        "1         <none>\n"
+        "2         initial deploy\n"
+    )
+    revisions = introspect._parse_rollout_history(text)
+    assert revisions == [
+        {"revision": 1, "change_cause": "<none>"},
+        {"revision": 2, "change_cause": "initial deploy"},
+    ]
+
+
+def test_rollout_undo_rejects_invalid_deployment_names():
+    for bad in ["../../etc/passwd", "; rm -rf /", "UPPER_CASE", ""]:
+        try:
+            introspect.rollout_undo("devops-platform", bad)
+            assert False, f"expected ServiceError for {bad!r}"
+        except introspect.ServiceError:
+            pass
