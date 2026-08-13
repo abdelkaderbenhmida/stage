@@ -91,6 +91,61 @@ def api_delete_service(app_name: str, svc_name: str) -> dict:
     return _guard(introspect.delete_service, app_name, svc_name)
 
 
+# ─── Ship flow (WS-A): create → branch → push → PR → stage tracker ───
+
+class ShipIn(BaseModel):
+    app: str = ""
+    name: str
+    open_pr: bool = True
+
+
+@app.post("/api/ship/service")
+def api_ship_service(body: ShipIn) -> dict:
+    return _guard(introspect.ship_service, body.app, body.name, body.open_pr)
+
+
+@app.post("/api/ship/{service}/secrets")
+def api_ship_secrets(service: str) -> dict:
+    return _guard(introspect.seed_service_secrets, service)
+
+
+@app.post("/api/ship/vault/resync")
+def api_ship_vault_resync() -> dict:
+    return _guard(introspect.sync_service_list)
+
+
+@app.post("/api/ship/vault/setup")
+def api_ship_vault_setup() -> dict:
+    return _guard(introspect.rerun_vault_setup)
+
+
+@app.get("/api/ship/{service}/pipeline")
+def api_ship_pipeline(service: str) -> dict:
+    return introspect.service_pipeline(service)
+
+
+# ─── Infrastructure control (WS-B) ───
+
+@app.get("/api/infra/capacity")
+def api_infra_capacity() -> dict:
+    return introspect.cluster_capacity()
+
+
+@app.get("/api/infra/terraform")
+def api_infra_terraform() -> dict:
+    return introspect.terraform_drift()
+
+
+@app.post("/api/infra/terraform/reconcile")
+def api_infra_terraform_reconcile() -> dict:
+    return _guard(introspect.terraform_reconcile)
+
+
+@app.get("/api/infra/preflight")
+def api_infra_preflight(disk_gb: int = 0, mem_mb: int = 0) -> dict:
+    return introspect.node_preflight(disk_gb or None, mem_mb or None)
+
+
 @app.get("/api/helm")
 def api_helm() -> dict:
     return introspect.helm_render(introspect.discover_services())

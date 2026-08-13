@@ -6,7 +6,13 @@
 # stay complete. The ArgoCD ApplicationSet sets this false on its per-service
 # Applications — each only knows ONE service, so it must not touch shared state
 # or it will fight every other per-service Application over ownership.
+#
+# renderSharedOnly is the mirror: render ONLY the shared objects, none of the
+# per-service ones. Used by the devops-platform-shared Application (the sole
+# owner of the ServiceMonitor + apps-read-self RoleBinding), which supplies the
+# full service list so the RoleBinding subjects stay complete.
 renderShared: true
+renderSharedOnly: false
 namespace: devops-platform
 registry: ghcr.io/abdelkaderbenhmida
 imageTag: secondary

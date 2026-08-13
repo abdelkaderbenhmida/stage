@@ -75,6 +75,58 @@ def _k8s_name(app: str | None, svc_dir: Path) -> str:
     return f"{app}-{base}" if app else base
 
 
+MARKER_NAME = "service.yaml"
+
+
+def _svc_dir_from_k8s_name(name: str) -> tuple[str | None, Path]:
+    """Reverse of _k8s_name: (app_name or None, svc_dir) for a k8s name.
+    Flat wins — a nested app/<app>/<svc> dir with the same k8s name is
+    impossible for the existing layout, but check nested first only if the
+    flat dir has no main.py."""
+    flat = APP_DIR / name
+    if (flat / SERVICE_MARKER).is_file():
+        return (None, flat)
+    for m in sorted(APP_DIR.glob("*/*/main.py")):
+        if _k8s_name(m.parent.parent.name, m.parent) == name:
+            return (m.parent.parent.name, m.parent)
+    return (None, flat)
+
+
+def _list_service_markers() -> list[dict[str, Any]]:
+    """Read every app/<svc>/service.yaml marker → {name, tag, path}."""
+    out = []
+    if not APP_DIR.is_dir():
+        return out
+    for m in sorted(APP_DIR.glob("*/service.yaml")):
+        data = _load_yaml_docs(m)
+        doc = data[0] if data else {}
+        out.append({"name": doc.get("name") or m.parent.name, "tag": doc.get("tag"), "path": str(m.relative_to(ROOT))})
+    for m in sorted(APP_DIR.glob("*/*/service.yaml")):
+        data = _load_yaml_docs(m)
+        doc = data[0] if data else {}
+        out.append({"name": doc.get("name") or _k8s_name(m.parent.parent.name, m.parent), "tag": doc.get("tag"), "path": str(m.relative_to(ROOT))})
+    return out
+
+
+def _marker_path(app_name: str | None, svc_dir: Path) -> Path:
+    return svc_dir / MARKER_NAME
+
+
+def _write_service_marker(app_name: str | None, svc_dir: Path, tag: str = "secondary") -> Path:
+    k8s = _k8s_name(None if app_name in (None, "", DEFAULT_APP) else app_name, svc_dir)
+    marker = _marker_path(app_name, svc_dir)
+    marker.write_text(
+        "# ArgoCD ApplicationSet discovery marker. The `files` generator parses this\n"
+        "# YAML to build one Application per service — `name` becomes the k8s/image\n"
+        "# name, `tag` the image tag (CI rewrites it to commit-<sha7> after a\n"
+        "# successful build; the default `secondary` is the floating branch tag).\n"
+        "# main.py remains the discovery contract for CI and introspect.py.\n"
+        f"name: {k8s}\n"
+        f"tag: {tag}\n"
+    )
+    return marker
+
+
 def discover_services() -> list[str]:
     return sorted({_k8s_name(a, d) for a, d in _iter_service_dirs()})
 
@@ -465,9 +517,9 @@ def parse_argocd() -> dict[str, Any]:
     generators = apps.get("spec", {}).get("generators") or [{}]
     git_gens = [g.get("git", {}) for g in generators if isinstance(g, dict) and g.get("git")]
     git_gen = git_gens[0] if git_gens else {}
-    directories: list[dict[str, Any]] = []
+    files_pattern: list[dict[str, Any]] = []
     for g in git_gens:
-        directories.extend(g.get("directories") or [])
+        files_pattern.extend(g.get("files") or [])
     app_manifests = []
     if (ROOT / "k8s/argocd/applications").is_dir():
         for p in sorted((ROOT / "k8s/argocd/applications").glob("*.yaml")):
@@ -481,15 +533,19 @@ def parse_argocd() -> dict[str, Any]:
                         }
                     )
     tmpl = apps.get("spec", {}).get("template", {})
+    helm_params = (tmpl.get("spec", {}).get("source", {}).get("helm", {}).get("parameters") or [])
+    markers = _list_service_markers()
     return {
         "name": (apps.get("metadata") or {}).get("name"),
         "namespace": (apps.get("metadata") or {}).get("namespace"),
-        "generator_type": "git" if git_gen else "unknown",
+        "generator_type": "files" if files_pattern else "git",
         "repo_url": git_gen.get("repoURL"),
         "revision": git_gen.get("revision"),
-        "files_pattern": [d for d in directories if not d.get("exclude")],
+        "files_pattern": [f.get("path") for f in files_pattern if not f.get("exclude")],
         "app_name_template": tmpl.get("metadata", {}).get("name"),
-        "scoped_to": "1 Application per app/* (flat) or app/*/* (nested), by directory presence",
+        "helm_tag_param": any(p.get("name") == "services[0].tag" for p in helm_params),
+        "markers": [{"name": m["name"], "tag": m.get("tag"), "path": m["path"]} for m in markers],
+        "scoped_to": "1 Application per app/<svc>/service.yaml marker, by file content (YAML)",
         "sync_policy": (tmpl.get("spec", {}) or {}).get("syncPolicy"),
         "static_applications": app_manifests,
         "part_of_label": (apps.get("metadata", {}).get("labels", {})).get("app.kubernetes.io/part-of"),
@@ -617,7 +673,7 @@ def delete_app(name: str) -> dict[str, Any]:
     if not target.is_dir():
         raise ServiceError(f"app '{name}' does not exist")
     shutil.rmtree(target)
-    return {"ok": True, "message": f"app '{name}' and its services deleted (cascade)"}
+    return {**sync_shared_app(), "message": f"app '{name}' and its services deleted (cascade)"}
 
 
 def create_service(app_name: str, svc_name: str) -> dict[str, Any]:
@@ -634,6 +690,8 @@ def create_service(app_name: str, svc_name: str) -> dict[str, Any]:
     k8s = _k8s_name(None if app_name in (None, "", DEFAULT_APP) else app_name, svc_dir)
     (svc_dir / SERVICE_MARKER).write_text(SERVICE_TEMPLATE.format(service=k8s))
     (svc_dir / "requirements.txt").write_text(REQUIREMENTS_TEMPLATE)
+    _write_service_marker(app_name, svc_dir)
+    sync_shared_app()
     return {
         "ok": True,
         "message": f"service '{k8s}' created at {svc_dir.relative_to(ROOT)}/ — CI will build, ArgoCD will deploy, Vault will provision",
@@ -646,9 +704,727 @@ def delete_service(app_name: str, svc_name: str) -> dict[str, Any]:
         raise ServiceError(f"service '{svc_name}' not found in app '{app_name or DEFAULT_APP}'")
     k8s = _k8s_name(None if app_name in (None, "", DEFAULT_APP) else app_name, svc_dir)
     shutil.rmtree(svc_dir)
+    sync_shared_app()
     return {
         "ok": True,
         "message": f"service '{k8s}' deleted — CI matrix shrinks, ArgoCD prunes, Vault role idles",
+    }
+
+
+# ──────────────────────────────────────────────────────────────
+# Ship flow — the golden path made visible. create_service() only
+# writes files; shipping means branch → commit → push → PR, and the
+# pipeline tracker names the FIRST stage a service is stuck on.
+# ──────────────────────────────────────────────────────────────
+
+SHARED_APP_PATH = ROOT / "k8s/argocd/applications/shared-app.yaml"
+
+
+def sync_shared_app() -> dict[str, Any]:
+    """Rewrite the services[i].name Helm params of the devops-platform-shared
+    Application to match discover_services(). Generated, never hand-maintained —
+    create/delete service call this automatically so the shared RoleBinding
+    subjects stay complete."""
+    path = SHARED_APP_PATH
+    if not path.is_file():
+        raise ServiceError(f"{path.relative_to(ROOT)} not found — cannot sync shared app")
+    try:
+        docs = list(yaml.safe_load_all(path.read_text()))
+    except yaml.YAMLError as exc:
+        raise ServiceError(f"cannot parse {path.relative_to(ROOT)}: {exc}") from exc
+    target = next(
+        (d for d in docs
+         if isinstance(d, dict) and d.get("kind") == "Application"
+         and (d.get("metadata") or {}).get("name") == "devops-platform-shared"),
+        None,
+    )
+    if target is None:
+        raise ServiceError("devops-platform-shared Application not found in shared-app.yaml")
+    params = target.setdefault("spec", {}).setdefault("source", {}).setdefault("helm", {}).setdefault("parameters", [])
+    keep = [p for p in params if not str(p.get("name") or "").startswith("services[")]
+    for i, svc in enumerate(discover_services()):
+        keep.append({"name": f"services[{i}].name", "value": svc})
+    target["spec"]["source"]["helm"]["parameters"] = keep
+    path.write_text(yaml.safe_dump_all(docs, sort_keys=False))
+    return {"ok": True, "message": f"shared app services synced ({len(discover_services())} services)"}
+
+
+def ship_service(app_name: str, svc_name: str, open_pr: bool = True) -> dict[str, Any]:
+    """MUTATING — create_service() + git branch/commit/push + `gh pr create`.
+    Nothing lands on `secondary` unreviewed. Leaves the local repo on the new
+    branch (subsequent commits to this service belong to the PR)."""
+    _validate_slug(svc_name, "service")
+    if app_name not in (None, "", DEFAULT_APP):
+        _validate_slug(app_name, "app")
+    svc_dir = _svc_dir(app_name, svc_name)
+    k8s = _k8s_name(None if app_name in (None, "", DEFAULT_APP) else app_name, svc_dir)
+    branch = f"service/{k8s}"
+    rel = f"app/{svc_dir.relative_to(APP_DIR)}"
+
+    create_service(app_name, svc_name)
+
+    res = _run(["git", "checkout", "-b", branch], timeout=15)
+    if not res["ok"]:
+        raise ServiceError(res["stderr"] or f"could not create branch {branch}")
+    res = _run(["git", "add", rel], timeout=15)
+    if not res["ok"]:
+        raise ServiceError(res["stderr"] or "git add failed")
+    res = _run(
+        ["git", "commit", "-m", f"feat({k8s}): scaffold new service from platform UI"],
+        timeout=15,
+    )
+    if not res["ok"]:
+        raise ServiceError(res["stderr"] or "git commit failed — nothing to commit?")
+    res = _run(["git", "push", "-u", "origin", branch], timeout=GH_TIMEOUT)
+    if not res["ok"]:
+        raise ServiceError(res["stderr"] or f"git push failed for {branch}")
+
+    pr_url = None
+    if open_pr:
+        body = (
+            f"Ship service `{k8s}` from the platform UI.\n\n"
+            f"Files: `{rel}/` (`main.py`, `requirements.txt`, `service.yaml` marker).\n"
+            "Once merged, CI builds the image, tag-backfill pins the marker to "
+            "`commit-<sha7>`, ArgoCD's ApplicationSet picks it up, and the Vault "
+            "setup job provisions `secret/devops-platform/" + k8s + "`."
+        )
+        pr = _run(
+            ["gh", "pr", "create", "--repo", _repo_slug(), "--head", branch,
+             "--base", "secondary", "--title", f"feat: ship service {k8s}", "--body", body],
+            timeout=GH_TIMEOUT,
+        )
+        if not pr["ok"]:
+            raise ServiceError(pr["stderr"] or "gh pr create failed")
+        pr_url = pr["stdout"].strip()
+
+    return {
+        "ok": True,
+        "message": f"service '{k8s}' shipped on branch {branch}",
+        "branch": branch,
+        "pr_url": pr_url,
+        "pipeline": service_pipeline(k8s),
+    }
+
+
+def seed_service_secrets(service: str) -> dict[str, Any]:
+    """MUTATING — write DATABASE_URL + JWT_SECRET_KEY into Vault for one
+    service. Never returns the values (see conventions)."""
+    token = _vault_root_token()
+    if not token:
+        raise ServiceError("could not read vault-root-token secret")
+    db = f"postgresql://app:{secrets_module().token_hex(12)}@postgres-{service}.devops-platform.svc.cluster.local:5432/{service}"
+    jw = secrets_module().token_hex(32)
+    res = _run(
+        ["kubectl", "exec", "-n", "vault", "deploy/vault", "--",
+         "env", f"VAULT_TOKEN={token}", "vault", "kv", "put",
+         f"secret/devops-platform/{service}", f"DATABASE_URL={db}", f"JWT_SECRET_KEY={jw}"],
+        timeout=15,
+    )
+    if not res["ok"]:
+        raise ServiceError(res["stderr"] or "vault kv put failed")
+    return {"ok": True, "message": f"seeded secret/devops-platform/{service} (DATABASE_URL, JWT_SECRET_KEY)"}
+
+
+def sync_service_list() -> dict[str, Any]:
+    """MUTATING — rewrite the devops-service-list ConfigMap (vault ns) from
+    discover_services(). This is the configmap the vault-setup Job reads."""
+    services = discover_services()
+    rendered = _run(
+        ["kubectl", "create", "configmap", "devops-service-list", "-n", "vault",
+         "--from-literal=services=" + " ".join(services),
+         "--dry-run=client", "-o", "yaml"],
+        timeout=KUBECTL_TIMEOUT,
+    )
+    if not rendered["ok"]:
+        raise ServiceError(rendered["stderr"] or "could not render configmap")
+    applied = _run(["kubectl", "apply", "-f", "-"], timeout=KUBECTL_TIMEOUT, input_=rendered["stdout"])
+    if not applied["ok"]:
+        raise ServiceError(applied["stderr"] or "could not apply configmap")
+    return {"ok": True, "message": f"devops-service-list synced with {len(services)} services", "services": services}
+
+
+def rerun_vault_setup() -> dict[str, Any]:
+    """MUTATING — force the vault-setup Job to re-run: delete it (TTL expired
+    jobs are gone from the API) then re-apply the manifests."""
+    _run(["kubectl", "delete", "job", "vault-setup-job", "-n", "vault", "--ignore-not-found"], timeout=KUBECTL_TIMEOUT)
+    res = _run(["kubectl", "apply", "-f", str(ROOT / "k8s/vault/manifests.yaml")], timeout=KUBECTL_TIMEOUT)
+    if not res["ok"]:
+        raise ServiceError(res["stderr"] or "could not apply vault manifests")
+    return {"ok": True, "message": "vault-setup-job re-created — provisioning all services"}
+
+
+def secrets_module():
+    import secrets
+
+    return secrets
+
+
+def _pipeline_result(service: str, stages: list[dict[str, Any]]) -> dict[str, Any]:
+    blocker = next((s for s in stages if s["state"] != "ok"), None)
+    return {
+        "service": service,
+        "stages": stages,
+        "blocking": blocker["stage"] if blocker else None,
+        "all_ok": blocker is None,
+        "blocking_detail": blocker["detail"] if blocker else None,
+    }
+
+
+def _vault_secret_ok(service: str) -> dict[str, Any]:
+    """Both DATABASE_URL and JWT_SECRET_KEY must exist AND be non-empty.
+    Reads values to check emptiness but never returns them."""
+    token = _vault_root_token()
+    if not token:
+        return {"reachable": False, "error": "could not read vault-root-token secret"}
+    res = _run(
+        ["kubectl", "exec", "-n", "vault", "deploy/vault", "--",
+         "env", f"VAULT_TOKEN={token}", "vault", "kv", "get", "-format=json",
+         f"secret/devops-platform/{service}"],
+        timeout=10,
+    )
+    if not res["ok"]:
+        return {"reachable": False, "error": res["stderr"] or "cannot read secret"}
+    try:
+        data = json.loads(res["stdout"]).get("data", {}).get("data", {})
+    except json.JSONDecodeError:
+        return {"reachable": False, "error": "could not parse vault output"}
+    present = {k: bool(data.get(k)) for k in ("DATABASE_URL", "JWT_SECRET_KEY")}
+    return {"reachable": True, "present": all(present.values()), "missing": sorted(k for k, v in present.items() if not v)}
+
+
+def _deployment_ready(namespace: str, name: str) -> dict[str, Any]:
+    res = _run(
+        ["kubectl", "get", "deploy", name, "-n", namespace,
+         "-o", "jsonpath={.status.readyReplicas}/{.spec.replicas}/{.status.availableReplicas}"],
+        timeout=KUBECTL_TIMEOUT,
+    )
+    if not res["ok"]:
+        return {"reachable": False, "error": res["stderr"] or "deployment not found"}
+    parts = res["stdout"].split("/")
+    if len(parts) != 3:
+        return {"reachable": False, "error": f"unexpected output: {res['stdout']}"}
+    try:
+        ready, desired, available = int(parts[0]), int(parts[1]), int(parts[2])
+    except ValueError:
+        return {"reachable": False, "error": f"unexpected output: {res['stdout']}"}
+    return {"reachable": True, "ready": ready, "desired": desired, "available": available}
+
+
+def _ci_build_conclusion(branch: str) -> dict[str, Any]:
+    """Latest CI run on the branch + its Build & Push Images job conclusion.
+    The gh token lacks read:packages, so a registry HEAD check returns 403 —
+    the CI build job conclusion is the honest image-exists signal."""
+    res = _run(
+        ["gh", "run", "list", "--repo", _repo_slug(), "--branch", branch, "--limit", "1", "--json",
+         "databaseId,status,conclusion"],
+        timeout=GH_TIMEOUT,
+    )
+    if not res["ok"]:
+        return {"reachable": False, "error": res["stderr"] or "gh CLI unavailable"}
+    try:
+        runs = json.loads(res["stdout"])
+    except json.JSONDecodeError:
+        return {"reachable": False, "error": "could not parse gh output"}
+    if not runs:
+        return {"reachable": True, "run_id": None, "build_ok": None, "detail": "no runs on this branch yet"}
+    run = runs[0]
+    if run.get("status") != "completed":
+        return {"reachable": True, "run_id": run.get("databaseId"), "build_ok": None, "detail": f"latest run is {run.get('status')}"}
+    if run.get("conclusion") != "success":
+        return {"reachable": True, "run_id": run.get("databaseId"), "build_ok": False, "detail": f"latest run concluded {run.get('conclusion')}"}
+    jobs = _run(
+        ["gh", "run", "view", str(run.get("databaseId")), "--repo", _repo_slug(),
+         "--json", "jobs", "--jq", '.[] | select(.name == "Build & Push Images") | .conclusion'],
+        timeout=GH_TIMEOUT,
+    )
+    if not jobs["ok"] or not jobs["stdout"]:
+        return {"reachable": True, "run_id": run.get("databaseId"), "build_ok": None, "detail": "run green but build job conclusion unavailable"}
+    return {"reachable": True, "run_id": run.get("databaseId"), "build_ok": jobs["stdout"].strip() == "success", "detail": jobs["stdout"].strip()}
+
+
+def service_pipeline(service: str) -> dict[str, Any]:
+    """Ordered end-to-end stage tracker. Each stage: {stage, state,
+    detail}. The first non-ok stage is the blocker — this is the feature:
+    naming exactly where a service is stuck."""
+    app_name, svc_dir = _svc_dir_from_k8s_name(service)
+    rel = f"app/{svc_dir.relative_to(APP_DIR)}"
+    stages: list[dict[str, Any]] = []
+
+    # 1. files on disk
+    if not (svc_dir / SERVICE_MARKER).is_file():
+        return _pipeline_result(service, [{"stage": "files", "state": "failed", "detail": f"no {rel}/main.py on disk"}])
+    stages.append({"stage": "files", "state": "ok", "detail": f"{rel}/main.py + service.yaml present"})
+
+    # 2. committed & pushed (service branch first, then secondary fallback)
+    branch = f"service/{service}"
+    commits = _git(["log", f"origin/{branch}", "--oneline", "--", rel])
+    pushed_source = f"origin/{branch}"
+    if not commits:
+        commits = _git(["log", "origin/secondary", "--oneline", "--", rel])
+        pushed_source = "origin/secondary"
+    dirty = _git(["status", "--porcelain", "--", rel])
+    if commits and not dirty:
+        stages.append({"stage": "committed", "state": "ok", "detail": f"{len(commits.splitlines())} commit(s) on {pushed_source}, tree clean"})
+    elif commits and dirty:
+        stages.append({"stage": "committed", "state": "failed", "detail": f"pushed on {pushed_source} but local changes uncommitted"})
+    else:
+        stages.append({"stage": "committed", "state": "failed", "detail": "never pushed — use Ship (branch service/<name> + PR)"})
+    if stages[-1]["state"] != "ok":
+        return _pipeline_result(service, stages)
+
+    # 3. PR open
+    if _git(["rev-parse", f"origin/{branch}"]):
+        prs = _run(["gh", "pr", "list", "--repo", _repo_slug(), "--head", branch, "--json", "state"], timeout=GH_TIMEOUT)
+        if not prs["ok"]:
+            stages.append({"stage": "pr", "state": "failed", "detail": prs["stderr"] or "gh unavailable"})
+        else:
+            try:
+                open_prs = [p for p in json.loads(prs["stdout"]) if p.get("state") == "OPEN"]
+                stages.append({"stage": "pr", "state": "ok" if open_prs else "failed", "detail": f"{len(open_prs)} open PR(s) for {branch}" if open_prs else f"branch {branch} exists but no open PR"})
+            except json.JSONDecodeError:
+                stages.append({"stage": "pr", "state": "failed", "detail": "could not parse gh output"})
+    else:
+        stages.append({"stage": "pr", "state": "ok", "detail": "no service/<name> branch — shipped directly on secondary"})
+    if stages[-1]["state"] != "ok":
+        return _pipeline_result(service, stages)
+
+    # 4. CI green + 5. image in GHCR
+    ci = _ci_build_conclusion(branch if _git(["rev-parse", f"origin/{branch}"]) else "secondary")
+    if not ci["reachable"]:
+        stages.append({"stage": "ci", "state": "failed", "detail": ci["error"]})
+    elif ci["build_ok"] is None:
+        stages.append({"stage": "ci", "state": "pending", "detail": ci["detail"]})
+    elif not ci["build_ok"]:
+        stages.append({"stage": "ci", "state": "failed", "detail": ci["detail"] + " (run " + str(ci["run_id"]) + ")"})
+    else:
+        stages.append({"stage": "ci", "state": "ok", "detail": f"build job success (run {ci['run_id']})"})
+    if stages[-1]["state"] != "ok":
+        return _pipeline_result(service, stages)
+    stages.append({
+        "stage": "image",
+        "state": "ok",
+        "detail": "gh token lacks read:packages — image presence inferred from the CI build job conclusion, not registry HEAD",
+    })
+
+    # 6. Vault secrets present (both keys, non-empty)
+    vault = _vault_secret_ok(service)
+    if not vault["reachable"]:
+        stages.append({"stage": "vault", "state": "failed", "detail": vault["error"]})
+    elif not vault["present"]:
+        stages.append({"stage": "vault", "state": "failed", "detail": f"missing/empty: {', '.join(vault['missing'])} — Seed secrets"})
+    else:
+        stages.append({"stage": "vault", "state": "ok", "detail": "DATABASE_URL + JWT_SECRET_KEY present"})
+    if stages[-1]["state"] != "ok":
+        return _pipeline_result(service, stages)
+
+    # 7. ArgoCD synced
+    argo = argocd_apps()
+    app = next((a for a in argo.get("apps", []) if a["name"] == service), None) if argo.get("reachable") else None
+    if not argo.get("reachable"):
+        stages.append({"stage": "argocd", "state": "failed", "detail": argo.get("error", "cluster unreachable")})
+    elif app is None:
+        stages.append({"stage": "argocd", "state": "pending", "detail": "Application not created yet — ApplicationSet watches the marker"})
+    elif app["sync_status"] == "Synced" and app["health_status"] == "Healthy":
+        stages.append({"stage": "argocd", "state": "ok", "detail": f"Synced / {app['health_status']} @ {app['revision']}"})
+    elif app["sync_status"] == "Synced":
+        stages.append({"stage": "argocd", "state": "pending", "detail": f"Synced but health {app['health_status']}"})
+    else:
+        stages.append({"stage": "argocd", "state": "failed", "detail": f"sync {app['sync_status']} / health {app['health_status']}"})
+    if stages[-1]["state"] != "ok":
+        return _pipeline_result(service, stages)
+
+    # 8. pods ready
+    dep = _deployment_ready("devops-platform", service)
+    if not dep["reachable"]:
+        stages.append({"stage": "pods", "state": "failed", "detail": dep["error"]})
+    elif dep["ready"] == dep["desired"] and dep["desired"] > 0:
+        stages.append({"stage": "pods", "state": "ok", "detail": f"{dep['ready']}/{dep['desired']} ready"})
+    else:
+        stages.append({"stage": "pods", "state": "pending" if dep["ready"] > 0 else "failed", "detail": f"{dep['ready']}/{dep['desired']} ready"})
+    if stages[-1]["state"] != "ok":
+        return _pipeline_result(service, stages)
+
+    # 9. serving /readyz
+    readyz = _run(
+        ["kubectl", "exec", "-n", "devops-platform", f"deploy/{service}", "--",
+         "python", "-c",
+         f"import urllib.request; urllib.request.urlopen('http://{service}.devops-platform.svc.cluster.local:80/readyz', timeout=5)"],
+        timeout=KUBECTL_TIMEOUT,
+    )
+    if readyz["ok"]:
+        stages.append({"stage": "readyz", "state": "ok", "detail": "GET /readyz → 200"})
+    else:
+        stages.append({"stage": "readyz", "state": "failed", "detail": (readyz["stderr"] or "readyz not 200").splitlines()[-1] if (readyz["stderr"] or "") else "readyz not 200"})
+    return _pipeline_result(service, stages)
+
+
+# ──────────────────────────────────────────────────────────────
+# Infrastructure control (WS-B) — capacity, IaC drift, state
+# reconciliation, apply preflight. Reconcile is the only mutation;
+# apply is gated behind node_preflight() which refuses with the
+# SPECIFIC reason (full disk today) instead of failing halfway.
+# ──────────────────────────────────────────────────────────────
+
+TF_DIR = ROOT / "terraform"
+TF_STATE = TF_DIR / "terraform.tfstate"
+TF_TFVARS = TF_DIR / "terraform.tfvars"
+TF_VARS = TF_DIR / "variables.tf"
+TF_LOCK = TF_DIR / ".terraform.tfstate.lock.info"
+
+
+def _cpu_to_millicores(value: str) -> float:
+    value = (value or "0").strip()
+    if value.endswith("m"):
+        return float(value[:-1])
+    return float(value) * 1000
+
+
+def _mem_to_mib(value: str) -> float:
+    value = (value or "0").strip().upper()
+    units = {"KI": 1 / 1024, "MI": 1, "GI": 1024, "TI": 1024 * 1024, "K": 1 / 1024, "M": 1, "G": 1024, "T": 1024 * 1024}
+    for suffix, mult in units.items():
+        if value.endswith(suffix):
+            try:
+                return float(value[: -len(suffix)]) * mult
+            except ValueError:
+                return 0.0
+    try:
+        return float(value)
+    except ValueError:
+        return 0.0
+
+
+def cluster_capacity() -> dict[str, Any]:
+    """cores/RAM used vs allocatable + room for N more services at current
+    replicas, M if all burst to HPA max. Stated plainly: NO cluster-autoscaler
+    exists — on libvirt, capacity is a human action."""
+    nodes = _run(["kubectl", "get", "nodes", "-o", "json"], timeout=KUBECTL_TIMEOUT)
+    pods = _run(["kubectl", "get", "pods", "-A", "-o", "json"], timeout=KUBECTL_TIMEOUT)
+    if not nodes["ok"]:
+        return {"reachable": False, "error": nodes["stderr"], "summary": ""}
+    try:
+        node_data = json.loads(nodes["stdout"])
+        pod_data = json.loads(pods["stdout"]) if pods["ok"] else {"items": []}
+    except json.JSONDecodeError:
+        return {"reachable": False, "error": "could not parse kubectl output", "summary": ""}
+
+    alloc_cpu = alloc_mem = 0.0
+    taints: list[str] = []
+    for n in node_data.get("items", []):
+        a = n.get("status", {}).get("allocatable", {})
+        alloc_cpu += _cpu_to_millicores(a.get("cpu", "0"))
+        alloc_mem += _mem_to_mib(a.get("memory", "0"))
+        if n.get("spec", {}).get("taints"):
+            taints.append(n["metadata"]["name"])
+
+    req_cpu = req_mem = 0.0
+    for p in pod_data.get("items", []):
+        if p.get("status", {}).get("phase") == "Succeeded":
+            continue
+        for c in p.get("spec", {}).get("containers", []):
+            r = c.get("resources", {}).get("requests", {})
+            req_cpu += _cpu_to_millicores(r.get("cpu", "0"))
+            req_mem += _mem_to_mib(r.get("memory", "0"))
+
+    hpa_res = _run(["kubectl", "get", "hpa", "-A", "-o", "json"], timeout=KUBECTL_TIMEOUT)
+    max_replicas = 5
+    min_replicas = 2
+    if hpa_res["ok"]:
+        try:
+            hp = json.loads(hpa_res["stdout"])
+            counts = [h.get("spec", {}).get("maxReplicas", 0) for h in hp.get("items", [])]
+            if counts:
+                max_replicas = max(counts)
+        except json.JSONDecodeError:
+            pass
+
+    free_cpu = max(alloc_cpu - req_cpu, 0.0)
+    free_mem = max(alloc_mem - req_mem, 0.0)
+    per_pod_cpu, per_pod_mem = 100.0, 128.0
+    room_now = min(int(free_cpu / (per_pod_cpu * min_replicas)), int(free_mem / (per_pod_mem * min_replicas)))
+    room_burst = min(int(free_cpu / (per_pod_cpu * max_replicas)), int(free_mem / (per_pod_mem * max_replicas)))
+    summary = (
+        f"room for {room_now} more services at current replicas (HPA min {min_replicas}), "
+        f"{room_burst} if all burst to HPA max {max_replicas}"
+    )
+    return {
+        "reachable": True,
+        "allocatable": {"cpu_m": round(alloc_cpu), "memory_mib": round(alloc_mem)},
+        "requested": {"cpu_m": round(req_cpu), "memory_mib": round(req_mem)},
+        "used_pct": {"cpu": round(req_cpu / alloc_cpu * 100) if alloc_cpu else 0, "memory": round(req_mem / alloc_mem * 100) if alloc_mem else 0},
+        "tainted_nodes": taints,
+        "hpa_max": max_replicas,
+        "room_now": room_now,
+        "room_burst": room_burst,
+        "no_autoscaler": True,
+        "summary": summary,
+    }
+
+
+def _tfvars_keys() -> set[str]:
+    try:
+        text = TF_TFVARS.read_text()
+    except OSError:
+        return set()
+    return set(re.findall(r"^\s*([a-z_]+)\s*=", text, re.M))
+
+
+def _tfvars_value(key: str) -> str | None:
+    try:
+        text = TF_TFVARS.read_text()
+    except OSError:
+        return None
+    m = re.search(rf"^\s*{key}\s*=\s*([^\n]+)", text, re.M)
+    return m.group(1).strip().strip('"') if m else None
+
+
+def _declared_tf_vars() -> set[str]:
+    try:
+        text = TF_VARS.read_text()
+    except OSError:
+        return set()
+    return set(re.findall(r'variable\s+"([a-z_]+)"', text))
+
+
+def _tfstate_resources() -> dict[tuple[str, str], list[dict[str, Any]]]:
+    """(type, name) → list of instances (with attributes) in state."""
+    try:
+        data = json.loads(TF_STATE.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+    out: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for r in data.get("resources", []):
+        out[(r.get("type"), r.get("name"))] = r.get("instances", [])
+    return out
+
+
+def _terraform_plan() -> dict[str, Any]:
+    res = _run(
+        ["terraform", "plan", "-input=false", "-detailed-exitcode"],
+        timeout=90, cwd=str(TF_DIR),
+    )
+    # -detailed-exitcode: 0 = no changes, 2 = changes (valid plan), 1 = error.
+    no_changes = "No changes." in res["stdout"]
+    return {
+        "ok": res.get("code") in (0, 2) or no_changes,
+        "empty": no_changes,
+        "error": res["stderr"] if res.get("code") == 1 else "",
+        "stdout": res["stdout"],
+    }
+
+
+def terraform_drift() -> dict[str, Any]:
+    """Sibling of drift_report(): what terraform state thinks vs. what's
+    really running. Surfaces today's three findings: 1-of-3 VMs in state,
+    undeclared AWS vars, stale lock."""
+    findings = []
+
+    state = _tfstate_resources()
+    domains = [i.get("attributes", {}).get("name") for (t, n), insts in state.items() if t == "libvirt_domain" for i in insts]
+    virsh = _run(["virsh", "list", "--all", "--name"], timeout=10)
+    running = [l.strip() for l in virsh["stdout"].splitlines() if l.strip()] if virsh["ok"] else []
+    missing_from_state = sorted(set(running) - set(domains))
+    stale_in_state = sorted(set(domains) - set(running))
+
+    declared = _declared_tf_vars()
+    used = _tfvars_keys()
+    undeclared = sorted(used - declared)
+
+    stale_lock = TF_LOCK.is_file()
+
+    if missing_from_state:
+        findings.append(f"{len(missing_from_state)} VM(s) running but missing from state: {', '.join(missing_from_state)}")
+    if stale_in_state:
+        findings.append(f"{len(stale_in_state)} VM(s) in state but not running: {', '.join(stale_in_state)}")
+    if undeclared:
+        findings.append(f"{len(undeclared)} tfvars key(s) not declared in variables.tf: {', '.join(undeclared)}")
+    if stale_lock:
+        findings.append("stale .terraform.tfstate.lock.info blocks every terraform command")
+
+    plan = _terraform_plan() if (TF_STATE.is_file() and (TF_DIR / ".terraform").is_dir()) else {"ok": False, "empty": False, "error": "terraform not initialized (run reconcile)", "stdout": ""}
+    if plan["ok"] and not plan["empty"]:
+        findings.append("terraform plan is not empty — state still out of sync")
+    if not plan["ok"] and plan.get("error"):
+        findings.append(f"terraform plan failed: {plan['error']}")
+
+    return {
+        "reachable": True,
+        "domains_in_state": domains,
+        "vms_running": running,
+        "missing_from_state": missing_from_state,
+        "stale_in_state": stale_in_state,
+        "undeclared_vars": undeclared,
+        "stale_lock": stale_lock,
+        "plan_empty": plan["empty"] if plan.get("ok") else None,
+        "findings": findings,
+    }
+
+
+def _node_names() -> list[str]:
+    count = int(_tfvars_value("worker_count") or 2)
+    master = _tfvars_value("master_name") or "master-01"
+    return [master] + [f"worker-{i:02d}" for i in range(1, count + 1)]
+
+
+def _terraform_imports_needed() -> list[tuple[str, str]]:
+    """(import_address, id) pairs for every resource main.tf declares but
+    state lacks. Generated from main.tf's for_each keys — never hardcoded."""
+    try:
+        main = (TF_DIR / "main.tf").read_text()
+    except OSError:
+        return []
+    state = _tfstate_resources()
+    nodes = _node_names()
+    for_each_resources: dict[str, str] = {}
+    for m in re.finditer(r'resource\s+"([a-z_]+)"\s+"([a-z_]+)"', main):
+        rtype, rname = m.group(1), m.group(2)
+        block = main[m.end():]
+        head = block[:block.find("\n")]
+        for_each_resources[(rtype, rname)] = head if "for_each" in head else ""
+
+    imports: list[tuple[str, str]] = []
+    for (rtype, rname), head in for_each_resources.items():
+        if "for_each" in head:
+            for node in nodes:
+                addr = f'{rtype}.{rname}["{node}"]'
+                if (rtype, rname) not in state:
+                    id_value = _import_id(rtype, rname, node)
+                    imports.append((addr, id_value))
+        elif (rtype, rname) not in state:
+            id_value = _import_id(rtype, rname, None)
+            imports.append((f"{rtype}.{rname}", id_value))
+    return imports
+
+
+def _import_id(rtype: str, rname: str, node: str | None) -> str:
+    if rtype == "libvirt_domain":
+        return node or ""
+    if rtype == "libvirt_network":
+        return _tfvars_value("network_name") or "devops-platform-net"
+    if rtype == "local_file":
+        return str(TF_DIR / "inventory.generated.ini")
+    if rtype == "libvirt_cloudinit_disk":
+        return f"{node}-init.iso"
+    if rtype == "libvirt_volume":
+        if rname == "base":
+            return _tfvars_value("base_image_name") or "ubuntu-base.qcow2"
+        if rname == "cloudinit_iso":
+            return f"{node}-cloudinit.iso"
+        return f"{node}.qcow2"
+    return node or rname
+
+
+def _tfvars_conformance() -> list[str]:
+    declared = _declared_tf_vars()
+    used = _tfvars_keys()
+    return sorted(used - declared)
+
+
+def terraform_reconcile() -> dict[str, Any]:
+    """MUTATING — make state honest: clear the stale lock, replace the
+    AWS-shaped tfvars with libvirt-correct values matching the running
+    cluster, import every missing resource, then require an empty plan."""
+    steps: list[str] = []
+
+    if TF_LOCK.is_file():
+        try:
+            TF_LOCK.unlink()
+            steps.append("removed stale .terraform.tfstate.lock.info")
+        except OSError as exc:
+            raise ServiceError(f"cannot remove stale lock: {exc}") from exc
+
+    tfvars = {
+        "worker_count": _tfvars_value("worker_count") or "2",
+        "vm_vcpu": _tfvars_value("vm_vcpu") or "2",
+        "vm_memory_mb": _tfvars_value("vm_memory_mb") or "4096",
+        "disk_size_gb": _tfvars_value("disk_size_gb") or "20",
+        "ssh_user": "devops",
+        "network_cidr": "192.168.56.0/24",
+        "master_name": "master-01",
+    }
+    try:
+        TF_TFVARS.write_text(
+            "".join(f"{k} = {v}\n" for k, v in tfvars.items())
+        )
+        steps.append("rewrote terraform.tfvars to libvirt-correct values (devops/2 workers)")
+    except OSError as exc:
+        raise ServiceError(f"cannot rewrite tfvars: {exc}") from exc
+
+    if not (TF_DIR / ".terraform").is_dir():
+        init = _run(["terraform", "init", "-input=false"], timeout=90, cwd=str(TF_DIR))
+        if not init["ok"]:
+            raise ServiceError(init["stderr"] or "terraform init failed")
+        steps.append("terraform init")
+
+    imports = _terraform_imports_needed()
+    for addr, id_value in imports:
+        imp = _run(
+            ["terraform", "import", "-input=false", "-no-color", addr, id_value],
+            timeout=60, cwd=str(TF_DIR),
+        )
+        if not imp["ok"]:
+            raise ServiceError(f"terraform import {addr} failed: {imp['stderr'] or 'unknown error'}")
+        steps.append(f"imported {addr}")
+
+    plan = _terraform_plan()
+    if not plan["ok"]:
+        raise ServiceError(f"terraform plan failed after reconcile: {plan['error']}")
+    if not plan["empty"]:
+        raise ServiceError("terraform plan is NOT empty after reconcile — state still differs from live cluster")
+
+    return {"ok": True, "steps": steps, "message": "state reconciled; terraform plan is empty", "imported": [a for a, _ in imports]}
+
+
+def node_preflight(disk_gb: int | None = None, mem_mb: int | None = None) -> dict[str, Any]:
+    """Checks BEFORE any terraform apply. Refuses with the specific reason —
+    the refusal itself is the deliverable when the host can't support a new VM."""
+    disk_gb = disk_gb or int(_tfvars_value("disk_size_gb") or 20)
+    mem_mb = mem_mb or int(_tfvars_value("vm_memory_mb") or 4096)
+    problems: list[str] = []
+    free_gb: int | None = None
+
+    if TF_LOCK.is_file():
+        problems.append("stale .terraform.tfstate.lock.info present — run Reconcile state")
+
+    plan = _terraform_plan() if (TF_DIR / ".terraform").is_dir() else {"ok": False, "empty": False, "error": ""}
+    if plan["ok"] and not plan["empty"]:
+        problems.append("terraform plan is not empty — state out of sync, run Reconcile state")
+    if not plan["ok"] and (TF_DIR / ".terraform").is_dir():
+        problems.append(f"terraform plan failed: {plan['error']}")
+
+    try:
+        images_dir = Path("/var/lib/libvirt/images")
+        free = shutil.disk_usage(images_dir if images_dir.is_dir() else "/").free
+        free_gb = free // (1024 ** 3)
+        if free_gb < disk_gb:
+            problems.append(f"host free disk {free_gb}GB < requested disk_size_gb {disk_gb}GB")
+    except OSError as exc:
+        problems.append(f"cannot stat host disk: {exc}")
+
+    try:
+        with open("/proc/meminfo") as f:
+            text = f.read()
+        m = re.search(r"MemAvailable:\s+(\d+) kB", text)
+        avail_mb = int(m.group(1)) / 1024 if m else 0
+        if avail_mb < mem_mb:
+            problems.append(f"host available RAM {avail_mb:.0f}MiB < vm_memory_mb {mem_mb}")
+    except OSError:
+        problems.append("cannot read /proc/meminfo")
+
+    join = _run(
+        ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=4",
+         "devops@192.168.56.10", "test -f /tmp/kubeadm-join.txt && find /tmp/kubeadm-join.txt -mmin -1440 | grep -q . && echo OK"],
+        timeout=10,
+    )
+    if not join["ok"] or "OK" not in join["stdout"]:
+        problems.append("missing/expired /tmp/kubeadm-join.txt on master — regenerate with `kubeadm token create --print-join-command`")
+
+    return {
+        "ok": not problems,
+        "problems": problems,
+        "disk_gb": disk_gb,
+        "mem_mb": mem_mb,
+        "free_disk_gb": free_gb,
     }
 
 
@@ -668,9 +1444,24 @@ def platform_overview(services: list[str]) -> dict[str, Any]:
             "argocd": (ROOT / "k8s/argocd/applicationset.yaml").is_file(),
         },
     }
-    layer_ok = base["layer_checks"]
-    base["status"] = "ready" if all(layer_ok.values()) else "partial"
-    return base
+    # Honest status: outcome roll-up over the per-service pipeline, not
+    # file-existence booleans. "healthy" only when every service reaches
+    # pods-ready; otherwise "degraded" naming the first blocking stage.
+    pipelines = {s: service_pipeline(s) for s in services}
+    healthy = bool(services) and all(p["all_ok"] for p in pipelines.values())
+    blockers = [
+        {"service": s, "stage": p["blocking"], "detail": p["blocking_detail"]}
+        for s, p in pipelines.items() if not p["all_ok"]
+    ]
+    return {
+        **base,
+        "status": "healthy" if healthy else "degraded",
+        "pipelines": {
+            s: {"blocking": p["blocking"], "all_ok": p["all_ok"], "stage_count": len(p["stages"])}
+            for s, p in pipelines.items()
+        },
+        "blockers": blockers,
+    }
 
 
 # ──────────────────────────────────────────────────────────────
@@ -684,19 +1475,19 @@ KUBECTL_TIMEOUT = 6
 GH_TIMEOUT = 25
 
 
-def _run(cmd: list[str], timeout: int = KUBECTL_TIMEOUT, input_: str | None = None) -> dict[str, Any]:
+def _run(cmd: list[str], timeout: int = KUBECTL_TIMEOUT, input_: str | None = None, cwd: str | None = None) -> dict[str, Any]:
     try:
         out = subprocess.run(
             cmd, capture_output=True, text=True, timeout=timeout,
-            cwd=str(ROOT), input=input_,
+            cwd=cwd or str(ROOT), input=input_,
         )
-        return {"ok": out.returncode == 0, "stdout": out.stdout, "stderr": out.stderr.strip()}
+        return {"ok": out.returncode == 0, "stdout": out.stdout, "stderr": out.stderr.strip(), "code": out.returncode}
     except FileNotFoundError:
-        return {"ok": False, "stdout": "", "stderr": f"{cmd[0]} not found on PATH"}
+        return {"ok": False, "stdout": "", "stderr": f"{cmd[0]} not found on PATH", "code": -1}
     except subprocess.TimeoutExpired:
-        return {"ok": False, "stdout": "", "stderr": f"{cmd[0]} timed out after {timeout}s"}
+        return {"ok": False, "stdout": "", "stderr": f"{cmd[0]} timed out after {timeout}s", "code": -1}
     except Exception as exc:  # pragma: no cover - defensive
-        return {"ok": False, "stdout": "", "stderr": str(exc)}
+        return {"ok": False, "stdout": "", "stderr": str(exc), "code": -1}
 
 
 def _repo_slug() -> str:
@@ -1399,6 +2190,18 @@ SCRIPTS: dict[str, dict[str, Any]] = {
     "stress-hpa": {
         "path": "scripts/stress-hpa.sh", "args": ["--ci", "--no-watch"],
         "label": "HPA stress (generates real load)", "destructive": True,
+    },
+    # Infra control (WS-B): real VM provisioning. Both scripts run their own
+    # preflight and refuse with the specific reason (disk full today) before
+    # any apply. Gated in the UI by node_preflight().
+    "worker-add": {
+        "path": "scripts/platform-worker-add.sh", "args": [],
+        "label": "Provision next worker VM (terraform apply + ansible join)",
+        "destructive": True,
+    },
+    "worker-remove": {
+        "path": "scripts/platform-worker-remove.sh", "args": [],
+        "label": "Drain + remove last worker VM", "destructive": True,
     },
 }
 

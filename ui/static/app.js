@@ -1,6 +1,6 @@
 "use strict";
 
-const state = { data: null, view: "topology", search: "", timer: null, detail: null, configTab: "ci", runTimer: null };
+const state = { data: null, view: "topology", search: "", timer: null, detail: null, configTab: "ci", runTimer: null, pipelineTimer: null };
 
 const $ = (id) => document.getElementById(id);
 const VIEWS = ["topology", "apps", "overview", "services", "config"];
@@ -121,7 +121,7 @@ async function fetchData() {
 function renderTopbar() {
   const d = state.data;
   const ov = d.overview;
-  const ready = ov.status === "ready";
+  const ready = ov.status === "healthy";
   const dot = $("top-status");
   dot.className = `status-dot ${ready ? "ok" : "bad"} pulse`;
   $("top-repo").textContent = `${ov.revision.branch} @ ${ov.revision.commit} — ${ov.revision.message} (${ov.revision.author}, ${ov.revision.date})`;
@@ -195,6 +195,13 @@ async function loadHealthBoard() {
   const argoByService = {};
   (argo.apps || []).forEach((a) => { argoByService[a.name] = a; });
 
+  const blockers = d.overview.blockers || [];
+  const blockerBanner = blockers.length ? `
+    <div class="card mb" style="padding:12px 20px;border-color:var(--red)">
+      <div class="muted small mb" style="color:var(--red);font-weight:700">${blockers.length} service${blockers.length === 1 ? "" : "s"} blocked from healthy — first blockers:</div>
+      ${blockers.map((b) => `<div class="cfg-item"><span><b>${esc(b.service)}</b></span><span class="val">${pill(b.stage, "red")} <span class="muted small">${esc(b.detail || "")}</span></span></div>`).join("")}
+    </div>` : "";
+
   const rows = svcs.map((s) => {
     const myPods = Object.entries(podsByService).find(([k]) => k.includes(s.name) || s.name.includes(k))?.[1] || [];
     const podsUp = myPods.filter((p) => p.ready).length;
@@ -210,12 +217,18 @@ async function loadHealthBoard() {
     const nAlerts = alertsByService[s.name] || 0;
     const alertBadge = nAlerts > 0 ? pill(`${nAlerts} firing`, "red") : pill("clear", "green");
 
+    const pl = d.overview.pipelines?.[s.name];
+    const plBadge = !pl ? pill("n/a", "muted")
+      : pl.all_ok ? pill("healthy", "green")
+      : pill(`blocked: ${pl.blocking}`, "red");
+
     return `
       <div class="health-row" onclick="showDetail('${esc(s.name)}')">
         <div class="health-name">
           <div class="mono" style="font-weight:800;color:var(--accent)">${esc(s.name)}</div>
           <div class="muted small">${esc(s.title)} · v${esc(s.version)}</div>
         </div>
+        <div class="health-col"><div class="health-label">pipeline</div>${plBadge}</div>
         <div class="health-col"><div class="health-label">pods</div>${podHealth}</div>
         <div class="health-col"><div class="health-label">argocd</div>${argoBadge}</div>
         <div class="health-col"><div class="health-label">alerts</div>${alertBadge}</div>
@@ -246,6 +259,8 @@ async function loadHealthBoard() {
       </div>
     </div>
 
+    ${blockerBanner}
+
     <div class="card mb" style="padding:16px 20px">
       <div style="font-weight:700;margin-bottom:4px">Need to fix something running right now?</div>
       <div class="muted small">Open <b>Operations</b> in the sidebar — trigger a CI rerun, sync an ArgoCD app, restart a pod, or open the real Grafana/Prometheus/ArgoCD dashboards.</div>
@@ -254,6 +269,7 @@ async function loadHealthBoard() {
     <div class="card">
       <div class="health-row health-head">
         <div class="health-name">Service</div>
+        <div class="health-col">Pipeline</div>
         <div class="health-col">Pods</div>
         <div class="health-col">ArgoCD</div>
         <div class="health-col">Alerts</div>
@@ -312,6 +328,80 @@ async function addServiceFlow(appName, raw) {
   } catch (e) { toast("✕ " + e.message, false); }
 }
 
+/* ─── Ship flow: create → branch → push → PR → live stage tracker ─── */
+
+function pipelinePill(st) {
+  return st === "ok" ? pill("ok", "green")
+    : st === "pending" ? pill("pending", "amber")
+    : st === "blocked" ? pill("blocked", "muted")
+    : pill("failed", "red");
+}
+
+function renderPipeline(r) {
+  const rows = r.stages.map((s) => {
+    const isBlock = s.stage === r.blocking;
+    return `
+      <div class="cfg-item" style="${isBlock ? "border-color:var(--red)" : ""}">
+        <span><b>${esc(s.stage)}</b> ${pipelinePill(s.state)} <span class="muted small">${esc(s.detail || "")}</span></span>
+        ${s.stage === "vault" && s.state !== "ok" ? `<button class="act-btn" onclick="seedSecretsFlow('${esc(r.service)}')">⚙ seed secrets</button>` : ""}
+      </div>`;
+  }).join("");
+  const blockPill = r.all_ok ? pill("all stages ok — healthy", "green") : pill(`blocked at: ${esc(r.blocking)}`, "red");
+  return `
+    <div class="cfg-toolbar">
+      <span class="cfg-repo">${esc(r.service)} — end-to-end pipeline · ${blockPill}</span>
+      <span class="sp"></span>
+      <button class="act-btn" onclick="showPipeline('${esc(r.service)}')">↻ refresh</button>
+    </div>
+    <div class="run-list">${rows}</div>`;
+}
+
+async function showPipeline(service) {
+  const panel = $("pipeline-panel");
+  if (!panel) return;
+  panel.style.display = "";
+  if (state.pipelineTimer) clearInterval(state.pipelineTimer);
+  const poll = async () => {
+    try {
+      const r = await api("GET", `/api/ship/${encodeURIComponent(service)}/pipeline`);
+      panel.innerHTML = renderPipeline(r);
+      if (r.all_ok && state.pipelineTimer) { clearInterval(state.pipelineTimer); state.pipelineTimer = null; }
+    } catch (e) { panel.innerHTML = offlineCard("pipeline", e.message); }
+  };
+  poll();
+  state.pipelineTimer = setInterval(poll, 3000);
+}
+
+async function shipServiceFlow(appName, raw) {
+  if (!raw) {
+    raw = prompt(`Ship a new service in app '${appName}' (e.g. cart):`);
+    if (!raw) return;
+  }
+  const name = slugify(raw);
+  if (!name) { toast("invalid service name", false); return; }
+  const k8s = appName === "default" ? name : `${appName}-${name}`;
+  if (!confirm(`Create branch service/${k8s}, push to origin, and open a PR against secondary? This writes to your GitHub repository.`)) return;
+  try {
+    loading(true);
+    const r = await api("POST", "/api/ship/service", { app: appName, name, open_pr: true });
+    toast("✓ " + r.message, true);
+    const inp = $(`add-svc-${appName}`);
+    if (inp) inp.value = "";
+    await refresh();
+    showPipeline(k8s);
+  } catch (e) { toast("✕ " + e.message, false); }
+}
+
+async function seedSecretsFlow(service) {
+  if (!confirm(`Generate and write DATABASE_URL and JWT_SECRET_KEY into Vault at secret/devops-platform/${service}? Existing values will be overwritten.`)) return;
+  try {
+    loading(true);
+    const r = await api("POST", `/api/ship/${encodeURIComponent(service)}/secrets`);
+    toast("✓ " + r.message, true);
+    setTimeout(() => showPipeline(service), 1500);
+  } catch (e) { toast("✕ " + e.message, false); }
+}
+
 async function deleteServiceFlow(appName, svcName) {
   if (!confirm(`Delete service '${svcName}'? CI stops building it, ArgoCD prunes its app, Vault role idles.`)) return;
   try {
@@ -336,6 +426,7 @@ function renderApps() {
           <span class="svc-meta">v${esc(s.version)} · ${s.endpoints.length} routes · ${s.loc} LOC</span>
           ${s.uses_vault ? pill("vault", "accent") : pill("no vault", "muted")}
           <span class="sp"></span>
+          <button class="act-btn" onclick="showPipeline('${esc(s.name)}')">▤ pipeline</button>
           <button class="act-btn danger" data-del-svc="${esc(a.name)}" data-svc="${esc(s.key.split("/").pop())}">✕ delete</button>
         </div>`).join("");
 
@@ -353,21 +444,22 @@ function renderApps() {
         </div>
         ${svcList || `<div class="empty">no services yet</div>`}
         <div class="add-svc-panel" onclick="event.stopPropagation()">
-          <div class="add-svc-label">＋ Add a service to <b>${esc(a.name)}</b></div>
+          <div class="add-svc-label">＋ Add or 🚀 ship a service to <b>${esc(a.name)}</b></div>
           <div class="add-svc">
             <input placeholder="e.g. cart, payments…" id="add-svc-${esc(a.name)}" onkeydown="if(event.key==='Enter'){addServiceFlow('${esc(a.name)}',event.target.value)}">
             <button class="btn sm" onclick="addServiceFlow('${esc(a.name)}',$('add-svc-${esc(a.name)}').value)">Add</button>
+            <button class="btn sm" style="background:var(--accent);color:#0a0e14" onclick="shipServiceFlow('${esc(a.name)}',$('add-svc-${esc(a.name)}').value)">🚀 Ship (branch + PR)</button>
           </div>
         </div>
       </div>`;
   }).join("");
 
   $("view-apps").innerHTML = `
-    ${explainer(`Your <b>management console</b>. Create an app, add services inside it — the UI writes real files (app/&lt;app&gt;/&lt;service&gt;/main.py). The platform is discovery-driven: CI builds the new service, ArgoCD deploys it, Vault provisions secrets, Prometheus watches it. Delete → everything shrinks back. Flat legacy services live in the "default" group.`)}
+    ${explainer(`Your <b>management console</b>. Create an app, add services inside it — the UI writes real files (app/&lt;app&gt;/&lt;service&gt;/main.py). The platform is discovery-driven: CI builds the new service, ArgoCD deploys it, Vault provisions secrets, Prometheus watches it. <b>Ship</b> = create + branch <span class="mono">service/&lt;name&gt;</span> + push + open a PR against <span class="mono">secondary</span> — nothing lands unreviewed. Delete → everything shrinks back. Flat legacy services live in the "default" group.`)}
     <div class="head">
       <div>
         <h1>Apps &amp; Services</h1>
-        <div class="sub">Create and delete apps + services live. Every change lands in the repo — commit and push to trigger the full pipeline.</div>
+        <div class="sub">Create, ship, and track services end to end. The pipeline tracker names the FIRST stage any service is stuck on.</div>
       </div>
     </div>
 
@@ -386,12 +478,14 @@ function renderApps() {
       <div class="new-app-step">
         <div class="step-num">2</div>
         <div class="step-body">
-          <div class="step-title">Add services inside it</div>
-          <div class="step-sub">Scroll down to any app card below — type a service name in its box and press Enter.</div>
+          <div class="step-title">Add or Ship services inside it</div>
+          <div class="step-sub">Scroll down to any app card — <b>Add</b> writes files locally; <b>Ship</b> also branches, pushes, and opens a PR. <b>▤ pipeline</b> tracks any service to pods-ready.</div>
         </div>
       </div>
-      <div class="kbd" style="align-self:flex-start;margin-top:4px">created files are local — git add/commit/push to activate CI, ArgoCD, Vault, monitoring</div>
+      <div class="kbd" style="align-self:flex-start;margin-top:4px">Add = local files only. Ship = branch + PR against secondary (CI, ArgoCD, Vault, monitoring follow)</div>
     </div>
+
+    <div id="pipeline-panel" class="card mb" style="display:none"></div>
 
     <div class="grid cards">${cards || `<div class="card empty">no apps</div>`}</div>`;
 
@@ -431,7 +525,7 @@ function renderOverview() {
         <h1>Overview</h1>
         <div class="sub">Discovery-driven platform · ${esc(ov.repo)} · "${esc(ov.revision.message)}"</div>
       </div>
-      <div class="header-actions">${ov.status === "ready" ? pill("PLATFORM READY", "green") : pill("PARTIAL", "amber")}</div>
+      <div class="header-actions">${ov.status === "healthy" ? pill("PLATFORM HEALTHY", "green") : pill("DEGRADED", "red")}</div>
     </div>
 
     <div class="grid kpis mb">
@@ -587,7 +681,7 @@ function offlineCard(label, err) {
 }
 
 function renderConfig() {
-  const tabs = ["ci", "argocd", "vault", "monitoring", "run", "drift", "logs"];
+  const tabs = ["ci", "argocd", "vault", "monitoring", "run", "infra", "drift", "logs"];
   const tabHtml = tabs.map((t) => `
     <button class="cfg-tab ${t === state.configTab ? "active" : ""}" onclick="switchConfigTab('${t}')">
       ${t.toUpperCase()}
@@ -619,6 +713,7 @@ async function loadConfigTab(tab) {
     else if (tab === "vault") await renderVaultTab(body);
     else if (tab === "monitoring") await renderMonitoringTab(body);
     else if (tab === "run") await renderRunTab(body);
+    else if (tab === "infra") await renderInfraTab(body);
     else if (tab === "drift") await renderDriftTab(body);
     else if (tab === "logs") await renderLogsTab(body);
   } catch (e) {
@@ -855,6 +950,8 @@ async function renderVaultTab(body) {
       <span class="status-dot ${data.sealed ? "bad" : "ok"}"></span>
       <span class="cfg-repo">${data.sealed ? "SEALED" : "UNSEALED"} · v${esc(data.version)}</span>
       <span class="sp"></span>
+      <button class="btn sm" onclick="syncServiceList()">⇌ sync service list</button>
+      <button class="btn sm" onclick="rerunVaultSetup()">▶ re-run setup job</button>
       <button class="btn sm" onclick="openDashboard('vault','Vault UI')">⧉ open Vault dashboard</button>
       <button class="act-btn" onclick="refreshConfigTab()">↻ refresh</button>
     </div>
@@ -869,8 +966,35 @@ async function renderVaultTab(body) {
     const box = $("vault-secrets");
     if (!box) return;
     if (!sec.reachable) { box.innerHTML = offlineCard("secret listing", sec.error); return; }
-    box.innerHTML = (sec.keys || []).map((k) => `<div class="cfg-item clickable" onclick="showVaultSecretMeta('${esc(k)}')"><span class="mono">${esc(k)}</span><span class="val">view metadata →</span></div>`).join("") || `<div class="empty">no keys</div>`;
+    box.innerHTML = (sec.keys || []).map((k) => `
+      <div class="cfg-item">
+        <span class="mono clickable" onclick="showVaultSecretMeta('${esc(k)}')">${esc(k)}</span>
+        <span class="val">
+          <button class="act-btn" onclick="seedSecretsFlow('${esc(k)}')">⚙ seed secrets</button>
+          <button class="act-btn" onclick="showPipeline('${esc(k)}')">▤ pipeline</button>
+          <span class="muted small clickable" onclick="showVaultSecretMeta('${esc(k)}')">metadata →</span>
+        </span>
+      </div>`).join("") || `<div class="empty">no keys — run setup job after syncing the service list</div>`;
   } catch (e) { /* leave loading state message */ }
+}
+
+async function syncServiceList() {
+  if (!confirm(`Rewrite the devops-service-list ConfigMap (vault ns) from the discovered services? The vault-setup Job reads this list to provision per-service secrets.`)) return;
+  try {
+    loading(true);
+    const r = await api("POST", "/api/ship/vault/resync");
+    toast("✓ " + r.message, true);
+  } catch (e) { toast("✕ " + e.message, false); }
+}
+
+async function rerunVaultSetup() {
+  if (!confirm(`Force the vault-setup Job to re-run? It deletes the finished job (TTL-expired) and re-applies k8s/vault/manifests.yaml — seeding secrets for every service in the list.`)) return;
+  try {
+    loading(true);
+    const r = await api("POST", "/api/ship/vault/setup");
+    toast("✓ " + r.message, true);
+    setTimeout(refreshConfigTab, 1500);
+  } catch (e) { toast("✕ " + e.message, false); }
 }
 
 /* ─── Monitoring: real firing alerts via Alertmanager ─── */
@@ -1080,6 +1204,111 @@ function viewScriptOutput(key) {
   };
   poll();
   state.runTimer = setInterval(poll, 1200);
+}
+
+/* ─── Infra control: capacity + IaC drift + reconcile + preflight ─── */
+
+async function renderInfraTab(body) {
+  body.innerHTML = `<div class="cfg-loading">checking capacity + terraform…</div>`;
+  let capacity = { reachable: false, error: "loading" };
+  let tf = { reachable: false, error: "loading" };
+  try {
+    [capacity, tf] = await Promise.all([
+      api("GET", "/api/infra/capacity").catch(() => capacity),
+      api("GET", "/api/infra/terraform").catch(() => tf),
+    ]);
+  } catch (e) { /* keep defaults */ }
+
+  const capHtml = capacity.reachable ? `
+    <div class="grid two mb">
+      <div class="cfg-target"><div class="cfg-item"><span>CPU allocatable / requested</span><span class="val">${capacity.allocatable.cpu_m}m / ${capacity.requested.cpu_m}m (${capacity.used_pct.cpu}%)</span></div></div>
+      <div class="cfg-target"><div class="cfg-item"><span>RAM allocatable / requested</span><span class="val">${capacity.allocatable.memory_mib}Mi / ${capacity.requested.memory_mib}Mi (${capacity.used_pct.memory}%)</span></div></div>
+    </div>
+    <div class="cfg-item"><span>${esc(capacity.summary)}</span><span class="val">${pill(`${capacity.room_now} now`, "green")} ${pill(`${capacity.room_burst} burst`, "amber")}</span></div>
+    <div class="cfg-item"><span>Tainted nodes</span><span class="val">${capacity.tainted_nodes.length ? capacity.tainted_nodes.join(", ") : "none"}</span></div>
+    <div class="kbd mt" style="margin-bottom:0">No cluster-autoscaler exists — on libvirt, capacity is a human action. That is exactly why this control lives in the platform.</div>`
+    : offlineCard("capacity", capacity.error);
+
+  const findingsHtml = (tf.findings || []).map((f) => `<div class="cfg-item"><span class="val" style="color:var(--red)">⚠</span><span>${esc(f)}</span></div>`).join("") || `<div class="cfg-item"><span>no findings — state matches reality</span><span class="val">✓</span></div>`;
+
+  body.innerHTML = `
+    <div class="cfg-toolbar">
+      <span class="cfg-repo">capacity + libvirt terraform</span>
+      <span class="sp"></span>
+      <button class="act-btn" onclick="refreshConfigTab()">↻ refresh</button>
+    </div>
+
+    <div class="cfg-section"><h3>Cluster capacity</h3>${capHtml}</div>
+
+    <div class="cfg-section">
+      <h3>Terraform drift (state vs. running VMs)</h3>
+      <div class="grid two mb">
+        <div class="cfg-target"><div class="cfg-item"><span>Domains in state</span><span class="val">${tf.reachable ? tf.domains_in_state.length : "–"}</span></div></div>
+        <div class="cfg-target"><div class="cfg-item"><span>VMs running (virsh)</span><span class="val">${tf.reachable ? tf.vms_running.length : "–"}</span></div></div>
+      </div>
+      <div class="run-list mb">${tf.reachable ? findingsHtml : offlineCard("terraform", tf.error)}</div>
+      <div class="add-svc">
+        <button class="btn" onclick="reconcileTerraform()">⚙ Reconcile state (lock + tfvars + import)</button>
+        <button class="btn sm" onclick="preflightFlow()">🔍 preflight node-add</button>
+      </div>
+      <div id="preflight-out" class="mt"></div>
+    </div>
+
+    <div class="cfg-section">
+      <h3>Provision / remove workers</h3>
+      <div class="cfg-item"><span>Add next worker VM (terraform apply + ansible join, streams in Run tab)</span><span class="val"><button class="btn sm" onclick="workerProvision()">🚀 Provision</button></span></div>
+      <div class="cfg-item"><span>Drain + remove last worker VM (order matters: drain → delete node → apply)</span><span class="val"><button class="btn sm danger" onclick="workerDeprovision()">✕ Remove last</button></span></div>
+      <div class="kbd mt" style="margin-bottom:0">These are the scripts/*.sh entries — see the <b>run</b> tab for streamed live output.</div>
+    </div>`;
+}
+
+async function reconcileTerraform() {
+  if (!confirm(`Reconcile terraform state? Removes the stale lock, rewrites terraform.tfvars to libvirt-correct values, and imports every missing resource. The plan must come out EMPTY afterwards.`)) return;
+  try {
+    loading(true);
+    const r = await api("POST", "/api/infra/terraform/reconcile");
+    toast("✓ " + r.message, true);
+    setTimeout(refreshConfigTab, 1500);
+  } catch (e) { toast("✕ " + e.message, false); }
+}
+
+async function preflightFlow() {
+  const box = $("preflight-out");
+  if (!box) return;
+  box.innerHTML = `<div class="cfg-loading">running preflight…</div>`;
+  try {
+    const r = await api("GET", "/api/infra/preflight");
+    const rows = (r.problems || []).map((p) => `<div class="cfg-item"><span class="val" style="color:var(--red)">⚠</span><span>${esc(p)}</span></div>`).join("");
+    box.innerHTML = `
+      <div class="cfg-item"><span>disk: ${r.disk_gb}GB · mem: ${r.mem_mb}MB · host free disk: ${r.free_disk_gb != null ? r.free_disk_gb + "GB" : "unknown"}</span>${r.ok ? pill("ready to provision", "green") : pill("refused", "red")}</div>
+      ${rows || `<div class="cfg-item"><span>all checks pass — a new VM can be provisioned</span><span class="val">✓</span></div>`}
+    `;
+  } catch (e) { box.innerHTML = offlineCard("preflight", e.message); }
+}
+
+async function workerProvision() {
+  if (!confirm(`Provision the next worker VM (N GB disk, M MB RAM) and join it to the cluster. This allocates real host resources and takes several minutes.`)) return;
+  try {
+    const pre = await api("GET", "/api/infra/preflight");
+    if (!pre.ok) {
+      toast("✕ preflight refuses: " + (pre.problems[0] || "unknown"), false);
+      return;
+    }
+    loading(true);
+    const r = await api("POST", "/api/live/scripts/run", { script: "worker-add" });
+    toast("✓ " + r.message, true);
+    setTimeout(() => switchConfigTab("run"), 800);
+  } catch (e) { toast("✕ " + e.message, false); }
+}
+
+async function workerDeprovision() {
+  if (!confirm(`Drain and remove the LAST worker VM from the cluster and from terraform. This deletes real infrastructure.`)) return;
+  try {
+    loading(true);
+    const r = await api("POST", "/api/live/scripts/run", { script: "worker-remove" });
+    toast("✓ " + r.message, true);
+    setTimeout(() => switchConfigTab("run"), 800);
+  } catch (e) { toast("✕ " + e.message, false); }
 }
 
 /* ─── Cluster drift: what's running vs. what git declares ─── */
@@ -1306,6 +1535,7 @@ function closeDetail() {
 /* ═══════════ NAV / TIMER / TOOLTIP ═══════════ */
 
 function switchView(name) {
+  if (state.pipelineTimer) { clearInterval(state.pipelineTimer); state.pipelineTimer = null; }
   document.querySelectorAll(".nav-item").forEach((n) => n.classList.toggle("active", n.dataset.view === name));
   document.querySelectorAll(".view").forEach((v) => v.classList.toggle("active", v.id === `view-${name}`));
   state.view = name;

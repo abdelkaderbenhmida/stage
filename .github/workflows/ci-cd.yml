@@ -3,14 +3,12 @@ name: CI/CD Pipeline
 on:
   push:
     branches: [main, develop, clean-main, secondary]
-    paths:
-      - "app/**"
-      - "k8s/**"
-      - "terraform/**"
-      - "ansible/**"
-      - ".github/workflows/ci-cd.yml"
-      - "scripts/**"
-      - ".gitleaks.toml"
+    # app/**/service.yaml markers are rewritten by the tag-backfill job after
+    # every successful build (and hand-edited tags deploy directly via
+    # ArgoCD's ApplicationSet) — a marker-only push must NOT re-trigger CI,
+    # or every build would spawn a second full pipeline run.
+    paths-ignore:
+      - "app/**/service.yaml"
   pull_request:
     branches: [main, develop, secondary]
   workflow_dispatch:
@@ -124,7 +122,7 @@ jobs:
             https://github.com/yannh/kubeconform/releases/download/v0.6.4/kubeconform-linux-amd64.tar.gz
           tar -xzf /tmp/kubeconform.tar.gz -C /tmp kubeconform
           find k8s/ -name '*.yaml' ! -name '*values*.yaml' ! -name 'Chart.yaml' ! -name 'crds.yaml' \
-            ! -path '*chart/templates*' -print0 | \
+            ! -name '*-patch.yaml' ! -path '*chart/templates*' -print0 | \
             xargs -0 /tmp/kubeconform -strict -ignore-missing-schemas -kubernetes-version 1.28.0 \
               -schema-location 'https://raw.githubusercontent.com/yannh/kubernetes-json-schema/master/master-standalone/{{.ResourceKind}}.json'
 
@@ -300,6 +298,52 @@ jobs:
     # instead of plumbing digests across matrix outputs.
     outputs:
       tag: ${{ steps.tag.outputs.tag }}
+
+  # ──────────────────────────────────────────────
+  # Step 4b: GitOps tag write-back — make rollouts diff-visible.
+  # Build produced immutable commit-<sha7> images; ArgoCD's ApplicationSet
+  # reads the image tag from app/<svc>/service.yaml, so write the tag back
+  # into every marker and push. ArgoCD then sees a real git diff and rolls
+  # out. Idempotent: no marker change → no push (and marker-only pushes are
+  # filtered out of the push trigger above, so this never re-triggers CI).
+  # ──────────────────────────────────────────────
+  tag-backfill:
+    name: Write build tag into service.yaml
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.event_name == 'push' && needs.build.result == 'success'
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Update service.yaml markers with the immutable commit tag
+        run: |
+          TAG="commit-${GITHUB_SHA:0:7}"
+          echo "Pinning markers to $TAG"
+          for f in app/*/service.yaml app/*/*/service.yaml; do
+            [ -f "$f" ] || continue
+            if grep -q '^tag:' "$f"; then
+              sed -i "s|^tag:.*|tag: $TAG|" "$f"
+            else
+              printf 'tag: %s\n' "$TAG" >> "$f"
+            fi
+            echo "  $f -> $TAG"
+          done
+
+      - name: Commit and push marker update
+        run: |
+          if git diff --quiet app/; then
+            echo "markers already pinned — nothing to push"
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add app/
+            git commit -m "ci: pin service images to commit-${GITHUB_SHA:0:7}"
+            git push
+          fi
 
   # ──────────────────────────────────────────────
   # Step 5: Trivy — Container scan at pinned DIGEST (no :latest race)

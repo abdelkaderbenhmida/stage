@@ -1,11 +1,17 @@
-# One ArgoCD Application per discovered service. Uses the git `directories`
-# generator (path presence only, no file content parsed — the `files`
-# generator would try to YAML-parse main.py itself and fail). Two path
-# generators cover flat (app/<service>) and grouped (app/<app>/<service>)
-# layouts; `app/shared` is excluded as a structural convention (utility
-# code, not a service), same exclusion the discovery script uses.
-# Nested services get the k8s name "<app>-<service>". No service name is
-# hardcoded anywhere in this file.
+# One ArgoCD Application per discovered service — the `files` generator over a
+# per-service marker app/<svc>/service.yaml containing {name, tag} (see WS-C1).
+#
+# Trade-off: a second marker file per service (main.py remains the discovery
+# contract for CI and introspect.py; service.yaml is ArgoCD's only).
+#
+# The `files` generator parses YAML, so the marker CAN be parsed (main.py
+# cannot), and it matches individual files — group folders like app/catalog
+# (no main.py, no marker) never produce an Application, killing the phantom
+# `catalog` Application that the old `directories` generator produced.
+#
+# The template reads {{ .name }} / {{ .tag }} directly — no splitList path
+# gymnastics, and zero hardcoded service names. No service name is hardcoded
+# anywhere in this file.
 apiVersion: argoproj.io/v1alpha1
 kind: ApplicationSet
 metadata:
@@ -18,35 +24,35 @@ spec:
   goTemplate: true
   generators:
     - git:
-        repoURL: https://github.com/<owner>/<repo>.git
+        repoURL: https://github.com/abdelkaderbenhmida/stage.git
         revision: secondary
-        directories:
-          - path: "app/*"
-          - path: "app/shared"
-            exclude: true
+        files:
+          - path: "app/*/service.yaml"
     - git:
-        repoURL: https://github.com/<owner>/<repo>.git
+        repoURL: https://github.com/abdelkaderbenhmida/stage.git
         revision: secondary
-        directories:
-          - path: "app/*/*"
+        files:
+          - path: "app/*/*/service.yaml"
   template:
     metadata:
-      name: '{{ $p := splitList "/" .path.path }}{{ if eq (len $p) 3 }}{{ index $p 1 }}-{{ index $p 2 }}{{ else }}{{ index $p 1 }}{{ end }}'
+      name: '{{ .name }}'
       labels:
-        app.kubernetes.io/name: '{{ $p := splitList "/" .path.path }}{{ if eq (len $p) 3 }}{{ index $p 1 }}-{{ index $p 2 }}{{ else }}{{ index $p 1 }}{{ end }}'
+        app.kubernetes.io/name: '{{ .name }}'
         app.kubernetes.io/part-of: devops-platform
       finalizers:
         - resources-finalizer.argocd.argoproj.io
     spec:
       project: devops-platform
       source:
-        repoURL: https://github.com/<owner>/<repo>.git
+        repoURL: https://github.com/abdelkaderbenhmida/stage.git
         targetRevision: secondary
         path: k8s/apps/chart
         helm:
           parameters:
             - name: services[0].name
-              value: '{{ $p := splitList "/" .path.path }}{{ if eq (len $p) 3 }}{{ index $p 1 }}-{{ index $p 2 }}{{ else }}{{ index $p 1 }}{{ end }}'
+              value: '{{ .name }}'
+            - name: services[0].tag
+              value: '{{ .tag | default "secondary" }}'
             - name: renderShared
               value: "false"
       destination:

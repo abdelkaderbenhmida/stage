@@ -242,15 +242,26 @@ data:
         policies="devops-platform-${svc}" \
         ttl="1h" || true
 
-      # Seed the path with an empty placeholder so policies match; the app
-      # fails closed until the operator writes real secrets out-of-band.
-      # Secret KEYS are the app's own contract (get_secret(<name>) in its
-      # code) — the platform provisions ACCESS, not secret content.
-      vault kv put secret/devops-platform/${svc} DATABASE_URL="" || true
+      # Seed the path with real generated values. The app fails closed until
+      # BOTH DATABASE_URL and JWT_SECRET_KEY are present and non-empty
+      # (SERVICE_TEMPLATE SystemExits if either is falsy under production).
+      # Idempotent per key: read existing values first, generate only the
+      # keys that are missing or empty — a re-run never clobbers a real
+      # secret an operator wrote out-of-band.
+      if vault kv get -format=json secret/devops-platform/${svc} > /tmp/kv.json 2>/dev/null; then
+        db=$(sed -n 's/.*"DATABASE_URL"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' /tmp/kv.json)
+        jw=$(sed -n 's/.*"JWT_SECRET_KEY"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' /tmp/kv.json)
+      else
+        db=""
+        jw=""
+      fi
+      [ -n "$db" ] || db="postgresql://app:$(openssl rand -hex 12)@postgres-${svc}.devops-platform.svc.cluster.local:5432/${svc}"
+      [ -n "$jw" ] || jw="$(openssl rand -hex 32)"
+      vault kv put secret/devops-platform/${svc} DATABASE_URL="$db" JWT_SECRET_KEY="$jw" || true
     done
 
     echo "Vault setup complete. Sealed: $(vault status | grep Sealed | awk '{print $2}')"
-    echo "!! Secrets are EMPTY — inject real values out-of-band for every service before deploying."
+    echo "!! Secrets are auto-generated — DATABASE_URL points at a not-yet-existing postgres-<svc> host."
 ---
 # Job — Runs the setup script once Vault is running
 apiVersion: batch/v1

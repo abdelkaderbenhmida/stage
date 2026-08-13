@@ -1,3 +1,4 @@
+{{- if not .Values.renderSharedOnly }}
 {{- range .Values.services }}
 {{- $svc := . }}
 {{- $port := $svc.port | default 8000 }}
@@ -58,6 +59,12 @@ spec:
       containers:
         - name: {{ $svc.name }}
           image: {{ template "apps-common.image" (dict "Values" $.Values "name" $svc.name "image" $svc.image "tag" $svc.tag) }}
+          # IfNotPresent is correct ONLY for immutable tags: CI writes
+          # commit-<sha7> into the ApplicationSet marker after every build,
+          # so a new tag always pulls fresh and a reused tag never changes.
+          # A floating tag (e.g. the pre-writeback `secondary` default)
+          # would keep stale images on the nodes — acceptable only as the
+          # bootstrapping default before the first CI write-back.
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
@@ -118,4 +125,5 @@ spec:
       volumes:
         - name: tmp
           emptyDir: {}
+{{- end }}
 {{- end }}

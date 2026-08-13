@@ -1,16 +1,18 @@
-# ArgoCD self-bootstrap Application.
-# Sync-wave -100 so the control-plane lands before ANY ArgoCD Application
-# (sync waves 0+). Uses kustomize remote pin in k8s/argocd/install/.
+# ApplicationSet bootstrap Application. Without this, k8s/argocd/applicationset.yaml
+# is dead YAML: the old flow only ever applied k8s/argocd/install (the control
+# plane). This app-of-apps entry makes the ApplicationSet itself GitOps-owned,
+# consistent with the other 9 files in this directory. It also owns project.yaml,
+# which the ApplicationSet's Applications require to exist.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: argocd-install
+  name: devops-platform-applicationset
   namespace: argocd
   labels:
-    app.kubernetes.io/name: argocd-install
+    app.kubernetes.io/name: devops-platform-applicationset
     app.kubernetes.io/part-of: devops-platform
   annotations:
-    argocd.argoproj.io/sync-wave: "-100"
+    argocd.argoproj.io/sync-wave: "-50"
   finalizers:
     - resources-finalizer.argocd.argoproj.io
 spec:
@@ -18,7 +20,7 @@ spec:
   source:
     repoURL: https://github.com/abdelkaderbenhmida/stage.git
     targetRevision: HEAD
-    path: k8s/argocd/install
+    path: k8s/argocd
   destination:
     server: https://kubernetes.default.svc
     namespace: argocd
@@ -26,9 +28,9 @@ spec:
     automated:
       prune: true
       selfHeal: true
+      allowEmpty: false
     syncOptions:
       - CreateNamespace=true
-      - ApplyOutOfSyncOnly=true
       - ServerSideApply=true
     retry:
       limit: 5

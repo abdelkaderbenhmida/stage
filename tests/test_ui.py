@@ -113,7 +113,7 @@ def test_ci_discovery_is_source_of_truth():
     assert ci["discovery"]["id"] == "discover"
     assert "build" in ci["uses_fromjson"]
     assert "trivy-scan" in ci["uses_fromjson"]
-    assert ci["triggers"]["push"] == ["branches", "paths"]
+    assert ci["triggers"]["push"] == ["branches", "paths-ignore"]
 
 
 def test_vault_provisioning_loop_is_discovery_driven():
@@ -138,16 +138,159 @@ def test_monitoring_matches_any_service_count():
 
 def test_argocd_generates_one_app_per_service():
     argocd = introspect.parse_argocd()
-    assert argocd["generator_type"] == "git"
-    assert "app/*" in [f.get("path") for f in argocd["files_pattern"]]
-    assert "app/*/*" in [f.get("path") for f in argocd["files_pattern"]]
+    assert argocd["generator_type"] == "files"
+    assert "app/*/service.yaml" in argocd["files_pattern"]
+    assert "app/*/*/service.yaml" in argocd["files_pattern"]
+    assert argocd["helm_tag_param"] is True
     assert argocd["sync_policy"]["automated"]["prune"] is True
 
 
-def test_api_endpoints():
+def test_service_markers_exist_for_all_discovered_services():
+    """C1: every service gets a marker file (name + tag). The tag must
+    default to 'secondary' — CI rewrites it to commit-<sha7> after builds."""
+    markers = introspect._list_service_markers()
+    names = {m["name"] for m in markers}
+    assert names == set(introspect.discover_services())
+    for m in markers:
+        assert m["tag"], f"{m['path']} has empty tag"
+    assert names == {"users-service", "products-service", "orders-service", "catalog-items"}
+
+
+def test_shared_app_syncs_all_services():
+    """C4: the shared RoleBinding owner app must list every discovered
+    service — when a new service is created the Application is regenerated."""
+    import yaml
+
+    docs = list(yaml.safe_load_all(introspect.SHARED_APP_PATH.read_text()))
+    target = next(
+        d for d in docs
+        if isinstance(d, dict) and d.get("kind") == "Application"
+        and (d.get("metadata") or {}).get("name") == "devops-platform-shared"
+    )
+    params = {
+        p["name"]: p["value"]
+        for p in target["spec"]["source"]["helm"]["parameters"]
+    }
+    assert params["renderShared"] == "true"
+    assert params["renderSharedOnly"] == "true"
+    svc_params = sorted(v for k, v in params.items() if k.startswith("services["))
+    assert svc_params == sorted(introspect.discover_services())
+
+
+def test_ci_tag_backfill_writes_commit_tag_into_markers():
+    """C3: after a successful push build, a job pins each marker's tag to the
+    commit SHA — must exist in the workflow and be gated on push."""
+    wf = open(os.path.join(REPO_ROOT, ".github/workflows/ci-cd.yml")).read()
+    assert "tag-backfill" in wf or "Write build tag" in wf
+    assert "GITHUB_SHA" in wf
+    assert "service.yaml" in wf
+    assert "paths-ignore" in wf
+    assert "needs: build" in wf
+
+
+def test_no_partial_manifests_outside_patch_files():
+    """Drift guard: k8s/apps/*.yaml must contain only complete, single-doc
+    manifests (chart owns per-service manifests; patch files are the only
+    partial artifacts allowed)."""
+    import yaml
+
+    root = os.path.join(REPO_ROOT, "k8s/apps")
+    for name in sorted(os.listdir(root)):
+        if not name.endswith(".yaml") and not name.endswith(".yml"):
+            continue
+        if name.endswith("-patch.yaml"):
+            continue
+        path = os.path.join(root, name)
+        with open(path) as f:
+            docs = [d for d in yaml.safe_load_all(f) if d]
+        assert len(docs) == 1, f"{path}: {len(docs)} docs — split or move to a -patch.yaml"
+
+
+def test_service_pipeline_stage_transitions():
+    """WS-A: the tracker must run through its stages in order and stop at the
+    first failure — a service with nothing in git names 'committed' as its
+    blocker."""
+    r = introspect._pipeline_result(
+        "zz-svc",
+        [
+            {"stage": "files", "state": "ok", "detail": "present"},
+            {"stage": "committed", "state": "failed", "detail": "never pushed"},
+        ],
+    )
+    assert r["all_ok"] is False
+    assert r["blocking"] == "committed"
+    assert r["blocking_detail"] == "never pushed"
+    r2 = introspect._pipeline_result(
+        "zz-svc",
+        [
+            {"stage": "files", "state": "ok", "detail": "present"},
+            {"stage": "committed", "state": "ok", "detail": "pushed"},
+            {"stage": "ci", "state": "pending", "detail": "build running"},
+        ],
+    )
+    assert r2["all_ok"] is False
+    assert r2["blocking"] == "ci"
+
+
+def test_terraform_import_generation():
+    """WS-B: import IDs must be the node name (libvirt domain id), and
+    generated import commands must be well-formed address:id pairs —
+    the known bug put the node name on the wrong side."""
+    assert introspect._import_id("libvirt_domain", "workers", "worker-02") == "worker-02"
+    assert introspect._import_id("libvirt_volume", "workers", "worker-02") == "worker-02.qcow2"
+    for addr, id_value in introspect._terraform_imports_needed():
+        assert ":" not in addr.split(".")[-1].split("[")[0]
+        assert id_value, f"{addr} has empty import id"
+        assert not addr.endswith(":"), f"node name leaked after colon: {addr}"
+        assert not id_value.startswith(":"), f"empty address before colon: {id_value}"
+
+
+def test_tfvars_conformance():
+    """WS-B: terraform.tfvars must only declare variables that exist in
+    variables.tf, and must contain libvirt values (not stale AWS ones)."""
+    declared = introspect._declared_tf_vars()
+    assert "ssh_user" in declared
+    assert "worker_count" in declared
+    assert "disk_size_gb" in declared
+    keys = introspect._tfvars_keys()
+    for k in keys:
+        assert k in declared, f"undeclared var in tfvars: {k}"
+
+
+def test_preflight_refuses_without_space():
+    """WS-B: node-add must be refused when the host lacks enough free disk —
+    this is the exact state of the machine right now (1.8G free < 20G)."""
+    r = introspect.node_preflight(20, 4096)
+    assert r["ok"] is False
+    assert any("disk" in p.lower() for p in r["problems"])
+
+
+def test_command_allowlist_blocks_path_traversal():
+    """Security guard: client-supplied commands are allowlisted — nothing
+    but the declared script keys may run."""
+    for bad in ["../../etc/passwd", "/bin/sh", "worker-add --force", ""]:
+        try:
+            introspect.run_script(bad)
+            assert False, f"expected ServiceError for {bad!r}"
+        except introspect.ServiceError:
+            pass
+
+
+def test_api_endpoints(monkeypatch):
     import importlib.util
 
     from fastapi.testclient import TestClient
+
+    def fake_pipeline(service):
+        return {
+            "service": service,
+            "stages": [],
+            "blocking": None,
+            "all_ok": True,
+            "blocking_detail": None,
+        }
+
+    monkeypatch.setattr(introspect, "service_pipeline", fake_pipeline)
 
     spec = importlib.util.spec_from_file_location(
         "ui_main", os.path.join(UI_DIR, "main.py")
@@ -159,9 +302,40 @@ def test_api_endpoints():
     assert client.get("/api/health").json()["status"] == "ok"
     ov = client.get("/api/overview").json()
     assert ov["service_count"] == len(introspect.discover_services())
-    assert ov["status"] == "ready"
+    assert ov["status"] == "healthy"
     svc = client.get("/api/services").json()
     assert svc["count"] == len(introspect.discover_services())
+
+
+def test_overview_status_is_degraded_when_a_service_is_stuck(monkeypatch):
+    """WS-D: honest status — one stuck service makes the platform degraded,
+    and the blocker names the first failing stage."""
+    import importlib.util
+
+    from fastapi.testclient import TestClient
+
+    def fake_pipeline(service):
+        return {
+            "service": service,
+            "stages": [],
+            "blocking": "vault" if service == "catalog-items" else None,
+            "all_ok": service != "catalog-items",
+            "blocking_detail": "secrets missing" if service == "catalog-items" else None,
+        }
+
+    monkeypatch.setattr(introspect, "service_pipeline", fake_pipeline)
+
+    spec = importlib.util.spec_from_file_location(
+        "ui_main_degraded", os.path.join(UI_DIR, "main.py")
+    )
+    ui_main = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(ui_main)
+
+    client = TestClient(ui_main.app)
+    ov = client.get("/api/overview").json()
+    assert ov["status"] == "degraded"
+    blockers = {b["service"]: b["stage"] for b in ov["blockers"]}
+    assert blockers["catalog-items"] == "vault"
 
 
 def test_parse_top_output():
