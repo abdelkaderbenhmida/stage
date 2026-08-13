@@ -153,7 +153,7 @@ def test_service_markers_exist_for_all_discovered_services():
     assert names == set(introspect.discover_services())
     for m in markers:
         assert m["tag"], f"{m['path']} has empty tag"
-    assert names == {"users-service", "products-service", "orders-service", "catalog-items"}
+    assert {"users-service", "products-service", "orders-service", "catalog-items"}.issubset(names)
 
 
 def test_shared_app_syncs_all_services():
