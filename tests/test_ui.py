@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -6,6 +7,16 @@ UI_DIR = os.path.join(REPO_ROOT, "ui")
 sys.path.insert(0, UI_DIR)
 
 import introspect  # noqa: E402
+
+
+def test_config_tab_default_is_a_real_tab():
+    """Regression guard: state.configTab must be one of renderConfig's tabs,
+    or the Operations view renders blank until the user clicks a tab."""
+    src = open(os.path.join(UI_DIR, "static", "app.js")).read()
+    default = re.search(r'configTab:\s*"([^"]+)"', src).group(1)
+    tabs = re.search(r'const tabs = \[([^\]]+)\]', src).group(1)
+    tab_list = [t.strip().strip('"') for t in tabs.split(",")]
+    assert default in tab_list
 
 
 def test_discovery_finds_only_services_with_main_py():

@@ -196,49 +196,6 @@ pre.code .tk-dim { color: var(--dim); }
 .mt1 { margin-top: 8px; }
 .gap-sm { gap: 8px; }
 
-/* ─────────── Topology ─────────── */
-.topo-wrap { background: transparent; }
-.topo-card {
-  background: linear-gradient(180deg, rgba(13,18,28,.85), rgba(8,11,18,.85));
-  border: 1px solid var(--border); border-radius: var(--radius);
-  padding: 18px 10px 6px; box-shadow: var(--shadow);
-}
-#topo { width: 100%; min-height: 560px; display: block; }
-.topo-node { cursor: pointer; }
-.topo-node:hover rect { stroke: var(--accent); stroke-width: 1.6; }
-.topo-node .t-main { font-weight: 700; }
-.topo-edge { stroke-dasharray: 5 5; animation: dash 1.2s linear infinite; }
-@keyframes dash { to { stroke-dashoffset: -20; } }
-.topo-tooltip {
-  position: fixed; pointer-events: none; z-index: 50;
-  background: var(--panel-solid); border: 1px solid var(--border-hi);
-  border-radius: 10px; padding: 10px 12px; font-size: 12px; max-width: 260px;
-  box-shadow: var(--shadow); opacity: 0; transition: opacity .12s;
-}
-.topo-tooltip .tt-title { font-weight: 700; margin-bottom: 4px; font-size: 13px; }
-.topo-tooltip .tt-row { color: var(--muted); font-family: var(--mono); font-size: 11px; }
-
-/* ─────────── Pipeline DAG ─────────── */
-.pipe { display: flex; align-items: stretch; gap: 8px; flex-wrap: wrap; }
-.pnode {
-  background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
-  padding: 10px 14px; min-width: 120px; position: relative;
-  border-top: 2px solid var(--accent);
-}
-.pnode.stage { border-top-color: var(--violet); }
-.pnode.disc { border-top-color: var(--green); }
-.pnode .pn-name { font-family: var(--mono); font-weight: 700; font-size: 12.5px; }
-.pnode .pn-meta { font-size: 10.5px; color: var(--dim); margin-top: 3px; }
-.pnode .pn-tag { position: absolute; top: -8px; right: 10px; }
-
-/* ─────────── Charts / gauges ─────────── */
-.chart-title { font-size: 11px; font-weight: 700; color: var(--muted); letter-spacing: .6px; text-transform: uppercase; margin-bottom: 10px; }
-.gauge-row { display: flex; gap: 18px; flex-wrap: wrap; justify-content: center; }
-.gauge { text-align: center; }
-.gauge svg { display: block; margin: 0 auto; }
-.gauge .g-label { font-size: 11px; color: var(--muted); margin-top: 6px; font-weight: 600; }
-.gauge .g-val { font-size: 12px; font-family: var(--mono); color: var(--text); margin-top: -4px; }
-
 /* ─────────── Search ─────────── */
 .search {
   display: flex; align-items: center; gap: 8px; background: var(--panel);

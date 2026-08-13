@@ -1,6 +1,6 @@
 "use strict";
 
-const state = { data: null, view: "topology", search: "", timer: null, detail: null, configTab: "helm" };
+const state = { data: null, view: "topology", search: "", timer: null, detail: null, configTab: "ci", runTimer: null };
 
 const $ = (id) => document.getElementById(id);
 const VIEWS = ["topology", "apps", "overview", "services", "config"];
@@ -107,22 +107,6 @@ function barRows(rows, maxW) {
     .join("");
 }
 
-function gaugeSvg(id, pct, color, label, target) {
-  const R = 34, C = 2 * Math.PI * R;
-  const off = C * (1 - Math.min(pct, 1));
-  return `
-    <div class="gauge">
-      <svg width="96" height="96" viewBox="0 0 96 96">
-        <circle cx="48" cy="48" r="${R}" fill="none" stroke="rgba(120,140,170,.15)" stroke-width="8"/>
-        <circle cx="48" cy="48" r="${R}" fill="none" stroke="${color}" stroke-width="8"
-                stroke-linecap="round" stroke-dasharray="${C}" stroke-dashoffset="${off}"
-                transform="rotate(-90 48 48)"/>
-        <text x="48" y="46" text-anchor="middle" font-size="14" font-weight="700" fill="#e6ecf5" font-family="var(--mono)">${target}</text>
-        <text x="48" y="62" text-anchor="middle" font-size="9" fill="#8a97ad">${esc(label)}</text>
-      </svg>
-    </div>`;
-}
-
 /* ─────────── data load ─────────── */
 
 async function fetchData() {
@@ -157,38 +141,7 @@ function render() {
   renderConfig();
 }
 
-/* ═══════════ TOPOLOGY ═══════════ */
-
-function topoNode(x, y, w, h, label, sub, color, extra) {
-  return `
-    <g class="topo-node" data-id="${esc(extra.id)}" data-view="${esc(extra.view || "")}"
-       data-search="${esc(extra.search || "")}" data-tooltip="${esc(extra.tooltip || "")}">
-      <rect x="${x}" y="${y}" width="${w}" height="${h}" rx="10"
-            fill="rgba(20,27,41,.9)" stroke="${color}" stroke-width="1.2"/>
-      <rect x="${x + 8}" y="${y + (h / 2 - 10)}" width="4" height="20" rx="2" fill="${color}"/>
-      <text x="${x + 22}" y="${y + 22}" font-size="13.5" font-weight="700" fill="#e6ecf5">${esc(label)}</text>
-      <text x="${x + 22}" y="${y + h - 16}" font-size="10.5" fill="#8a97ad" font-family="var(--mono)">${esc(sub)}</text>
-    </g>`;
-}
-
-function topoEdge(d, x1, y1, x2, y2, color, bend) {
-  const cx = x1 + (x2 - x1) * (bend ?? 0.5);
-  const cy = y1;
-  return `<path d="M ${x1} ${y1} Q ${cx} ${y1} ${x2} ${y2}"
-           fill="none" stroke="${color}" stroke-width="1.2" opacity="0.45"
-           class="topo-edge" marker-end="url(#arrow-${color.replace("#", "")}"/>`;
-}
-
-function topoArrows() {
-  const defs = ["#4cc2ff", "#a78bfa", "#fbbf24", "#f472b6", "#fb923c", "#34d399", "#7a5cff"]
-    .map((c) => `
-      <marker id="arrow-${c.replace("#", "")}" viewBox="0 0 10 10" refX="9" refY="5"
-              markerWidth="6" markerHeight="6" orient="auto-start-reverse">
-        <path d="M 0 0 L 10 5 L 0 10 z" fill="${c}"/>
-      </marker>`)
-    .join("");
-  return `<defs>${defs}</defs>`;
-}
+/* ═══════════ PLATFORM HEALTH ═══════════ */
 
 function renderTopology() {
   $("view-topology").innerHTML = `
@@ -620,297 +573,8 @@ function renderServices() {
   }
 }
 
-/* ═══════════ HELM ═══════════ */
-
-function renderHelm() {
-  const d = state.data;
-  const h = d.helm;
-  const kinds = Object.entries(h.counts).sort((a, b) => a[0].localeCompare(b[0]));
-  const perSvc = h.expected_per_service.map((k) => `<th>${esc(k)}</th>`).join("");
-  const svcRows = h.per_service
-    ? Object.entries(h.per_service).map(([name, ks]) => `
-      <tr>
-        <td><span class="mono" style="color:var(--accent);font-weight:700">${esc(name)}</span></td>
-        ${h.expected_per_service.map((k) => `<td class="mono">${ks.includes(k) ? "✓" : "–"}</td>`).join("")}
-      </tr>`).join("")
-    : "";
-
-  $("view-helm").innerHTML = `
-    ${explainer(`The <b>recipe</b> that creates Kubernetes objects per service: Deployment (runs it), Service (network address), HPA (auto-scale), PDB (always available), SA (identity). Every service gets the same 5 — plus 3 shared objects once per platform.`)}
-    <div class="head">
-      <div>
-        <h1>Helm Chart</h1>
-        <div class="sub">One generic chart at <span class="mono">k8s/apps/chart</span>. Every template <span class="mono">ranges .Values.services[]</span> — rendering is a live <span class="mono">helm template</span> against the discovered service list.</div>
-      </div>
-      <div class="header-actions">${h.ok ? pill(`renders ${h.total} objects`, "green") : pill("render failed", "red")}</div>
-    </div>
-
-    ${h.ok ? "" : `<div class="card mb" style="border-color:var(--red)"><span class="red">${esc(h.error)}</span></div>`}
-
-    <div class="grid two">
-      <div class="card">
-        <div class="card-title">Object kind counts (${h.total})</div>
-        ${barRows(kinds.map(([k, v]) => ({ l: k, v })), "#fbbf24")}
-      </div>
-      <div class="card">
-        <div class="card-title">Per-service matrix — expected: ${esc(h.expected_per_service.join(", "))}</div>
-        <table>
-          <thead><tr><th>Service</th>${perSvc}</tr></thead>
-          <tbody>${svcRows || `<tr><td colspan="6" class="empty">no services</td></tr>`}</tbody>
-        </table>
-      </div>
-    </div>
-
-    <h2 class="mt">Shared objects — once per namespace</h2>
-    <div class="grid cards">
-      ${h.shared.map((o) => `
-        <div class="card" style="display:flex;align-items:center;gap:12px;padding:14px 16px">
-          <span class="status-dot ok"></span>
-          <div>
-            <div class="mono" style="font-weight:700">${esc(o.kind)}</div>
-            <div class="muted small">${esc(o.name)} · ${esc(o.namespace || "–")}</div>
-          </div>
-        </div>`).join("")}
-    </div>
-
-    <h2 class="mt">Validation</h2>
-    <pre class="code"><span class="tk-dim"># spec test — any service count, zero config edits</span>
-printf 'services:\n  - name: foo\n  - name: users-service\n' > /tmp/t.yaml
-helm template t k8s/apps/chart -f /tmp/t.yaml | grep -c '^kind:'   <span class="tk-accent"># → ${h.total}</span></pre>`;
-}
-
-/* ═══════════ CI ═══════════ */
-
-function renderCI() {
-  const d = state.data;
-  const jobs = d.ci.jobs;
-  const order = [...jobs.filter((j) => !j.needs.length), ...jobs.filter((j) => j.needs.length)];
-  const pipe = order.map((j) => {
-    const cls = j.id === "discover" ? "disc" : (j.matrix.has_matrix ? "stage" : "");
-    const m = j.matrix.has_matrix
-      ? `<div class="pn-meta">${j.matrix.from_json ? pill("fromJSON", "accent") : pill("static", "muted")} ${esc(j.matrix.keys.join(", "))}</div>`
-      : `<div class="pn-meta">${esc(j.runs_on || "")}</div>`;
-    return `<div class="pnode ${cls}"><div class="pn-name">${esc(j.id)}</div>${m}<div class="pn-meta">${j.steps.length} steps</div></div>`;
-  }).join('<span class="muted" style="align-self:center">→</span>');
-
-  const cards = jobs.map((j) => `
-    <div class="card">
-      <div class="row" style="justify-content:space-between">
-        <div class="mono" style="font-weight:800">${esc(j.name)}</div>
-        ${j.needs.length ? pill(j.needs.join("+"), "muted") : pill("root", "green")}
-      </div>
-      <div class="mt1 chips">${j.steps.map((s) => `<span class="chip">${esc(s)}</span>`).join("")}</div>
-    </div>`).join("");
-
-  const triggerRows = Object.entries(d.ci.triggers).map(([k, v]) => `
-    <tr><td class="mono" style="color:var(--accent)">${esc(k)}</td>
-    <td><div class="chips">${v.map((t) => `<span class="chip">${esc(t)}</span>`).join("") || '<span class="muted">–</span>'}</div></td></tr>`).join("");
-
-  $("view-ci").innerHTML = `
-    ${explainer(`Your <b>software pipeline</b>: find services → check quality → test → build images → security scan → deploy. Discovery-driven: a new service folder creates new pipeline jobs by itself — the workflow file never changes.`)}
-    <div class="head">
-      <div>
-        <h1>CI / CD Pipeline</h1>
-        <div class="sub"><span class="mono">discover</span> is the only source of truth — every matrix job expands from <span class="mono">fromJSON(discover.outputs.services)</span>. New service = new matrix rows, no workflow edits.</div>
-      </div>
-      <div class="header-actions">${pill("cancel-in-progress concurrency", "muted")}</div>
-    </div>
-
-    <div class="card mb"><div class="pipe">${pipe}</div></div>
-
-    <h2 class="mb">Jobs</h2>
-    <div class="grid two">${cards}</div>
-
-    <div class="grid two mt">
-      <div class="card">
-        <div class="card-title">Triggers</div>
-        <table><tbody>${triggerRows}</tbody></table>
-      </div>
-      <div class="card">
-        <div class="card-title">Guardrails</div>
-        <div class="kv">
-          <span class="k">concurrency</span><span class="v mono">${esc(JSON.stringify(d.ci.concurrency ?? "none"))}</span>
-          <span class="k">permissions</span><span class="v mono">${esc(JSON.stringify(d.ci.permissions ?? "none"))}</span>
-          <span class="k">gates</span><span class="v">${pill("lint", "muted")} ${pill("gitleaks", "muted")} ${pill("pip-audit", "muted")} ${pill("trivy CRIT/HIGH", "red")}</span>
-        </div>
-      </div>
-    </div>`;
-}
-
-/* ═══════════ VAULT ═══════════ */
-
-function renderVault() {
-  const d = state.data.vault;
-  const lp = d.per_service;
-  const objRows = d.objects.map((o) => `
-    <tr><td class="mono">${esc(o.kind)}</td><td class="mono">${esc(o.name)}</td><td class="mono">${esc(o.namespace ?? "–")}</td></tr>`).join("");
-
-  $("view-vault").innerHTML = `
-    ${explainer(`<b>Secret manager.</b> For every discovered service, the setup job auto-creates: 1 read-only policy (its own secrets), 1 login role, bound to the service account. <b>Fail-closed:</b> no secret → service refuses to start, so nothing runs with fake keys.`)}
-    <div class="head">
-      <div>
-        <h1>Vault</h1>
-        <div class="sub">Setup job reads <span class="mono">devops-service-list</span> ConfigMap → provisions policy + k8s-auth role per discovered service. Fail-closed: placeholder secrets, apps refuse to start without real values.</div>
-      </div>
-      <div class="header-actions">${lp.present ? pill("discovery loop", "green") : pill("loop missing", "red")}</div>
-    </div>
-
-    <div class="grid two">
-      <div class="card">
-        <div class="card-title">Per-service provisioning</div>
-        <div class="kv">
-          <span class="k">policy</span><span class="v mono" style="color:var(--accent)">${esc(lp.policy_template)}</span>
-          <span class="k">k8s-auth role</span><span class="v mono">${esc(lp.k8s_role_template)}</span>
-          <span class="k">bound SA</span><span class="v mono">${esc(lp.bound_sa_template)}</span>
-          <span class="k">KV path</span><span class="v mono">${esc(lp.kv_path_template)}</span>
-          <span class="k">ttl</span><span class="v mono">1h</span>
-          <span class="k">services list</span><span class="v mono">${esc(d.services_source ?? "not wired")}</span>
-        </div>
-      </div>
-      <div class="card">
-        <div class="card-title">Security posture</div>
-        <div class="kv">
-          <span class="k">token</span><span class="v mono">${esc(d.token_source)}</span>
-          <span class="k">fail closed</span><span class="v">${d.fail_closed ? pill("set -e", "green") : pill("no", "red")}</span>
-          <span class="k">least priv</span><span class="v">${pill("read-only policy", "green")}</span>
-          <span class="k">drop caps</span><span class="v">${pill("ALL", "green")} + IPC_LOCK/NET_RAW</span>
-        </div>
-      </div>
-    </div>
-
-    <h2 class="mt mb">Setup script loop</h2>
-    <pre class="code">for svc in $SERVICES; do
-  vault policy write <span class="tk-accent">devops-platform-\${svc}</span> -   <span class="tk-dim"># read-only on secret/data/...</span>
-  vault write auth/kubernetes/role/<span class="tk-accent">\${svc}</span> \\
-    bound_service_account_names=<span class="tk-accent">\${svc}-sa</span> policies=<span class="tk-accent">devops-platform-\${svc}</span> ttl="1h"
-  vault kv put secret/devops-platform/<span class="tk-accent">\${svc}</span> DATABASE_URL=""
-done</pre>
-
-    <h2 class="mt mb">Manifest objects (${d.objects.length})</h2>
-    <div class="card" style="overflow-x:auto"><table>
-      <thead><tr><th>Kind</th><th>Name</th><th>Namespace</th></tr></thead>
-      <tbody>${objRows}</tbody>
-    </table></div>`;
-}
-
-/* ═══════════ MONITORING ═══════════ */
-
-function renderMonitoring() {
-  const d = state.data.monitoring;
-  const sm = d.service_monitor;
-  const sloRows = Object.entries(d.slo_detail).map(([k, v]) => `
-    <tr>
-      <td class="mono" style="color:var(--accent)">${esc(k)}</td>
-      <td>${esc(v.target)}</td>
-      <td class="mono">${esc(v.rule)}</td>
-      <td class="mono small">${esc(v.matcher)}</td>
-    </tr>`).join("");
-
-  const ruleRows = d.rules.map((r) => `
-    <tr>
-      <td>${r.type === "record" ? pill("record", "violet") : pill("alert", r.severity === "critical" ? "red" : "amber")}</td>
-      <td class="mono">${esc(r.name)}</td>
-      <td class="mono small">${esc(r.group)}</td>
-      <td class="mono small" style="max-width:380px;overflow:hidden;text-overflow:ellipsis">${esc(r.expr.slice(0, 110))}${r.expr.length > 110 ? "…" : ""}</td>
-      <td>${r.severity ? pill(r.severity, r.severity === "critical" ? "red" : "amber") : ""}</td>
-      <td class="mono small">${esc(r.slo ?? "")}</td>
-      <td class="mono small">${esc(r.for)}</td>
-    </tr>`).join("");
-
-  $("view-monitoring").innerHTML = `
-    ${explainer(`<b>Alerts and targets (SLOs):</b> 99.9% availability, P95 latency &lt; 200ms, errors &lt; 1%. All services share one label (part-of=devops-platform), so a new service is watched instantly — the rule file never changes.`)}
-    <div class="head">
-      <div>
-        <h1>Monitoring &amp; SLOs</h1>
-        <div class="sub">One ServiceMonitor matches <span class="mono">part-of: devops-platform</span> — every discovered service is scraped automatically. SLO rules select <span class="mono">part_of="devops-platform"</span>, so the rule set never changes with the service count.</div>
-      </div>
-      <div class="header-actions">${pill(`${sm.scrape_path} every ${sm.scrape_interval}`, "green")}</div>
-    </div>
-
-    <div class="grid two">
-      <div class="card">
-        <div class="card-title">SLO targets</div>
-        <table><thead><tr><th>SLI</th><th>Target</th><th>Rule</th><th>Matcher</th></tr></thead>
-          <tbody>${sloRows}</tbody></table>
-      </div>
-      <div class="card">
-        <div class="card-title">ServiceMonitor</div>
-        <div class="gauge-row">
-          ${gaugeSvg("g-av", 0.999, "#34d399", "availability", "99.9%")}
-          ${gaugeSvg("g-lt", 0.2, "#4cc2ff", "latency P95", "200ms")}
-          ${gaugeSvg("g-er", 0.01, "#f87171", "5xx rate", "1%")}
-        </div>
-        <div class="mt1 kv">
-          <span class="k">matchLabels</span><span class="v mono">${esc(JSON.stringify(sm.match_labels))}</span>
-          <span class="k">relabel</span><span class="v small">${esc(sm.relabel)}</span>
-        </div>
-      </div>
-    </div>
-
-    <h2 class="mt mb">PrometheusRules (${d.rules.length})</h2>
-    <div class="card" style="overflow-x:auto"><table>
-      <thead><tr><th>Type</th><th>Name</th><th>Group</th><th>Expression</th><th>Severity</th><th>SLO/Inc</th><th>For</th></tr></thead>
-      <tbody>${ruleRows || `<tr><td colspan="7" class="empty">none</td></tr>`}</tbody>
-    </table></div>
-
-    ${d.dashboards.length ? `
-    <h2 class="mt mb">Grafana dashboards</h2>
-    <div class="chips">${d.dashboards.map((x) => `<span class="chip accent">${esc(x)}</span>`).join("")}</div>` : ""}`;
-}
-
-/* ═══════════ ARGOCD ═══════════ */
-
-function renderArgocd() {
-  const d = state.data.argocd;
-  const auto = d.sync_policy?.automated ?? {};
-  const appRows = d.static_applications.map((a) => `
-    <tr><td class="mono" style="color:var(--accent);font-weight:700">${esc(a.name)}</td>
-    <td class="mono">${esc(a.repo)}</td><td class="mono">${esc(a.path)}</td></tr>`).join("");
-
-  $("view-argocd").innerHTML = `
-    ${explainer(`<b>Deploys straight from git (GitOps).</b> Auto-creates one Application per service folder. Delete the folder → ArgoCD removes the app → all its k8s objects are deleted. Zero manual cleanup.`)}
-    <div class="head">
-      <div>
-        <h1>ArgoCD</h1>
-        <div class="sub">ApplicationSet with the <span class="mono">git files</span> generator over <span class="mono">app/*/main.py</span> — one Application per discovered service. Deleting a service dir stops the generator, ArgoCD prunes the app, the finalizer cascade-deletes its resources.</div>
-      </div>
-      <div class="header-actions">${pill("1 app / service", "violet")}</div>
-    </div>
-
-    <div class="grid two">
-      <div class="card">
-        <div class="card-title">ApplicationSet</div>
-        <div class="kv">
-          <span class="k">name</span><span class="v mono" style="color:var(--accent)">${esc(d.name)}</span>
-          <span class="k">generator</span><span class="v">${d.generator_type === "git" ? pill("git files", "violet") : pill("unknown", "red")}</span>
-          <span class="k">file pattern</span><span class="v mono">${esc((d.files_pattern || []).map((f) => f.path).join(", "))}</span>
-          <span class="k">app name</span><span class="v mono">${esc(d.app_name_template ?? "?")}</span>
-          <span class="k">revision</span><span class="v mono">${esc(d.revision ?? "main")}</span>
-          <span class="k">part-of</span><span class="v mono">${esc(d.part_of_label ?? "–")}</span>
-        </div>
-      </div>
-      <div class="card">
-        <div class="card-title">Sync policy</div>
-        <div class="kv">
-          <span class="k">automated</span><span class="v mono">${esc(JSON.stringify(auto))}</span>
-          <span class="k">options</span><span class="v mono">${esc(JSON.stringify(d.sync_policy?.syncOptions ?? []))}</span>
-          <span class="k">retry</span><span class="v mono">${esc(JSON.stringify(d.sync_policy?.retry ?? {}))}</span>
-        </div>
-        <hr class="hr">
-        <div class="small muted">Scale story: add <span class="mono">app/foo/main.py</span> → generator emits a new Application → <span class="mono">helm template</span> renders <span class="mono">services[0].name=foo</span> → Deployment/Service/SA/HPA/PDB appear. Remove it → pruned.</div>
-      </div>
-    </div>
-
-    <h2 class="mt mb">Static Applications (${d.static_applications.length})</h2>
-    <div class="card" style="overflow-x:auto"><table>
-      <thead><tr><th>Name</th><th>Repo</th><th>Path</th></tr></thead>
-      <tbody>${appRows || `<tr><td colspan="3" class="empty">none</td></tr>`}</tbody>
-    </table></div>`;
-}
-
 /* ═══════════ CONFIGURATION — live status + real actions ═══════════ */
 
-const liveCache = { ci: null, argocd: null, vault: null, alerts: null, cluster: null };
 
 function offlineCard(label, err) {
   return `<div class="cfg-offline">
@@ -1024,7 +688,6 @@ async function viewCiLogs(runId) {
 async function renderCiTab(body) {
   body.innerHTML = `<div class="cfg-loading">fetching workflow runs…</div>`;
   const data = await api("GET", "/api/live/ci");
-  liveCache.ci = data;
   if (!data.reachable) { body.innerHTML = offlineCard("GitHub Actions", data.error); return; }
 
   const statusPill = (r) => {
@@ -1096,7 +759,6 @@ async function ciCancel(runId) {
 async function renderArgocdTab(body) {
   body.innerHTML = `<div class="cfg-loading">fetching applications…</div>`;
   const data = await api("GET", "/api/live/argocd");
-  liveCache.argocd = data;
   if (!data.reachable) { body.innerHTML = offlineCard("ArgoCD / cluster", data.error); return; }
 
   const syncCls = (s) => s === "Synced" ? "green" : s === "OutOfSync" ? "amber" : "muted";
@@ -1181,7 +843,6 @@ async function showArgoCreds() {
 async function renderVaultTab(body) {
   body.innerHTML = `<div class="cfg-loading">checking vault…</div>`;
   const data = await api("GET", "/api/live/vault");
-  liveCache.vault = data;
   if (!data.reachable) { body.innerHTML = offlineCard("Vault", data.error); return; }
 
   let secretsHtml = `<div class="cfg-loading">listing secrets…</div>`;
@@ -1213,7 +874,6 @@ async function renderVaultTab(body) {
 async function renderMonitoringTab(body) {
   body.innerHTML = `<div class="cfg-loading">checking alertmanager…</div>`;
   const data = await api("GET", "/api/live/alerts");
-  liveCache.alerts = data;
   if (!data.reachable) { body.innerHTML = offlineCard("Alertmanager", data.error); return; }
 
   const sevCls = (s) => s === "critical" ? "red" : s === "warning" ? "amber" : "muted";
