@@ -93,9 +93,10 @@ jobs:
       - name: Ruff lint all microservices + shared lib
         run: |
           ruff check app/shared/
-          for svc in $SERVICES; do
-            echo "Linting $svc..."
-            ruff check app/$svc/
+          for svc in $(echo "$SERVICES" | jq -r '.[]'); do
+            DIR="$(dirname "$(find app -mindepth 2 -maxdepth 2 -type d -name "$svc" | head -1)")"
+            echo "Linting $svc ($DIR)..."
+            ruff check "$DIR/"
           done
 
       - name: Validate Terraform format
@@ -131,11 +132,11 @@ jobs:
           # Helm chart must render for every discovered service and pass kubeconform.
           VALUES=/tmp/chart-values.yaml
           printf 'services:\n' > "$VALUES"
-          for svc in $SERVICES; do
+          for svc in $(echo "$SERVICES" | jq -r '.[]'); do
             printf '  - name: %s\n' "$svc" >> "$VALUES"
           done
           helm template ci k8s/apps/chart -f "$VALUES" > /tmp/chart-render.yaml
-          echo "Rendered $(grep -c '^kind:' /tmp/chart-render.yaml) objects from $SERVICES"
+          echo "Rendered $(grep -c '^kind:' /tmp/chart-render.yaml) objects for $(echo "$SERVICES" | jq -r '.[]' | wc -l) services"
           /tmp/kubeconform -strict -ignore-missing-schemas \
             -kubernetes-version 1.28.0 \
             -schema-location 'https://raw.githubusercontent.com/yannh/kubernetes-json-schema/master/master-standalone/{{.ResourceKind}}.json' \
@@ -187,15 +188,17 @@ jobs:
         run: |
           pip install pytest httpx pip-audit
           pip install -e app/shared/
-          for svc in $SERVICES; do
-            pip install -r app/$svc/requirements.txt
+          for svc in $(echo "$SERVICES" | jq -r '.[]'); do
+            DIR="$(dirname "$(find app -mindepth 2 -maxdepth 2 -type d -name "$svc" | head -1)")"
+            pip install -r "$DIR/requirements.txt"
           done
 
       - name: Dependency audit (pip-audit) — fails on known-vulnerable pinned deps
         run: |
           REQS=""
-          for svc in $SERVICES; do
-            REQS="$REQS -r app/$svc/requirements.txt"
+          for svc in $(echo "$SERVICES" | jq -r '.[]'); do
+            DIR="$(dirname "$(find app -mindepth 2 -maxdepth 2 -type d -name "$svc" | head -1)")"
+            REQS="$REQS -r $DIR/requirements.txt"
           done
           pip-audit -r app/shared/requirements.txt $REQS --strict
 
@@ -206,16 +209,18 @@ jobs:
       - name: Run unit tests (FastAPI TestClient + dev-environment fallbacks)
         run: |
           ENVIRONMENT=dev LOG_FORMAT=plain VAULT_ADDR="" pytest -q tests/ -v
-          for svc in $SERVICES; do
-            echo "Import $svc..."
-            (cd app/$svc && PYTHONPATH=../shared:. ENVIRONMENT=dev python -c "import main")
+          for svc in $(echo "$SERVICES" | jq -r '.[]'); do
+            DIR="$(dirname "$(find app -mindepth 2 -maxdepth 2 -type d -name "$svc" | head -1)")"
+            echo "Import $svc ($DIR)..."
+            (cd "$DIR" && PYTHONPATH=../shared:. ENVIRONMENT=dev python -c "import main")
           done
 
       - name: Validate Dockerfiles build (generic app/Dockerfile + SERVICE_NAME build-arg)
         run: |
-          for svc in $SERVICES; do
+          for svc in $(echo "$SERVICES" | jq -r '.[]'); do
+            DIR="$(dirname "$(find app -mindepth 2 -maxdepth 2 -type d -name "$svc" | head -1)")"
             echo "Building test image for $svc..."
-            docker build -t $svc:test -f app/Dockerfile --build-arg SERVICE_NAME=$svc app/
+            docker build -t $svc:test -f app/Dockerfile --build-arg SERVICE_NAME=${DIR#app/} app/
           done
 
       - name: Upload build logs as artifacts
@@ -441,10 +446,10 @@ jobs:
         run: |
           VALUES=values.generated.yaml
           printf 'services:\n' > "$VALUES"
-          for svc in $SERVICES; do
+          for svc in $(echo "$SERVICES" | jq -r '.[]'); do
             printf '  - name: %s\n    tag: %s\n' "$svc" "$COMMIT_TAG" >> "$VALUES"
           done
-          echo "Generated values for $(echo $SERVICES | wc -w) services"
+          echo "Generated values for $(echo "$SERVICES" | jq -r '.[]' | wc -l) services"
           cat "$VALUES"
 
       - name: Render and validate manifests
@@ -458,7 +463,7 @@ jobs:
       - name: Sync service list to Vault namespace (for vault-setup provisioning)
         run: |
           kubectl create configmap devops-service-list -n vault \
-            --from-literal=services="$SERVICES" \
+            --from-literal=services="$(echo "$SERVICES" | jq -r '.[]' | tr '\n' ' ')" \
             --dry-run=client -o yaml | kubectl apply -f -
 
       - name: Deploy (server-side apply via helm template)
@@ -467,13 +472,14 @@ jobs:
           kubectl apply -f k8s/vault/manifests.yaml --server-side
           helm template apps k8s/apps/chart -f values.generated.yaml | kubectl apply --server-side -f -
           kubectl rollout status deploy/vault -n vault --timeout=120s
-          for svc in $SERVICES; do
+          for svc in $(echo "$SERVICES" | jq -r '.[]'); do
             kubectl rollout status deploy/$svc -n devops-platform --timeout=120s
           done
 
       - name: Metrics smoke-test — /metrics returns Histogram (all discovered services)
         run: |
-          SCRIPT="for svc in $SERVICES; do echo \"Check \$svc...\"; curl -sf http://\$svc.devops-platform.svc.cluster.local:80/metrics | grep -q http_request_duration_seconds_bucket || exit 1; done; echo \"All /metrics OK\""
+          LIST="$(echo "$SERVICES" | jq -r '.[]' | tr '\n' ' ')"
+          SCRIPT="for svc in $LIST; do echo \"Check \$svc...\"; curl -sf http://\$svc.devops-platform.svc.cluster.local:80/metrics | grep -q http_request_duration_seconds_bucket || exit 1; done; echo \"All /metrics OK\""
           kubectl run metrics-check --image=curlimages/curl:8.8.0 --restart=Never -- /bin/sh -c "$SCRIPT"
           kubectl wait --for=condition=Complete pod/metrics-check --timeout=60s 2>/dev/null
           kubectl logs pod/metrics-check
