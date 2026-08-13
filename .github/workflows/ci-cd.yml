@@ -367,7 +367,7 @@ jobs:
       - name: Resolve built image
         id: resolve
         run: |
-          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/${{ matrix.service.name }}:${{ github.ref_name }}"
+          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/${{ matrix.service.name }}:commit-${GITHUB_SHA:0:7}"
           echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
           echo "Scanning target image: $IMAGE"
 
