@@ -1276,14 +1276,18 @@ def _terraform_imports_needed() -> list[tuple[str, str]]:
     state = _tfstate_resources()
     nodes = _node_names()
     for_each_resources: dict[str, str] = {}
-    for m in re.finditer(r'resource\s+"([a-z_]+)"\s+"([a-z_]+)"', main):
+    for m in re.finditer(r'resource\s+"([a-z_]+)"\s+"([a-z_]+)"\s*\{', main):
         rtype, rname = m.group(1), m.group(2)
-        block = main[m.end():]
-        head = block[:block.find("\n")]
-        for_each_resources[(rtype, rname)] = head if "for_each" in head else ""
+        rest = main[m.end():]
+        nxt = re.search(r"\nresource\s+\"", rest)
+        block = rest if nxt is None else rest[:nxt.start()]
+        for_each_resources[(rtype, rname)] = block if "for_each" in block else ""
 
     imports: list[tuple[str, str]] = []
     for (rtype, rname), head in for_each_resources.items():
+        if rtype == "terraform_data":
+            # ephemeral meta-resource — nothing to import; next apply creates it.
+            continue
         if "for_each" in head:
             for node in nodes:
                 addr = f'{rtype}.{rname}["{node}"]'
