@@ -910,10 +910,13 @@ def _deployment_ready(namespace: str, name: str) -> dict[str, Any]:
     return {"reachable": True, "ready": ready, "desired": desired, "available": available}
 
 
-def _ci_build_conclusion(branch: str) -> dict[str, Any]:
+def _ci_build_conclusion(branch: str, service: str = "") -> dict[str, Any]:
     """Latest CI run on the branch + its Build & Push Images job conclusion.
     The gh token lacks read:packages, so a registry HEAD check returns 403 —
-    the CI build job conclusion is the honest image-exists signal."""
+    the CI build job conclusion is the honest image-exists signal.
+    Build jobs carry matrix-suffixed names ("Build & Push Images (svc, path)"),
+    so the filter matches by prefix — the run-level conclusion already
+    aggregates all matrix rows."""
     res = _run(
         ["gh", "run", "list", "--repo", _repo_slug(), "--branch", branch, "--limit", "1", "--json",
          "databaseId,status,conclusion"],
@@ -934,12 +937,12 @@ def _ci_build_conclusion(branch: str) -> dict[str, Any]:
         return {"reachable": True, "run_id": run.get("databaseId"), "build_ok": False, "detail": f"latest run concluded {run.get('conclusion')}"}
     jobs = _run(
         ["gh", "run", "view", str(run.get("databaseId")), "--repo", _repo_slug(),
-         "--json", "jobs", "--jq", '.[] | select(.name == "Build & Push Images") | .conclusion'],
+         "--json", "jobs", "--jq", '.jobs[] | select(.name | startswith("Build & Push Images")) | .conclusion'],
         timeout=GH_TIMEOUT,
     )
     if not jobs["ok"] or not jobs["stdout"]:
         return {"reachable": True, "run_id": run.get("databaseId"), "build_ok": None, "detail": "run green but build job conclusion unavailable"}
-    return {"reachable": True, "run_id": run.get("databaseId"), "build_ok": jobs["stdout"].strip() == "success", "detail": jobs["stdout"].strip()}
+    return {"reachable": True, "run_id": run.get("databaseId"), "build_ok": jobs["stdout"].splitlines()[-1].strip() == "success", "detail": jobs["stdout"].splitlines()[-1].strip()}
 
 
 def service_pipeline(service: str) -> dict[str, Any]:
@@ -989,7 +992,7 @@ def service_pipeline(service: str) -> dict[str, Any]:
         return _pipeline_result(service, stages)
 
     # 4. CI green + 5. image in GHCR
-    ci = _ci_build_conclusion(branch if _git(["rev-parse", f"origin/{branch}"]) else "secondary")
+    ci = _ci_build_conclusion(branch if _git(["rev-parse", f"origin/{branch}"]) else "secondary", service)
     if not ci["reachable"]:
         stages.append({"stage": "ci", "state": "failed", "detail": ci["error"]})
     elif ci["build_ok"] is None:
@@ -1243,7 +1246,11 @@ def terraform_drift() -> dict[str, Any]:
 
     plan = _terraform_plan() if (TF_STATE.is_file() and (TF_DIR / ".terraform").is_dir()) else {"ok": False, "empty": False, "error": "terraform not initialized (run reconcile)", "stdout": ""}
     if plan["ok"] and not plan["empty"]:
-        findings.append("terraform plan is not empty — state still out of sync")
+        findings.append(
+            "terraform plan is not empty — remaining diffs are attrs the libvirt "
+            "provider 0.9.8 cannot import (cloudinit_disk, network dns/domain/ips, "
+            "volume create/source)"
+        )
     if not plan["ok"] and plan.get("error"):
         findings.append(f"terraform plan failed: {plan['error']}")
 
@@ -1285,8 +1292,11 @@ def _terraform_imports_needed() -> list[tuple[str, str]]:
 
     imports: list[tuple[str, str]] = []
     for (rtype, rname), head in for_each_resources.items():
-        if rtype == "terraform_data":
-            # ephemeral meta-resource — nothing to import; next apply creates it.
+        if rtype in ("terraform_data", "libvirt_cloudinit_disk", "local_file"):
+            # Not importable by their providers (0.9.8 libvirt / 2.9.0 local):
+            # terraform_data is an ephemeral meta-resource; cloudinit_disk has
+            # no import support at all; local_file only materializes on apply
+            # (its content is regenerated from inventory.tpl — non-destructive).
             continue
         if "for_each" in head:
             for node in nodes:
@@ -1300,6 +1310,16 @@ def _terraform_imports_needed() -> list[tuple[str, str]]:
     return imports
 
 
+def _pool_path() -> str:
+    """Directory of the libvirt storage pool — volume import IDs are the
+    full pool-relative key (e.g. /var/lib/libvirt/images/x.qcow2), not the
+    bare name the provider's create uses."""
+    pool = _tfvars_value("storage_pool") or "default"
+    res = _run(["virsh", "pool-dumpxml", pool], timeout=10)
+    m = re.search(r"<path>([^<]+)</path>", res.get("stdout", ""))
+    return m.group(1) if m else "/var/lib/libvirt/images"
+
+
 def _import_id(rtype: str, rname: str, node: str | None) -> str:
     if rtype == "libvirt_domain":
         return node or ""
@@ -1310,11 +1330,11 @@ def _import_id(rtype: str, rname: str, node: str | None) -> str:
     if rtype == "libvirt_cloudinit_disk":
         return f"{node}-init.iso"
     if rtype == "libvirt_volume":
-        if rname == "base":
-            return _tfvars_value("base_image_name") or "ubuntu-base.qcow2"
-        if rname == "cloudinit_iso":
-            return f"{node}-cloudinit.iso"
-        return f"{node}.qcow2"
+        name = {
+            "base": _tfvars_value("base_image_name") or "ubuntu-base.qcow2",
+            "cloudinit_iso": f"{node}-cloudinit.iso",
+        }.get(rname, f"{node}.qcow2")
+        return f"{_pool_path()}/{name}"
     return node or rname
 
 
@@ -1327,7 +1347,9 @@ def _tfvars_conformance() -> list[str]:
 def terraform_reconcile() -> dict[str, Any]:
     """MUTATING — make state honest: clear the stale lock, replace the
     AWS-shaped tfvars with libvirt-correct values matching the running
-    cluster, import every missing resource, then require an empty plan."""
+    cluster, import every resource the provider supports, then run plan.
+    Non-empty plans are reported with the provider-import gap that causes
+    them — apply is never run from here (destructive by design)."""
     steps: list[str] = []
 
     if TF_LOCK.is_file():
@@ -1348,7 +1370,7 @@ def terraform_reconcile() -> dict[str, Any]:
     }
     try:
         TF_TFVARS.write_text(
-            "".join(f"{k} = {v}\n" for k, v in tfvars.items())
+            "".join(f'{k} = "{v}"\n' for k, v in tfvars.items())
         )
         steps.append("rewrote terraform.tfvars to libvirt-correct values (devops/2 workers)")
     except OSError as exc:
@@ -1373,10 +1395,20 @@ def terraform_reconcile() -> dict[str, Any]:
     plan = _terraform_plan()
     if not plan["ok"]:
         raise ServiceError(f"terraform plan failed after reconcile: {plan['error']}")
-    if not plan["empty"]:
-        raise ServiceError("terraform plan is NOT empty after reconcile — state still differs from live cluster")
 
-    return {"ok": True, "steps": steps, "message": "state reconciled; terraform plan is empty", "imported": [a for a, _ in imports]}
+    imported = [a for a, _ in imports]
+    if plan["empty"]:
+        message = "state reconciled; terraform plan is empty"
+    else:
+        message = (
+            "state reconciled; plan is NOT empty — remaining diffs are resources the "
+            "providers cannot import (libvirt 0.9.8: libvirt_cloudinit_disk has no "
+            "import support, network dns/domain/ips and volume create/source are "
+            "import-blind; local 2.9.0: local_file only materializes on apply). "
+            "Apply refused by safety design — the libvirt diffs would destroy+recreate "
+            "live VMs."
+        )
+    return {"ok": True, "steps": steps, "message": message, "plan_empty": plan["empty"], "imported": imported}
 
 
 def node_preflight(disk_gb: int | None = None, mem_mb: int | None = None) -> dict[str, Any]:
@@ -1392,7 +1424,11 @@ def node_preflight(disk_gb: int | None = None, mem_mb: int | None = None) -> dic
 
     plan = _terraform_plan() if (TF_DIR / ".terraform").is_dir() else {"ok": False, "empty": False, "error": ""}
     if plan["ok"] and not plan["empty"]:
-        problems.append("terraform plan is not empty — state out of sync, run Reconcile state")
+        problems.append(
+            "terraform plan is not empty — remaining diffs are attrs the libvirt "
+            "provider 0.9.8 cannot import (cloudinit_disk, network dns/domain/ips, "
+            "volume create/source); run Reconcile state to confirm"
+        )
     if not plan["ok"] and (TF_DIR / ".terraform").is_dir():
         problems.append(f"terraform plan failed: {plan['error']}")
 

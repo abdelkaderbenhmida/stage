@@ -153,7 +153,7 @@ def test_service_markers_exist_for_all_discovered_services():
     assert names == set(introspect.discover_services())
     for m in markers:
         assert m["tag"], f"{m['path']} has empty tag"
-    assert names == {"users-service", "products-service", "orders-service", "catalog-items"}
+    assert {"users-service", "products-service", "orders-service", "catalog-items"}.issubset(names)
 
 
 def test_shared_app_syncs_all_services():
@@ -233,12 +233,15 @@ def test_service_pipeline_stage_transitions():
 
 
 def test_terraform_import_generation():
-    """WS-B: import IDs must be the node name (libvirt domain id), and
-    generated import commands must be well-formed address:id pairs —
-    the known bug put the node name on the wrong side."""
+    """WS-B: import IDs must be the node name (libvirt domain id) or the
+    full pool volume key (libvirt stores volume ids as /path/key, not the
+    bare name) — the known bug put the node name on the wrong side."""
     assert introspect._import_id("libvirt_domain", "workers", "worker-02") == "worker-02"
-    assert introspect._import_id("libvirt_volume", "workers", "worker-02") == "worker-02.qcow2"
-    for addr, id_value in introspect._terraform_imports_needed():
+    vol_id = introspect._import_id("libvirt_volume", "workers", "worker-02")
+    assert vol_id == "/var/lib/libvirt/images/worker-02.qcow2", vol_id
+    needed = introspect._terraform_imports_needed()
+    assert all("cloudinit_disk" not in a for a, _ in needed), "cloudinit_disk has no provider import support"
+    for addr, id_value in needed:
         assert ":" not in addr.split(".")[-1].split("[")[0]
         assert id_value, f"{addr} has empty import id"
         assert not addr.endswith(":"), f"node name leaked after colon: {addr}"

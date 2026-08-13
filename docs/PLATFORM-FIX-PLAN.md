@@ -218,10 +218,20 @@ Surfaces today's three findings: 1-of-3 VMs in state, 7 undeclared AWS vars, sta
    `worker_count=2`, `vm_vcpu=2`, `vm_memory_mb=4096`, `disk_size_gb=20`, `ssh_user=devops`,
    `network_cidr=192.168.56.0/24`, `master_name=master-01`
 3. `terraform import` every resource `main.tf` declares but state lacks — the 2 worker `libvirt_domain.node`,
-   plus per-node `libvirt_volume.node`, `libvirt_cloudinit_disk.init`, `libvirt_volume.cloudinit_iso`,
+   plus per-node `libvirt_volume.node`, `libvirt_volume.cloudinit_iso`,
    plus `libvirt_volume.base` and `libvirt_network.platform`.
    **Generate the import list from `main.tf`'s `for_each` keys, not hardcoded.**
+   Volume import IDs are the **full pool key** (`/var/lib/libvirt/images/<name>.qcow2`), not the bare name;
+   domains import by name; networks by name.
 4. **`terraform plan` must come out empty** before any apply is offered.
+
+**Provider import limits (observed, libvirt 0.9.8 / local 2.9.0):** `libvirt_cloudinit_disk` has no import
+support at all, `local_file` only materializes on apply, and the network `dns`/`domain`/`ips` + volume
+`create`/`source` attributes are import-blind — imported state can never be byte-identical to config, so the
+plan shows `-/+` replacements for them. **Apply is therefore never offered from reconcile** (the diffs would
+destroy+recreate live VMs; libvirt also refuses to delete in-use volumes). Reconcile reports these remaining
+diffs explicitly instead of claiming empty. A future `libvirt` provider release with full import support is
+the upgrade path to a truly empty plan.
 
 ### Preflight — run before every apply, refuse with the specific reason
 `node_preflight(disk_gb, mem_mb)` checks:
@@ -245,9 +255,11 @@ streams to the UI.
 
 **Confirm dialog:** *"Provision worker-03: create a new VM (N GB disk, M MB RAM) and join it to the cluster. This allocates real host resources and takes several minutes."*
 
-**Verify:** `terraform plan` empty after reconcile; preflight **correctly refuses** the node-add today citing the
-full disk — *that refusal is a deliverable*, the platform proving it won't start work it knows will fail. After
-freeing space and setting `disk_size_gb=10`, a real `worker-03` joins and `kubectl get nodes` shows 4.
+**Verify:** reconcile rebuilds state from the live cluster (11 resources: network, base volume, 3 domains,
+6 node/cloudinit volumes) and reports the provider-import-gap diffs explicitly; preflight **correctly refuses**
+the node-add today citing the full disk — *that refusal is a deliverable*, the platform proving it won't start
+work it knows will fail. After freeing space and setting `disk_size_gb=10`, a real `worker-03` joins and
+`kubectl get nodes` shows 4.
 
 ---
 
@@ -276,11 +288,12 @@ never-started — not `ready`.
 ## Verification overall
 
 - `node --check ui/static/app.js` after every frontend change.
-- `ENVIRONMENT=dev PYTHONPATH=ui pytest tests/test_ui.py` — 21 pass today. Add cluster-free tests:
+- `ENVIRONMENT=dev PYTHONPATH=ui pytest tests/test_ui.py` — 31 pass today. Add cluster-free tests:
   tfvars conformance (every key declared in `variables.tf`), no partial manifests outside `*-patch.yaml`,
   `service_pipeline` stage-transition table, terraform import-command generation, command allowlists.
 - End-to-end proof: CI goes green and pushes an image for the first time; a shipped service reaches pods-ready;
-  `terraform plan` is empty; preflight refuses the node-add with the real reason.
+  reconcile rebuilds state from the live cluster and reports provider-import-gap diffs (plan empty is blocked
+  by libvirt 0.9.8 import limits, documented above); preflight refuses the node-add with the real reason.
 
 ---
 

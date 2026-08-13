@@ -255,8 +255,8 @@ data:
         db=""
         jw=""
       fi
-      [ -n "$db" ] || db="postgresql://app:$(openssl rand -hex 12)@postgres-${svc}.devops-platform.svc.cluster.local:5432/${svc}"
-      [ -n "$jw" ] || jw="$(openssl rand -hex 32)"
+      [ -n "$db" ] || db="postgresql://app:$(od -An -N 12 -tx1 /dev/urandom | tr -d ' \n')@postgres-${svc}.devops-platform.svc.cluster.local:5432/${svc}"
+      [ -n "$jw" ] || jw="$(od -An -N 32 -tx1 /dev/urandom | tr -d ' \n')"
       vault kv put secret/devops-platform/${svc} DATABASE_URL="$db" JWT_SECRET_KEY="$jw" || true
     done
 
