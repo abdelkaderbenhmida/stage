@@ -9,6 +9,15 @@ sys.path.insert(0, UI_DIR)
 import introspect  # noqa: E402
 
 
+def test_git_failure_looks_like_absence():
+    """Regression guard: _git must return "" on failure, not the arg echo —
+    git rev-parse of a missing ref prints the argument to stdout AND fails;
+    a truthy echo made the pipeline's pr stage report phantom service
+    branches ("branch X exists but no open PR") for every service."""
+    out = introspect._git(["rev-parse", "--verify", "refs/remotes/origin/__no_such_ref__"])
+    assert out == ""
+
+
 def test_config_tab_default_is_a_real_tab():
     """Regression guard: state.configTab must be one of renderConfig's tabs,
     or the Operations view renders blank until the user clicks a tab."""

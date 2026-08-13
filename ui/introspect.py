@@ -43,6 +43,11 @@ def _git(args: list[str]) -> str:
             text=True,
             timeout=5,
         )
+        # Failure must look like absence (""), never a truthy echo: on error
+        # git still prints the offending argument to stdout (e.g. rev-parse
+        # of a missing ref echoes "origin/service/x" before failing).
+        if out.returncode != 0:
+            return ""
         return out.stdout.strip()
     except Exception:
         return ""
