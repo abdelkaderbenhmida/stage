@@ -18,19 +18,15 @@
         </div>
       </div>
 
-      <div class="nav-item active" data-view="topology"><span class="ico">◉</span> Topology</div>
-      <div class="nav-item" data-view="apps"><span class="ico">＋</span> Apps
+      <div class="nav-item active" data-view="topology"><span class="ico">◉</span> Platform Map</div>
+      <div class="nav-item" data-view="apps"><span class="ico">＋</span> Apps & Services
         <span class="badge" id="nav-apps">0</span>
       </div>
       <div class="nav-item" data-view="overview"><span class="ico">▤</span> Overview</div>
       <div class="nav-item" data-view="services"><span class="ico">◷</span> Services
         <span class="badge" id="nav-services">0</span>
       </div>
-      <div class="nav-item" data-view="helm"><span class="ico">⬡</span> Helm</div>
-      <div class="nav-item" data-view="ci"><span class="ico">⤳</span> CI/CD</div>
-      <div class="nav-item" data-view="vault"><span class="ico">⬢</span> Vault</div>
-      <div class="nav-item" data-view="monitoring"><span class="ico">◔</span> Monitoring</div>
-      <div class="nav-item" data-view="argocd"><span class="ico">⇌</span> ArgoCD</div>
+      <div class="nav-item" data-view="config"><span class="ico">⚙</span> Operations</div>
 
       <div class="spacer"></div>
       <div style="padding:0 8px;display:flex;gap:12px;align-items:center">
@@ -54,16 +50,20 @@
       <section class="view" id="view-apps"></section>
       <section class="view" id="view-overview"></section>
       <section class="view" id="view-services"></section>
-      <section class="view" id="view-helm"></section>
-      <section class="view" id="view-ci"></section>
-      <section class="view" id="view-vault"></section>
-      <section class="view" id="view-monitoring"></section>
-      <section class="view" id="view-argocd"></section>
+      <section class="view" id="view-config"></section>
     </main>
   </div>
 
   <div class="topo-tooltip" id="topo-tooltip"></div>
   <div class="toast" id="toast"></div>
+  <div class="detail-panel" id="detail-panel">
+    <div class="detail-header">
+      <span id="detail-title"></span>
+      <button class="detail-close" onclick="closeDetail()">✕</button>
+    </div>
+    <div class="detail-content" id="detail-content"></div>
+  </div>
+  <div class="detail-overlay" id="detail-overlay" onclick="closeDetail()"></div>
 
   <script src="/static/app.js"></script>
 </body>

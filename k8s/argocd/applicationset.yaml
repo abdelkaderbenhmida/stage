@@ -1,8 +1,11 @@
-# One ArgoCD Application per discovered service — the git `files` generator
-# scans `app/*/main.py` (flat) and `app/*/*/main.py` (grouped apps), so ANY
-# directory under app/ that implements the service contract becomes an app.
-# `app/shared` is excluded automatically (no main.py). Nested services get
-# the k8s name "<app>-<service>". No service name appears anywhere in this file.
+# One ArgoCD Application per discovered service. Uses the git `directories`
+# generator (path presence only, no file content parsed — the `files`
+# generator would try to YAML-parse main.py itself and fail). Two path
+# generators cover flat (app/<service>) and grouped (app/<app>/<service>)
+# layouts; `app/shared` is excluded as a structural convention (utility
+# code, not a service), same exclusion the discovery script uses.
+# Nested services get the k8s name "<app>-<service>". No service name is
+# hardcoded anywhere in this file.
 apiVersion: argoproj.io/v1alpha1
 kind: ApplicationSet
 metadata:
@@ -16,15 +19,21 @@ spec:
   generators:
     - git:
         repoURL: https://github.com/<owner>/<repo>.git
-        revision: main
-        files:
-          - path: "app/*/main.py"
-          - path: "app/*/*/main.py"
+        revision: secondary
+        directories:
+          - path: "app/*"
+          - path: "app/shared"
+            exclude: true
+    - git:
+        repoURL: https://github.com/<owner>/<repo>.git
+        revision: secondary
+        directories:
+          - path: "app/*/*"
   template:
     metadata:
-      name: '{{ $p := splitList "/" .path }}{{ if eq (len $p) 4 }}{{ index $p 1 }}-{{ index $p 2 }}{{ else }}{{ index $p 1 }}{{ end }}'
+      name: '{{ $p := splitList "/" .path.path }}{{ if eq (len $p) 3 }}{{ index $p 1 }}-{{ index $p 2 }}{{ else }}{{ index $p 1 }}{{ end }}'
       labels:
-        app.kubernetes.io/name: '{{ $p := splitList "/" .path }}{{ if eq (len $p) 4 }}{{ index $p 1 }}-{{ index $p 2 }}{{ else }}{{ index $p 1 }}{{ end }}'
+        app.kubernetes.io/name: '{{ $p := splitList "/" .path.path }}{{ if eq (len $p) 3 }}{{ index $p 1 }}-{{ index $p 2 }}{{ else }}{{ index $p 1 }}{{ end }}'
         app.kubernetes.io/part-of: devops-platform
       finalizers:
         - resources-finalizer.argocd.argoproj.io
@@ -32,12 +41,14 @@ spec:
       project: devops-platform
       source:
         repoURL: https://github.com/<owner>/<repo>.git
-        targetRevision: main
+        targetRevision: secondary
         path: k8s/apps/chart
         helm:
           parameters:
             - name: services[0].name
-              value: '{{ $p := splitList "/" .path }}{{ if eq (len $p) 4 }}{{ index $p 1 }}-{{ index $p 2 }}{{ else }}{{ index $p 1 }}{{ end }}'
+              value: '{{ $p := splitList "/" .path.path }}{{ if eq (len $p) 3 }}{{ index $p 1 }}-{{ index $p 2 }}{{ else }}{{ index $p 1 }}{{ end }}'
+            - name: renderShared
+              value: "false"
       destination:
         server: https://kubernetes.default.svc
         namespace: devops-platform

@@ -7,11 +7,13 @@ metadata:
   labels:
     app.kubernetes.io/name: vault
     app.kubernetes.io/part-of: devops-platform
-    # Pod Security Admission: enforce=baseline. Vault needs root for
-    # IPC_LOCK + mlock which restricted disallows.
+    # Pod Security Admission: enforce=privileged. Vault needs IPC_LOCK
+    # (mlock, prevents secrets swapping to disk) which baseline still
+    # disallows — any added capability is rejected under baseline, not
+    # just the restricted profile.
     # DEV-ONLY override — production must tune the Vault Deployment
     # securityContext explicitly rather than relaxing the namespace.
-    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/enforce: privileged
     pod-security.kubernetes.io/audit: restricted
     pod-security.kubernetes.io/warn: restricted
 ---
@@ -140,8 +142,13 @@ spec:
               type: RuntimeDefault
             capabilities:
               drop: ["ALL"]
-              # Vault needs CAP_SETFCAP in nested-virt dev env.
-              add: ["IPC_LOCK", "NET_RAW"]
+              # IPC_LOCK: mlock, prevents secrets from swapping to disk.
+              # SETFCAP: vault's entrypoint self-applies cap_ipc_lock via
+              # setcap on its own binary at startup — needs this to do so.
+              # SETUID/SETGID: entrypoint runs as root then su-exec's down
+              # to the vault user — su-exec needs these to drop privilege.
+              # NET_RAW: needed in this nested-virt dev env's network stack.
+              add: ["IPC_LOCK", "SETFCAP", "SETUID", "SETGID", "NET_RAW"]
           livenessProbe:
             httpGet:
               path: /v1/sys/health?standbyok=true

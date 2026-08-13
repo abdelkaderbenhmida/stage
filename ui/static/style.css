@@ -361,9 +361,131 @@ pre.code .tk-dim { color: var(--dim); }
 
 .kbd { font-family: var(--mono); font-size: 11px; color: var(--dim); border: 1px solid var(--border); border-radius: 5px; padding: 1px 6px; background: var(--panel2); }
 
+/* ─────────── Configuration ─────────── */
+.cfg-tabs {
+  display: flex; gap: 2px; margin-bottom: 24px; border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+.cfg-tab {
+  background: none; border: none; color: var(--muted); font-size: 12px; font-weight: 600;
+  cursor: pointer; padding: 12px 16px; text-transform: uppercase; letter-spacing: .4px;
+  border-bottom: 2px solid transparent; transition: all .15s;
+}
+.cfg-tab:hover { color: var(--accent); }
+.cfg-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+.cfg-content {
+  max-height: calc(100vh - 300px); overflow-y: auto; padding-right: 16px;
+}
+
+.cfg-section { margin-bottom: 28px; }
+.cfg-section h3 { font-size: 13px; font-weight: 700; text-transform: uppercase; color: var(--accent);
+  letter-spacing: .4px; margin-bottom: 12px; border-bottom: 1px solid var(--border); padding-bottom: 8px; }
+
+.cfg-stat { font-size: 12px; color: var(--muted); margin-bottom: 12px; font-weight: 600; }
+.cfg-error { color: var(--red); font-size: 12px; padding: 8px; background: rgba(248,113,113,.08);
+  border: 1px solid rgba(248,113,113,.2); border-radius: 6px; margin-bottom: 12px; }
+
+.cfg-item {
+  display: flex; justify-content: space-between; align-items: flex-start; gap: 12px;
+  padding: 8px 0; border-bottom: 1px solid rgba(90,110,150,.1); font-size: 12px;
+}
+.cfg-item:last-child { border-bottom: none; }
+.cfg-item span:first-child { flex: 1; color: var(--muted); }
+.cfg-item .val { color: var(--accent); font-family: var(--mono); font-size: 11px; flex-shrink: 0; text-align: right; }
+.cfg-item .val.accent { color: var(--accent2); }
+.cfg-item .val.critical { color: var(--red); }
+.cfg-item .small { font-size: 10px; }
+.cfg-item .mono { font-family: var(--mono); }
+
+.cfg-job { font-weight: 700; color: var(--accent); font-size: 12px; margin-bottom: 8px; }
+.cfg-target { margin-bottom: 16px; padding: 12px; background: rgba(76,194,255,.06); border-radius: 6px;
+  border: 1px solid rgba(76,194,255,.12); }
+.cfg-target-name { font-weight: 600; color: var(--accent); margin-bottom: 8px; text-transform: capitalize; }
+.cfg-rule { padding: 8px; margin-bottom: 8px; background: rgba(76,194,255,.04); border-radius: 4px; }
+.cfg-code { background: var(--panel2); border: 1px solid var(--border); border-radius: 6px;
+  padding: 10px 12px; font-family: var(--mono); font-size: 11px; color: var(--muted);
+  overflow-x: auto; margin: 8px 0; line-height: 1.4; }
+
+.cfg-loading { padding: 40px; text-align: center; color: var(--muted); font-size: 13px; }
+
+.cfg-offline {
+  display: flex; align-items: center; gap: 14px; padding: 20px;
+  background: rgba(248,113,113,.06); border: 1px solid rgba(248,113,113,.2); border-radius: 10px;
+}
+.cfg-offline-title { font-weight: 700; color: var(--red); font-size: 14px; }
+.cfg-offline-err { color: var(--muted); font-size: 11px; margin-top: 4px; word-break: break-word; }
+
+.cfg-toolbar {
+  display: flex; align-items: center; gap: 10px; margin-bottom: 18px; flex-wrap: wrap;
+}
+.cfg-repo { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+
+.run-list { display: flex; flex-direction: column; gap: 8px; }
+.run-row, .app-row {
+  display: flex; align-items: center; gap: 14px; padding: 12px 14px;
+  background: var(--panel2); border: 1px solid var(--border); border-radius: 10px;
+  flex-wrap: wrap;
+}
+.run-main, .app-row-main { display: flex; align-items: center; gap: 12px; flex: 1; min-width: 200px; }
+.run-title, .app-row-name { font-weight: 700; font-size: 13px; }
+.run-meta, .app-row-meta { font-size: 11px; color: var(--muted); margin-top: 2px; }
+.run-actions { display: flex; gap: 6px; margin-left: auto; }
+.run-actions a.act-btn { text-decoration: none; }
+
+/* ─────────── Detail Panel ─────────── */
+.detail-overlay {
+  display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(0,0,0,.5); z-index: 998; backdrop-filter: blur(2px);
+}
+.detail-overlay.show { display: block; }
+
+.detail-panel {
+  display: none; position: fixed; right: 0; top: 0; width: 420px; height: 100vh;
+  background: var(--panel-solid); border-left: 1px solid var(--border-hi);
+  z-index: 999; flex-direction: column; box-shadow: var(--shadow);
+  transform: translateX(100%); transition: transform .25s ease-out;
+}
+.detail-panel.show { display: flex; transform: translateX(0); }
+
+.detail-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 18px; border-bottom: 1px solid var(--border); gap: 12px;
+}
+.detail-header > span { font-weight: 700; font-size: 16px; color: var(--accent); }
+.detail-close {
+  background: none; border: none; color: var(--muted); font-size: 20px;
+  cursor: pointer; width: 32px; height: 32px; display: flex; align-items: center;
+  justify-content: center; border-radius: 6px; transition: all .12s;
+}
+.detail-close:hover { background: var(--panel2); color: var(--accent); }
+
+.detail-content {
+  flex: 1; overflow-y: auto; padding: 16px;
+}
+.detail-section {
+  margin-bottom: 24px;
+}
+.detail-section-title {
+  font-weight: 700; font-size: 12px; text-transform: uppercase;
+  color: var(--muted); letter-spacing: .5px; margin-bottom: 12px;
+  border-bottom: 1px solid var(--border); padding-bottom: 8px;
+}
+.detail-item {
+  padding: 10px 12px; background: rgba(76,194,255,.06); border-radius: 8px;
+  margin-bottom: 8px; border: 1px solid rgba(76,194,255,.12);
+}
+.detail-item-label {
+  font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .3px;
+}
+.detail-item-value {
+  font-family: var(--mono); font-size: 13px; color: var(--accent); margin-top: 4px; word-break: break-all;
+}
+
 @media (max-width: 900px) {
   .layout { flex-direction: column; }
   .sidebar { width: 100%; height: auto; position: static; flex-direction: row; flex-wrap: wrap; }
   .content { padding: 18px; }
   .search input { width: 120px; }
+  .detail-panel { width: 100%; }
 }

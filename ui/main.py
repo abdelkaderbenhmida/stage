@@ -121,6 +121,133 @@ def health() -> dict:
     return {"status": "ok", "uptime_s": int(time.time() - START_TIME)}
 
 
+# ─── Live status + actions ───
+
+class RunRef(BaseModel):
+    run_id: str
+
+
+class WorkflowRef(BaseModel):
+    workflow: str = "ci-cd.yml"
+    ref: str = ""
+
+
+@app.get("/api/live/ci")
+def api_live_ci() -> dict:
+    return introspect.ci_runs()
+
+
+@app.post("/api/live/ci/trigger")
+def api_live_ci_trigger(body: WorkflowRef) -> dict:
+    return _guard(introspect.ci_trigger, body.workflow, body.ref or None)
+
+
+@app.post("/api/live/ci/rerun")
+def api_live_ci_rerun(body: RunRef) -> dict:
+    return _guard(introspect.ci_rerun, body.run_id)
+
+
+@app.post("/api/live/ci/cancel")
+def api_live_ci_cancel(body: RunRef) -> dict:
+    return _guard(introspect.ci_cancel, body.run_id)
+
+
+@app.get("/api/live/cluster")
+def api_live_cluster() -> dict:
+    return introspect.cluster_status()
+
+
+@app.get("/api/live/pods")
+def api_live_pods(namespace: str = "") -> dict:
+    return introspect.pods_status(namespace or None)
+
+
+@app.get("/api/live/argocd")
+def api_live_argocd() -> dict:
+    return introspect.argocd_apps()
+
+
+class AppRef(BaseModel):
+    name: str
+
+
+@app.post("/api/live/argocd/sync")
+def api_live_argocd_sync(body: AppRef) -> dict:
+    return _guard(introspect.argocd_sync, body.name)
+
+
+@app.post("/api/live/argocd/refresh")
+def api_live_argocd_refresh(body: AppRef) -> dict:
+    return _guard(introspect.argocd_refresh, body.name)
+
+
+@app.get("/api/live/argocd/admin-password")
+def api_live_argocd_admin_password() -> dict:
+    return introspect.argocd_admin_password()
+
+
+@app.get("/api/live/vault")
+def api_live_vault() -> dict:
+    return introspect.vault_status()
+
+
+@app.get("/api/live/vault/secrets")
+def api_live_vault_secrets(path: str = "secret/devops-platform") -> dict:
+    return introspect.vault_secrets(path)
+
+
+@app.get("/api/live/alerts")
+def api_live_alerts() -> dict:
+    return introspect.alerts_firing()
+
+
+# ─── Dashboards (on-demand port-forward) ───
+
+@app.post("/api/live/dashboard/{tool}/open")
+def api_dashboard_open(tool: str) -> dict:
+    return _guard(introspect.open_dashboard, tool)
+
+
+@app.post("/api/live/dashboard/{tool}/close")
+def api_dashboard_close(tool: str) -> dict:
+    return _guard(introspect.close_dashboard, tool)
+
+
+@app.get("/api/live/dashboard/status")
+def api_dashboard_status() -> dict:
+    return introspect.dashboard_status()
+
+
+# ─── Pod operations ───
+
+class PodRef(BaseModel):
+    namespace: str
+    pod: str
+
+
+@app.get("/api/live/pods/{namespace}/{pod}/logs")
+def api_pod_logs(namespace: str, pod: str, tail: int = 200) -> dict:
+    return introspect.pod_logs(namespace, pod, tail)
+
+
+@app.post("/api/live/pods/restart")
+def api_pod_restart(body: PodRef) -> dict:
+    return _guard(introspect.pod_restart, body.namespace, body.pod)
+
+
+@app.get("/api/live/pods/find")
+def api_pod_find(namespace: str, prefix: str) -> dict:
+    name = introspect.find_pod(namespace, prefix)
+    return {"pod": name}
+
+
+# ─── CI run logs ───
+
+@app.get("/api/live/ci/{run_id}/logs")
+def api_ci_run_logs(run_id: str) -> dict:
+    return introspect.ci_run_logs(run_id)
+
+
 def _guard(fn: Callable[..., dict[str, Any]], *args: Any) -> dict[str, Any]:
     try:
         return fn(*args)

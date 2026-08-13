@@ -33,7 +33,7 @@ spec:
             slo: availability
           annotations:
             summary: "Availability < 99.9% over 30d on {{ $labels.job }}"
-            description: "{{ $labels.job }} availability is {{ printf \"%.4f\" (1 - $value / 100) }} (target 99.9%) over the last 30 days."
+            description: "{{ $labels.job }} unavailability is {{ printf \"%.4f\" $value }}%% (threshold 0.1%%, target 99.9%% availability) over the last 30 days."
     # ── Latency: P95 > 200ms ──
     - name: slo-latency
       interval: 5m

@@ -1,9 +1,9 @@
 "use strict";
 
-const state = { data: null, view: "topology", search: "", timer: null };
+const state = { data: null, view: "topology", search: "", timer: null, detail: null, configTab: "helm" };
 
 const $ = (id) => document.getElementById(id);
-const VIEWS = ["topology", "apps", "overview", "services", "helm", "ci", "vault", "monitoring", "argocd"];
+const VIEWS = ["topology", "apps", "overview", "services", "config"];
 
 function esc(s) {
   return String(s ?? "")
@@ -19,7 +19,15 @@ function toast(msg, ok = true) {
   t.textContent = msg;
   t.className = `toast show ${ok ? "ok" : "err"}`;
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { t.className = "toast"; }, 4200);
+  toastTimer = setTimeout(() => { t.className = "toast"; }, 5000);
+}
+
+function loading(show = true) {
+  const t = $("toast");
+  if (show) {
+    t.textContent = "…";
+    t.className = "toast show";
+  }
 }
 
 async function api(method, url, body) {
@@ -146,11 +154,7 @@ function render() {
   renderApps();
   renderOverview();
   renderServices();
-  renderHelm();
-  renderCI();
-  renderVault();
-  renderMonitoring();
-  renderArgocd();
+  renderConfig();
 }
 
 /* ═══════════ TOPOLOGY ═══════════ */
@@ -338,42 +342,50 @@ async function createAppFlow() {
   const name = slugify(raw);
   if (!name) { toast("invalid app name", false); return; }
   try {
+    loading(true);
     const r = await api("POST", "/api/apps", { name });
-    toast(r.message);
+    toast(r.message || `✓ app '${name}' created`, true);
     await refresh();
     state.search = "";
     switchView("apps");
-  } catch (e) { toast(e.message, false); }
+  } catch (e) { toast("✕ " + e.message, false); }
 }
 
 async function deleteAppFlow(appName) {
   if (!confirm(`Delete app '${appName}' and ALL its services? The platform will prune everything downstream.`)) return;
   try {
+    loading(true);
     const r = await api("DELETE", `/api/apps/${appName}`);
-    toast(r.message);
+    toast(r.message || `✓ app '${appName}' deleted`, true);
     await refresh();
-  } catch (e) { toast(e.message, false); }
+  } catch (e) { toast("✕ " + e.message, false); }
 }
 
-async function addServiceFlow(appName) {
-  const raw = prompt(`New service in app '${appName}' (e.g. cart):`);
-  if (!raw) return;
+async function addServiceFlow(appName, raw) {
+  if (!raw) {
+    raw = prompt(`New service in app '${appName}' (e.g. cart):`);
+    if (!raw) return;
+  }
   const name = slugify(raw);
   if (!name) { toast("invalid service name", false); return; }
   try {
+    loading(true);
     const r = await api("POST", `/api/apps/${appName}/services`, { name });
-    toast(r.message);
+    toast(r.message || `✓ service '${name}' added`, true);
     await refresh();
-  } catch (e) { toast(e.message, false); }
+    const inp = $(`add-svc-${appName}`);
+    if (inp) inp.value = "";
+  } catch (e) { toast("✕ " + e.message, false); }
 }
 
 async function deleteServiceFlow(appName, svcName) {
   if (!confirm(`Delete service '${svcName}'? CI stops building it, ArgoCD prunes its app, Vault role idles.`)) return;
   try {
+    loading(true);
     const r = await api("DELETE", `/api/apps/${appName}/services/${svcName}`);
-    toast(r.message);
+    toast(r.message || `✓ service '${svcName}' deleted`, true);
     await refresh();
-  } catch (e) { toast(e.message, false); }
+  } catch (e) { toast("✕ " + e.message, false); }
 }
 
 function renderApps() {
@@ -394,7 +406,7 @@ function renderApps() {
         </div>`).join("");
 
     return `
-      <div class="card app-card">
+      <div class="card app-card" style="cursor:pointer" onclick="switchView('services')">
         <div class="app-head">
           <div class="app-icon">${esc(a.name[0].toUpperCase())}</div>
           <div>
@@ -403,11 +415,11 @@ function renderApps() {
           </div>
           <span class="sp"></span>
           ${pill(`${a.services.length} service${a.services.length === 1 ? "" : "s"}`, isDefault ? "muted" : "accent")}
-          <button class="btn danger sm" data-del-app="${esc(a.name)}" ${isDefault ? "disabled title='legacy flat group — not deletable'" : ""}>delete app</button>
+          <button class="btn danger sm" onclick="event.stopPropagation()" data-del-app="${esc(a.name)}" ${isDefault ? "disabled title='legacy flat group — not deletable'" : ""}>delete app</button>
         </div>
         ${svcList || `<div class="empty">no services yet</div>`}
         <div class="add-svc">
-          <input placeholder="new service name…" id="add-svc-${esc(a.name)}" onkeydown="if(event.key==='Enter')addServiceFlow('${esc(a.name)}')">
+          <input placeholder="new service name…" id="add-svc-${esc(a.name)}" onkeydown="if(event.key==='Enter'){const inp=event.target;addServiceFlow('${esc(a.name)}',inp.value)}">
           <button class="btn ghost sm" data-add-svc="${esc(a.name)}">＋ add service</button>
         </div>
       </div>`;
@@ -527,11 +539,7 @@ function renderOverview() {
 
   $("view-overview").querySelectorAll("[data-ovc-svc]").forEach((c) => {
     c.addEventListener("click", () => {
-      state.search = c.dataset.ovcSvc;
-      switchView("services");
-      renderServices();
-      const inp = $("svc-search");
-      if (inp) inp.value = state.search;
+      showDetail(c.dataset.ovcSvc);
     });
   });
 
@@ -554,7 +562,7 @@ function renderServices() {
   const list = d.services.filter((s) => !q || s.name.toLowerCase().includes(q) || s.title.toLowerCase().includes(q));
 
   const rows = list.map((s) => `
-    <tr>
+    <tr onclick="showDetail('${esc(s.name)}')" style="cursor:pointer">
       <td><span class="mono" style="color:var(--accent);font-weight:700">${esc(s.name)}</span></td>
       <td><span class="chip">${esc(s.app)}</span></td>
       <td>${esc(s.title)}</td>
@@ -564,7 +572,7 @@ function renderServices() {
       <td>${s.has_requirements ? pill("pinned", "green") : pill("none", "red")}</td>
       <td>${s.uses_vault ? pill("vault", "accent") : pill("none", "muted")}</td>
       <td><div class="chips" style="gap:4px">${s.endpoints.map((e) => `<span class="chip">${esc(e)}</span>`).join("")}</div></td>
-      <td><button class="act-btn danger" data-del-svc-row="${esc(s.app)}" data-svc-row="${esc(s.key.split("/").pop())}">✕</button></td>
+      <td onclick="event.stopPropagation()"><button class="act-btn danger" data-del-svc-row="${esc(s.app)}" data-svc-row="${esc(s.key.split("/").pop())}">✕</button></td>
     </tr>`).join("");
 
   $("view-services").innerHTML = `
@@ -898,6 +906,405 @@ function renderArgocd() {
       <thead><tr><th>Name</th><th>Repo</th><th>Path</th></tr></thead>
       <tbody>${appRows || `<tr><td colspan="3" class="empty">none</td></tr>`}</tbody>
     </table></div>`;
+}
+
+/* ═══════════ CONFIGURATION — live status + real actions ═══════════ */
+
+const liveCache = { ci: null, argocd: null, vault: null, alerts: null, cluster: null };
+
+function offlineCard(label, err) {
+  return `<div class="cfg-offline">
+    <span class="status-dot bad"></span>
+    <div>
+      <div class="cfg-offline-title">${esc(label)} unreachable</div>
+      <div class="cfg-offline-err mono">${esc(err || "connection failed")}</div>
+    </div>
+  </div>`;
+}
+
+function renderConfig() {
+  const tabs = ["ci", "argocd", "vault", "monitoring"];
+  const tabHtml = tabs.map((t) => `
+    <button class="cfg-tab ${t === state.configTab ? "active" : ""}" onclick="switchConfigTab('${t}')">
+      ${t.toUpperCase()}
+    </button>`).join("");
+
+  $("view-config").innerHTML = `
+    <div class="head" style="padding:0 0 16px">
+      <h1>Operations</h1>
+      <div class="sub">Real status from GitHub Actions, ArgoCD, Vault and the cluster — with buttons that actually do things.</div>
+    </div>
+    <div class="cfg-tabs">${tabHtml}</div>
+    <div class="cfg-content" id="cfg-body"><div class="cfg-loading">loading live status…</div></div>`;
+
+  loadConfigTab(state.configTab);
+}
+
+function switchConfigTab(t) {
+  state.configTab = t;
+  renderConfig();
+}
+
+async function loadConfigTab(tab) {
+  const body = $("cfg-body");
+  if (!body) return;
+  try {
+    if (tab === "ci") await renderCiTab(body);
+    else if (tab === "argocd") await renderArgocdTab(body);
+    else if (tab === "vault") await renderVaultTab(body);
+    else if (tab === "monitoring") await renderMonitoringTab(body);
+  } catch (e) {
+    body.innerHTML = offlineCard(tab, e.message);
+  }
+}
+
+function refreshConfigTab() { loadConfigTab(state.configTab); }
+
+/* ─── shared: open real dashboard via on-demand port-forward ─── */
+
+async function openDashboard(tool, label) {
+  try {
+    loading(true);
+    const r = await api("POST", `/api/live/dashboard/${tool}/open`);
+    toast(`✓ ${label} ready at ${r.url}`, true);
+    window.open(r.url, "_blank");
+  } catch (e) { toast("✕ " + e.message, false); }
+}
+
+/* ─── shared: log viewer modal ─── */
+
+function showLogs(title, logText) {
+  $("detail-title").textContent = title;
+  $("detail-content").innerHTML = `<pre class="cfg-code" style="white-space:pre-wrap;max-height:70vh">${esc(logText || "(empty)")}</pre>`;
+  $("detail-panel").classList.add("show");
+  $("detail-overlay").classList.add("show");
+}
+
+async function viewPodLogs(namespace, pod, label) {
+  try {
+    loading(true);
+    const r = await api("GET", `/api/live/pods/${namespace}/${pod}/logs?tail=200`);
+    if (!r.reachable) { toast("✕ " + r.error, false); return; }
+    showLogs(label || pod, r.log);
+  } catch (e) { toast("✕ " + e.message, false); }
+}
+
+async function restartPod(namespace, pod) {
+  if (!confirm(`Restart pod '${pod}' in namespace '${namespace}'? It will be deleted and recreated by its controller.`)) return;
+  try {
+    loading(true);
+    const r = await api("POST", "/api/live/pods/restart", { namespace, pod });
+    toast("✓ " + r.message, true);
+  } catch (e) { toast("✕ " + e.message, false); }
+}
+
+async function viewCiLogs(runId) {
+  try {
+    loading(true);
+    const r = await api("GET", `/api/live/ci/${runId}/logs`);
+    if (!r.reachable) { toast("✕ " + r.error, false); return; }
+    showLogs(`Run ${runId} logs`, r.log);
+  } catch (e) { toast("✕ " + e.message, false); }
+}
+
+/* ─── CI/CD: real GitHub Actions ─── */
+
+async function renderCiTab(body) {
+  body.innerHTML = `<div class="cfg-loading">fetching workflow runs…</div>`;
+  const data = await api("GET", "/api/live/ci");
+  liveCache.ci = data;
+  if (!data.reachable) { body.innerHTML = offlineCard("GitHub Actions", data.error); return; }
+
+  const statusPill = (r) => {
+    if (r.status === "in_progress" || r.status === "queued") return pill(r.status, "amber");
+    if (r.conclusion === "success") return pill("success", "green");
+    if (r.conclusion === "failure") return pill("failure", "red");
+    if (r.conclusion === "cancelled") return pill("cancelled", "muted");
+    return pill(r.conclusion || r.status || "unknown", "muted");
+  };
+
+  const rows = data.runs.map((r) => `
+    <div class="run-row">
+      <div class="run-main">
+        ${statusPill(r)}
+        <div>
+          <div class="run-title">${esc(r.displayTitle)}</div>
+          <div class="run-meta">${esc(r.workflowName)} · ${esc(r.headBranch)} · ${esc(r.event)} · ${esc(new Date(r.createdAt).toLocaleString())}</div>
+        </div>
+      </div>
+      <div class="run-actions">
+        <a class="act-btn" href="${esc(r.url)}" target="_blank" rel="noopener">↗ open in GitHub</a>
+        ${r.status === "completed" ? `<button class="act-btn" onclick="viewCiLogs('${r.databaseId}')">▤ logs</button>` : ""}
+        ${r.conclusion === "failure" ? `<button class="act-btn" onclick="ciRerun('${r.databaseId}')">↻ rerun failed</button>` : ""}
+        ${r.status === "in_progress" || r.status === "queued" ? `<button class="act-btn danger" onclick="ciCancel('${r.databaseId}')">✕ cancel</button>` : ""}
+      </div>
+    </div>`).join("");
+
+  body.innerHTML = `
+    <div class="cfg-toolbar">
+      <span class="cfg-repo">${esc(data.repo)}</span>
+      <span class="sp"></span>
+      <button class="btn sm" onclick="ciTrigger()">▶ run workflow</button>
+      <button class="act-btn" onclick="refreshConfigTab()">↻ refresh</button>
+    </div>
+    <div class="run-list">${rows || `<div class="empty">no runs found</div>`}</div>`;
+}
+
+async function ciTrigger() {
+  try {
+    loading(true);
+    const r = await api("POST", "/api/live/ci/trigger", { workflow: "ci-cd.yml" });
+    toast("✓ " + r.message, true);
+    setTimeout(refreshConfigTab, 2000);
+  } catch (e) { toast("✕ " + e.message, false); }
+}
+
+async function ciRerun(runId) {
+  if (!confirm(`Re-run failed jobs for run ${runId}?`)) return;
+  try {
+    loading(true);
+    const r = await api("POST", "/api/live/ci/rerun", { run_id: runId });
+    toast("✓ " + r.message, true);
+    setTimeout(refreshConfigTab, 2000);
+  } catch (e) { toast("✕ " + e.message, false); }
+}
+
+async function ciCancel(runId) {
+  if (!confirm(`Cancel run ${runId}?`)) return;
+  try {
+    loading(true);
+    const r = await api("POST", "/api/live/ci/cancel", { run_id: runId });
+    toast("✓ " + r.message, true);
+    setTimeout(refreshConfigTab, 2000);
+  } catch (e) { toast("✕ " + e.message, false); }
+}
+
+/* ─── ArgoCD: real Application CRDs + sync ─── */
+
+async function renderArgocdTab(body) {
+  body.innerHTML = `<div class="cfg-loading">fetching applications…</div>`;
+  const data = await api("GET", "/api/live/argocd");
+  liveCache.argocd = data;
+  if (!data.reachable) { body.innerHTML = offlineCard("ArgoCD / cluster", data.error); return; }
+
+  const syncCls = (s) => s === "Synced" ? "green" : s === "OutOfSync" ? "amber" : "muted";
+  const healthCls = (s) => s === "Healthy" ? "green" : s === "Degraded" ? "red" : s === "Progressing" ? "amber" : "muted";
+
+  const rows = (data.apps || []).map((a) => `
+    <div class="app-row">
+      <div class="app-row-main">
+        <div class="app-row-name">${esc(a.name)}</div>
+        <div class="app-row-meta">${esc(a.path)} @ ${esc(a.revision || "–")}</div>
+      </div>
+      ${pill(a.sync_status, syncCls(a.sync_status))}
+      ${pill(a.health_status, healthCls(a.health_status))}
+      <div class="run-actions">
+        <button class="act-btn" onclick="argoRefresh('${esc(a.name)}')">↻ refresh</button>
+        <button class="act-btn" onclick="argoSync('${esc(a.name)}')">⇌ sync</button>
+      </div>
+    </div>`).join("");
+
+  body.innerHTML = `
+    <div class="cfg-toolbar">
+      <span class="cfg-repo">${data.apps.length} applications</span>
+      <span class="sp"></span>
+      <button class="btn sm" onclick="openDashboard('argocd','ArgoCD UI')">⧉ open ArgoCD dashboard</button>
+      <button class="act-btn" onclick="showArgoCreds()">🔑 admin password</button>
+      <button class="act-btn" onclick="refreshConfigTab()">↻ refresh all</button>
+    </div>
+    <div class="run-list">${rows || `<div class="empty">no applications found</div>`}</div>`;
+}
+
+async function argoSync(name) {
+  if (!confirm(`Trigger sync for '${name}'? This applies the latest git state to the cluster.`)) return;
+  try {
+    loading(true);
+    const r = await api("POST", "/api/live/argocd/sync", { name });
+    toast("✓ " + r.message, true);
+    setTimeout(refreshConfigTab, 1500);
+  } catch (e) { toast("✕ " + e.message, false); }
+}
+
+async function argoRefresh(name) {
+  try {
+    loading(true);
+    const r = await api("POST", "/api/live/argocd/refresh", { name });
+    toast("✓ " + r.message, true);
+    setTimeout(refreshConfigTab, 1500);
+  } catch (e) { toast("✕ " + e.message, false); }
+}
+
+async function showArgoCreds() {
+  try {
+    loading(true);
+    const r = await api("GET", "/api/live/argocd/admin-password");
+    if (!r.reachable) { toast("✕ " + r.error, false); return; }
+    showLogs("ArgoCD admin credentials", `username: ${r.username}\npassword: ${r.password}`);
+  } catch (e) { toast("✕ " + e.message, false); }
+}
+
+/* ─── Vault: real seal status + secret listing ─── */
+
+async function renderVaultTab(body) {
+  body.innerHTML = `<div class="cfg-loading">checking vault…</div>`;
+  const data = await api("GET", "/api/live/vault");
+  liveCache.vault = data;
+  if (!data.reachable) { body.innerHTML = offlineCard("Vault", data.error); return; }
+
+  let secretsHtml = `<div class="cfg-loading">listing secrets…</div>`;
+  body.innerHTML = `
+    <div class="cfg-toolbar">
+      <span class="status-dot ${data.sealed ? "bad" : "ok"}"></span>
+      <span class="cfg-repo">${data.sealed ? "SEALED" : "UNSEALED"} · v${esc(data.version)}</span>
+      <span class="sp"></span>
+      <button class="btn sm" onclick="openDashboard('vault','Vault UI')">⧉ open Vault dashboard</button>
+      <button class="act-btn" onclick="refreshConfigTab()">↻ refresh</button>
+    </div>
+    <div class="grid two mb">
+      <div class="cfg-target"><div class="cfg-item"><span>Initialized</span><span class="val">${data.initialized ? "✓ yes" : "✗ no"}</span></div></div>
+      <div class="cfg-target"><div class="cfg-item"><span>HA enabled</span><span class="val">${data.ha_enabled ? "✓ yes" : "– no"}</span></div></div>
+    </div>
+    <div class="cfg-section"><h3>Secrets at secret/devops-platform</h3><div id="vault-secrets">${secretsHtml}</div></div>`;
+
+  try {
+    const sec = await api("GET", "/api/live/vault/secrets");
+    const box = $("vault-secrets");
+    if (!box) return;
+    if (!sec.reachable) { box.innerHTML = offlineCard("secret listing", sec.error); return; }
+    box.innerHTML = (sec.keys || []).map((k) => `<div class="cfg-item"><span class="mono">${esc(k)}</span></div>`).join("") || `<div class="empty">no keys</div>`;
+  } catch (e) { /* leave loading state message */ }
+}
+
+/* ─── Monitoring: real firing alerts via Alertmanager ─── */
+
+async function renderMonitoringTab(body) {
+  body.innerHTML = `<div class="cfg-loading">checking alertmanager…</div>`;
+  const data = await api("GET", "/api/live/alerts");
+  liveCache.alerts = data;
+  if (!data.reachable) { body.innerHTML = offlineCard("Alertmanager", data.error); return; }
+
+  const sevCls = (s) => s === "critical" ? "red" : s === "warning" ? "amber" : "muted";
+  const rows = (data.alerts || []).map((a) => `
+    <div class="app-row">
+      <div class="app-row-main">
+        <div class="app-row-name">${esc(a.name)}</div>
+        <div class="app-row-meta">${esc(a.service || "–")} · firing since ${esc(new Date(a.starts_at).toLocaleString())}</div>
+      </div>
+      ${pill(a.severity || "info", sevCls(a.severity))}
+      ${pill(a.state, "amber")}
+    </div>`).join("");
+
+  body.innerHTML = `
+    <div class="cfg-toolbar">
+      <span class="status-dot ${data.alerts.length ? "bad" : "ok"}"></span>
+      <span class="cfg-repo">${data.alerts.length} alerts firing</span>
+      <span class="sp"></span>
+      <button class="btn sm" onclick="openDashboard('grafana','Grafana')">⧉ open Grafana</button>
+      <button class="btn sm" onclick="openDashboard('prometheus','Prometheus')">⧉ open Prometheus</button>
+      <button class="btn sm" onclick="openDashboard('alertmanager','Alertmanager')">⧉ open Alertmanager</button>
+      <button class="act-btn" onclick="refreshConfigTab()">↻ refresh</button>
+    </div>
+    <div class="run-list">${rows || `<div class="empty">no alerts firing — all green</div>`}</div>
+
+    <div class="cfg-section mt">
+      <h3>Pod health (monitoring namespace)</h3>
+      <div id="mon-pods"><div class="cfg-loading">loading pods…</div></div>
+    </div>`;
+
+  loadMonitoringPods();
+}
+
+async function loadMonitoringPods() {
+  try {
+    const r = await api("GET", "/api/live/pods?namespace=monitoring");
+    const box = $("mon-pods");
+    if (!box) return;
+    if (!r.reachable) { box.innerHTML = offlineCard("pods", r.error); return; }
+    box.innerHTML = r.pods.map((p) => `
+      <div class="app-row">
+        <div class="app-row-main">
+          <div class="app-row-name">${esc(p.name)}</div>
+          <div class="app-row-meta">${esc(p.phase)} · restarts: ${p.restarts}</div>
+        </div>
+        ${pill(p.ready ? "ready" : "not ready", p.ready ? "green" : "red")}
+        <div class="run-actions">
+          <button class="act-btn" onclick="viewPodLogs('monitoring','${esc(p.name)}','${esc(p.name)} logs')">▤ logs</button>
+          <button class="act-btn danger" onclick="restartPod('monitoring','${esc(p.name)}')">↻ restart</button>
+        </div>
+      </div>`).join("") || `<div class="empty">no pods</div>`;
+  } catch (e) { /* ignore */ }
+}
+
+/* ═══════════ DETAIL PANEL ═══════════ */
+
+function showDetail(serviceName) {
+  const svc = state.data.services.find((s) => s.name === serviceName);
+  if (!svc) return;
+
+  state.detail = serviceName;
+  const helm = state.data.helm.per_service?.[serviceName] || [];
+  const ci = state.data.ci.jobs.filter((j) => j.matrix.has_matrix && j.matrix.keys.includes("service"));
+  const vault = state.data.vault.per_service || {};
+
+  let content = `
+    <div class="detail-section">
+      <div class="detail-section-title">Service info</div>
+      <div class="detail-item">
+        <div class="detail-item-label">Name</div>
+        <div class="detail-item-value">${esc(svc.name)}</div>
+      </div>
+      <div class="detail-item">
+        <div class="detail-item-label">Path</div>
+        <div class="detail-item-value">${esc(svc.key)}</div>
+      </div>
+      <div class="detail-item">
+        <div class="detail-item-label">Version</div>
+        <div class="detail-item-value">${esc(svc.version)}</div>
+      </div>
+      <div class="detail-item">
+        <div class="detail-item-label">LOC</div>
+        <div class="detail-item-value">${svc.loc}</div>
+      </div>
+    </div>
+
+    <div class="detail-section">
+      <div class="detail-section-title">Endpoints</div>
+      <div class="chips" style="gap:6px">${svc.endpoints.map((e) => `<span class="chip">${esc(e)}</span>`).join("")}</div>
+    </div>
+
+    <div class="detail-section">
+      <div class="detail-section-title">Dependencies</div>
+      <div class="detail-item">
+        <div class="detail-item-label">Pinned deps</div>
+        <div class="detail-item-value">${svc.requirements_num}</div>
+      </div>
+      <div class="detail-item">
+        <div class="detail-item-label">Vault integration</div>
+        <div class="detail-item-value">${svc.uses_vault ? "✓ enabled" : "– disabled"}</div>
+      </div>
+    </div>
+
+    <div class="detail-section">
+      <div class="detail-section-title">Kubernetes</div>
+      ${helm.length ? helm.map((k) => `<span class="chip">${esc(k)}</span>`).join("") : "<span class='muted'>–</span>"}
+    </div>
+
+    <div class="detail-section">
+      <div class="detail-section-title">CI Pipeline</div>
+      ${ci.length ? `<span class="chip">${ci[0].name}</span> ${ci.length} matrix jobs` : "<span class='muted'>– no CI</span>"}
+    </div>
+  `;
+
+  $("detail-title").textContent = svc.name;
+  $("detail-content").innerHTML = content;
+  $("detail-panel").classList.add("show");
+  $("detail-overlay").classList.add("show");
+}
+
+function closeDetail() {
+  state.detail = null;
+  $("detail-panel").classList.remove("show");
+  $("detail-overlay").classList.remove("show");
 }
 
 /* ═══════════ NAV / TIMER / TOOLTIP ═══════════ */

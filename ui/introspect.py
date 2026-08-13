@@ -12,6 +12,7 @@ The Kubernetes/registry/Vault name of a nested service is "<app>-<service>".
 
 from __future__ import annotations
 
+import json
 import re
 import shutil
 import subprocess
@@ -664,3 +665,358 @@ def platform_overview(services: list[str]) -> dict[str, Any]:
     layer_ok = base["layer_checks"]
     base["status"] = "ready" if all(layer_ok.values()) else "partial"
     return base
+
+
+# ──────────────────────────────────────────────────────────────
+# LIVE STATUS + ACTIONS — real calls against GitHub, the cluster,
+# ArgoCD (as K8s CRDs) and Vault. Every function fails soft: on
+# timeout/unreachable it returns {"reachable": False, "error": ...}
+# instead of raising, so the UI can render an honest offline state.
+# ──────────────────────────────────────────────────────────────
+
+KUBECTL_TIMEOUT = 6
+GH_TIMEOUT = 25
+
+
+def _run(cmd: list[str], timeout: int = KUBECTL_TIMEOUT, input_: str | None = None) -> dict[str, Any]:
+    try:
+        out = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=timeout,
+            cwd=str(ROOT), input=input_,
+        )
+        return {"ok": out.returncode == 0, "stdout": out.stdout, "stderr": out.stderr.strip()}
+    except FileNotFoundError:
+        return {"ok": False, "stdout": "", "stderr": f"{cmd[0]} not found on PATH"}
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "stdout": "", "stderr": f"{cmd[0]} timed out after {timeout}s"}
+    except Exception as exc:  # pragma: no cover - defensive
+        return {"ok": False, "stdout": "", "stderr": str(exc)}
+
+
+def _repo_slug() -> str:
+    url = _git(["remote", "get-url", "origin"])
+    url = url.removesuffix(".git")
+    if url.startswith("git@"):
+        return url.split(":", 1)[-1]
+    return "/".join(url.split("/")[-2:])
+
+
+# ─── GitHub Actions (real, works without cluster) ───
+
+def ci_runs(limit: int = 15) -> dict[str, Any]:
+    slug = _repo_slug()
+    fields = "databaseId,name,displayTitle,status,conclusion,workflowName,headBranch,event,createdAt,url,headSha"
+    res = _run(["gh", "run", "list", "--repo", slug, "--limit", str(limit), "--json", fields], timeout=GH_TIMEOUT)
+    if not res["ok"]:
+        return {"reachable": False, "error": res["stderr"] or "gh CLI unavailable", "runs": []}
+    try:
+        runs = json.loads(res["stdout"])
+    except json.JSONDecodeError:
+        return {"reachable": False, "error": "could not parse gh output", "runs": []}
+    return {"reachable": True, "repo": slug, "runs": runs}
+
+
+def ci_trigger(workflow: str = "ci-cd.yml", ref: str | None = None) -> dict[str, Any]:
+    slug = _repo_slug()
+    ref = ref or _git(["rev-parse", "--abbrev-ref", "HEAD"]) or "main"
+    res = _run(["gh", "workflow", "run", workflow, "--repo", slug, "--ref", ref], timeout=GH_TIMEOUT)
+    if not res["ok"]:
+        raise ServiceError(res["stderr"] or "failed to trigger workflow")
+    return {"ok": True, "message": f"triggered '{workflow}' on {ref}"}
+
+
+def ci_rerun(run_id: str) -> dict[str, Any]:
+    slug = _repo_slug()
+    res = _run(["gh", "run", "rerun", run_id, "--repo", slug, "--failed"], timeout=GH_TIMEOUT)
+    if not res["ok"]:
+        raise ServiceError(res["stderr"] or f"failed to rerun {run_id}")
+    return {"ok": True, "message": f"re-running failed jobs of run {run_id}"}
+
+
+def ci_cancel(run_id: str) -> dict[str, Any]:
+    slug = _repo_slug()
+    res = _run(["gh", "run", "cancel", run_id, "--repo", slug], timeout=GH_TIMEOUT)
+    if not res["ok"]:
+        raise ServiceError(res["stderr"] or f"failed to cancel {run_id}")
+    return {"ok": True, "message": f"cancelled run {run_id}"}
+
+
+# ─── Kubernetes cluster reachability ───
+
+def cluster_status() -> dict[str, Any]:
+    res = _run(["kubectl", "get", "nodes", "-o", "json"], timeout=KUBECTL_TIMEOUT)
+    if not res["ok"]:
+        return {"reachable": False, "error": res["stderr"], "nodes": []}
+    try:
+        data = json.loads(res["stdout"])
+    except json.JSONDecodeError:
+        return {"reachable": False, "error": "could not parse kubectl output", "nodes": []}
+    nodes = []
+    for n in data.get("items", []):
+        conds = {c["type"]: c["status"] for c in n.get("status", {}).get("conditions", [])}
+        nodes.append({
+            "name": n["metadata"]["name"],
+            "ready": conds.get("Ready") == "True",
+            "version": n.get("status", {}).get("nodeInfo", {}).get("kubeletVersion"),
+        })
+    return {"reachable": True, "context": _kube_context(), "nodes": nodes}
+
+
+def _kube_context() -> str:
+    res = _run(["kubectl", "config", "current-context"], timeout=3)
+    return res["stdout"].strip() if res["ok"] else ""
+
+
+def pods_status(namespace: str | None = None) -> dict[str, Any]:
+    cmd = ["kubectl", "get", "pods", "-o", "json"]
+    cmd += ["-n", namespace] if namespace else ["-A"]
+    res = _run(cmd, timeout=KUBECTL_TIMEOUT)
+    if not res["ok"]:
+        return {"reachable": False, "error": res["stderr"], "pods": []}
+    try:
+        data = json.loads(res["stdout"])
+    except json.JSONDecodeError:
+        return {"reachable": False, "error": "could not parse kubectl output", "pods": []}
+    pods = []
+    for p in data.get("items", []):
+        st = p.get("status", {})
+        ready_conds = [c for c in st.get("conditions", []) if c["type"] == "Ready"]
+        restarts = sum(cs.get("restartCount", 0) for cs in st.get("containerStatuses", []))
+        pods.append({
+            "name": p["metadata"]["name"],
+            "namespace": p["metadata"]["namespace"],
+            "phase": st.get("phase"),
+            "ready": bool(ready_conds) and ready_conds[0]["status"] == "True",
+            "restarts": restarts,
+        })
+    return {"reachable": True, "pods": pods}
+
+
+# ─── ArgoCD — Applications are CRDs, read/sync via kubectl ───
+
+def argocd_apps() -> dict[str, Any]:
+    res = _run(["kubectl", "get", "applications.argoproj.io", "-n", "argocd", "-o", "json"], timeout=KUBECTL_TIMEOUT)
+    if not res["ok"]:
+        return {"reachable": False, "error": res["stderr"], "apps": []}
+    try:
+        data = json.loads(res["stdout"])
+    except json.JSONDecodeError:
+        return {"reachable": False, "error": "could not parse kubectl output", "apps": []}
+    apps = []
+    for a in data.get("items", []):
+        st = a.get("status", {})
+        apps.append({
+            "name": a["metadata"]["name"],
+            "sync_status": st.get("sync", {}).get("status", "Unknown"),
+            "health_status": st.get("health", {}).get("status", "Unknown"),
+            "revision": (st.get("sync", {}).get("revision") or "")[:7],
+            "repo": a.get("spec", {}).get("source", {}).get("repoURL", ""),
+            "path": a.get("spec", {}).get("source", {}).get("path", ""),
+            "last_sync": st.get("operationState", {}).get("finishedAt"),
+        })
+    return {"reachable": True, "apps": apps}
+
+
+def argocd_sync(app_name: str) -> dict[str, Any]:
+    patch = json.dumps({"operation": {"sync": {"revision": "HEAD", "prune": True}}})
+    res = _run(
+        ["kubectl", "-n", "argocd", "patch", "application", app_name, "--type", "merge", "-p", patch],
+        timeout=KUBECTL_TIMEOUT,
+    )
+    if not res["ok"]:
+        raise ServiceError(res["stderr"] or f"failed to sync {app_name}")
+    return {"ok": True, "message": f"sync triggered for '{app_name}'"}
+
+
+def argocd_admin_password() -> dict[str, Any]:
+    res = _run(
+        ["kubectl", "get", "secret", "argocd-initial-admin-secret", "-n", "argocd",
+         "-o", "jsonpath={.data.password}"],
+        timeout=KUBECTL_TIMEOUT,
+    )
+    if not res["ok"] or not res["stdout"]:
+        return {"reachable": False, "error": res["stderr"] or "secret not found"}
+    import base64
+    try:
+        pw = base64.b64decode(res["stdout"]).decode()
+    except Exception:
+        return {"reachable": False, "error": "could not decode secret"}
+    return {"reachable": True, "username": "admin", "password": pw}
+
+
+def argocd_refresh(app_name: str) -> dict[str, Any]:
+    patch = json.dumps({"metadata": {"annotations": {"argocd.argoproj.io/refresh": "hard"}}})
+    res = _run(
+        ["kubectl", "-n", "argocd", "patch", "application", app_name, "--type", "merge", "-p", patch],
+        timeout=KUBECTL_TIMEOUT,
+    )
+    if not res["ok"]:
+        raise ServiceError(res["stderr"] or f"failed to refresh {app_name}")
+    return {"ok": True, "message": f"hard refresh requested for '{app_name}'"}
+
+
+# ─── Vault — real seal/health status + KV listing ───
+
+def vault_status() -> dict[str, Any]:
+    res = _run(["vault", "status", "-format=json"], timeout=6)
+    if not res["stdout"]:
+        return {"reachable": False, "error": res["stderr"] or "VAULT_ADDR not reachable"}
+    try:
+        data = json.loads(res["stdout"])
+    except json.JSONDecodeError:
+        return {"reachable": False, "error": res["stderr"] or "could not parse vault output"}
+    return {
+        "reachable": True,
+        "sealed": data.get("sealed"),
+        "initialized": data.get("initialized"),
+        "version": data.get("version"),
+        "ha_enabled": data.get("ha_enabled"),
+    }
+
+
+def vault_secrets(path: str = "secret/devops-platform") -> dict[str, Any]:
+    res = _run(["vault", "kv", "list", "-format=json", path], timeout=6)
+    if not res["ok"]:
+        return {"reachable": False, "error": res["stderr"] or "cannot list secrets", "keys": []}
+    try:
+        keys = json.loads(res["stdout"])
+    except json.JSONDecodeError:
+        return {"reachable": False, "error": "could not parse vault output", "keys": []}
+    return {"reachable": True, "path": path, "keys": keys}
+
+
+# ─── Prometheus — queried through the k8s apiserver proxy, no port-forward needed ───
+
+def prometheus_query(promql: str, namespace: str = "monitoring", svc: str = "prometheus-operated:9090") -> dict[str, Any]:
+    raw_path = f"/api/v1/namespaces/{namespace}/services/{svc}/proxy/api/v1/query"
+    res = _run(["kubectl", "get", "--raw", f"{raw_path}?query={promql}"], timeout=KUBECTL_TIMEOUT)
+    if not res["ok"]:
+        return {"reachable": False, "error": res["stderr"], "result": []}
+    try:
+        data = json.loads(res["stdout"])
+    except json.JSONDecodeError:
+        return {"reachable": False, "error": "could not parse prometheus output", "result": []}
+    return {"reachable": True, "result": data.get("data", {}).get("result", [])}
+
+
+def alerts_firing() -> dict[str, Any]:
+    raw_path = "/api/v1/namespaces/monitoring/services/alertmanager-operated:9093/proxy/api/v2/alerts"
+    res = _run(["kubectl", "get", "--raw", raw_path], timeout=KUBECTL_TIMEOUT)
+    if not res["ok"]:
+        return {"reachable": False, "error": res["stderr"], "alerts": []}
+    try:
+        data = json.loads(res["stdout"])
+    except json.JSONDecodeError:
+        return {"reachable": False, "error": "could not parse alertmanager output", "alerts": []}
+    firing = [
+        {
+            "name": a.get("labels", {}).get("alertname"),
+            "severity": a.get("labels", {}).get("severity"),
+            "service": a.get("labels", {}).get("service") or a.get("labels", {}).get("app"),
+            "state": a.get("status", {}).get("state"),
+            "starts_at": a.get("startsAt"),
+        }
+        for a in data if isinstance(data, list)
+    ]
+    return {"reachable": True, "alerts": firing}
+
+
+# ──────────────────────────────────────────────────────────────
+# Dashboard access — the real UIs (ArgoCD, Grafana, Prometheus)
+# are ClusterIP-only, not reachable from outside the cluster.
+# On-demand kubectl port-forward gives a real, working local URL
+# without permanently exposing anything.
+# ──────────────────────────────────────────────────────────────
+
+DASHBOARDS = {
+    "argocd": {"namespace": "argocd", "service": "svc/argocd-server", "remote_port": 443, "scheme": "https", "label": "ArgoCD"},
+    "grafana": {"namespace": "monitoring", "service": "svc/grafana", "remote_port": 3000, "scheme": "http", "label": "Grafana"},
+    "prometheus": {"namespace": "monitoring", "service": "svc/prometheus", "remote_port": 9090, "scheme": "http", "label": "Prometheus"},
+    "alertmanager": {"namespace": "monitoring", "service": "svc/alertmanager", "remote_port": 9093, "scheme": "http", "label": "Alertmanager"},
+    "vault": {"namespace": "vault", "service": "svc/vault-service", "remote_port": 8200, "scheme": "https", "label": "Vault"},
+}
+
+_port_forwards: dict[str, dict[str, Any]] = {}
+
+
+def open_dashboard(tool: str) -> dict[str, Any]:
+    cfg = DASHBOARDS.get(tool)
+    if not cfg:
+        raise ServiceError(f"unknown dashboard '{tool}'")
+
+    existing = _port_forwards.get(tool)
+    if existing and existing["proc"].poll() is None:
+        return {"ok": True, "url": existing["url"], "message": f"{cfg['label']} already forwarded"}
+
+    local_port = 18000 + (abs(hash(tool)) % 900)
+    proc = subprocess.Popen(
+        ["kubectl", "port-forward", "-n", cfg["namespace"], cfg["service"], f"{local_port}:{cfg['remote_port']}"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
+    )
+    import time
+    time.sleep(1.5)
+    if proc.poll() is not None:
+        err = proc.stderr.read() if proc.stderr else ""
+        raise ServiceError(f"port-forward failed: {err.strip() or 'process exited'}")
+
+    url = f"{cfg['scheme']}://127.0.0.1:{local_port}"
+    _port_forwards[tool] = {"proc": proc, "url": url, "port": local_port}
+    return {"ok": True, "url": url, "message": f"{cfg['label']} forwarded to {url}"}
+
+
+def close_dashboard(tool: str) -> dict[str, Any]:
+    existing = _port_forwards.pop(tool, None)
+    if not existing:
+        return {"ok": True, "message": f"no active forward for '{tool}'"}
+    existing["proc"].terminate()
+    return {"ok": True, "message": f"closed forward for '{tool}'"}
+
+
+def dashboard_status() -> dict[str, Any]:
+    live = {}
+    for tool, fw in list(_port_forwards.items()):
+        alive = fw["proc"].poll() is None
+        if not alive:
+            _port_forwards.pop(tool, None)
+        else:
+            live[tool] = fw["url"]
+    return live
+
+
+# ─── Pod operations — logs + restart, real kubectl ───
+
+def pod_logs(namespace: str, pod: str, tail: int = 200) -> dict[str, Any]:
+    res = _run(["kubectl", "logs", pod, "-n", namespace, f"--tail={tail}"], timeout=10)
+    if not res["ok"] and not res["stdout"]:
+        return {"reachable": False, "error": res["stderr"], "log": ""}
+    return {"reachable": True, "log": res["stdout"] or res["stderr"]}
+
+
+def pod_restart(namespace: str, pod: str) -> dict[str, Any]:
+    res = _run(["kubectl", "delete", "pod", pod, "-n", namespace], timeout=KUBECTL_TIMEOUT)
+    if not res["ok"]:
+        raise ServiceError(res["stderr"] or f"failed to restart {pod}")
+    return {"ok": True, "message": f"pod '{pod}' deleted — controller will recreate it"}
+
+
+def find_pod(namespace: str, name_prefix: str) -> str | None:
+    res = _run(["kubectl", "get", "pods", "-n", namespace, "-o", "name"], timeout=KUBECTL_TIMEOUT)
+    if not res["ok"]:
+        return None
+    for line in res["stdout"].splitlines():
+        name = line.split("/")[-1]
+        if name.startswith(name_prefix):
+            return name
+    return None
+
+
+# ─── CI log viewer ───
+
+def ci_run_logs(run_id: str) -> dict[str, Any]:
+    slug = _repo_slug()
+    res = _run(["gh", "run", "view", run_id, "--repo", slug, "--log-failed"], timeout=GH_TIMEOUT)
+    if not res["stdout"] and not res["ok"]:
+        res = _run(["gh", "run", "view", run_id, "--repo", slug, "--log"], timeout=GH_TIMEOUT)
+    if not res["ok"] and not res["stdout"]:
+        return {"reachable": False, "error": res["stderr"], "log": ""}
+    return {"reachable": True, "log": res["stdout"][-8000:]}

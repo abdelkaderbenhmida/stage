@@ -1,5 +1,12 @@
 # Generic defaults. The services list is injected by discovery (CI deploy job
 # or ArgoCD ApplicationSet) — never hardcode a service name in this file.
+#
+# renderShared gates the platform-wide objects (Role/RoleBinding, ServiceMonitor)
+# that must exist exactly once. Default true so `helm template` / manual renders
+# stay complete. The ArgoCD ApplicationSet sets this false on its per-service
+# Applications — each only knows ONE service, so it must not touch shared state
+# or it will fight every other per-service Application over ownership.
+renderShared: true
 namespace: devops-platform
 registry: ghcr.io/<owner>
 imageTag: latest
