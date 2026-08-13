@@ -34,10 +34,10 @@ RUN if [ -f service-src/requirements.txt ]; then \
     fi
 COPY shared/ ./shared/
 RUN pip install ./shared
-# Hardening: wheel/jaraco.context ship in site-packages from bootstrap pip.
-# Remove later, not now — they are needed until vendored build deps are gone.
-# Upgrade instead of delete: keeps vendored deps while closing CVEs.
-RUN pip install --upgrade "wheel>=0.46.2" "jaraco.context>=6.1.0"
+# Hardening: the base image vendors vulnerable wheel 0.45.1 and
+# jaraco.context 5.3.0 INSIDE setuptools/_vendor (Trivy flags them even
+# after the standalone upgrade). setuptools >= 84 vendors neither.
+RUN pip install --upgrade "wheel>=0.46.2" "jaraco.context>=6.1.0" "setuptools>=84"
 
 FROM ${BASE_IMAGE}
 WORKDIR /app/${SERVICE_NAME}
@@ -49,6 +49,14 @@ ARG SERVICE_NAME
 COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
 COPY --from=builder /usr/local/bin /usr/local/bin
 COPY --from=builder /build/shared /app/shared
+# Runtime is a pure uvicorn process: strip the build-tooling the base image
+# and pip's isolated build env leak into site-packages (setuptools vendors
+# vulnerable wheel 0.45.1 + jaraco.context 5.3.0 — Trivy fails the gate).
+RUN rm -rf /usr/local/lib/python3.11/site-packages/setuptools* \
+           /usr/local/lib/python3.11/site-packages/wheel* \
+           /usr/local/lib/python3.11/site-packages/jaraco* \
+           /usr/local/lib/python3.11/site-packages/_distutils_hack \
+           /usr/local/lib/python3.11/site-packages/distutils-precedence.pth
 RUN apt-get update && apt-get upgrade -y --no-install-recommends && rm -rf /var/lib/apt/lists/* \
  && groupadd -r appuser && useradd -r -g appuser appuser --home-dir /app --no-create-home
 COPY --chown=appuser:appuser ${SERVICE_NAME}/ ./
