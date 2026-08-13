@@ -55,17 +55,20 @@ jobs:
         run: |
           SERVICES=""
           for d in app/*/; do
+            d=${d%/}
             if [ -f "$d/main.py" ]; then
-              SERVICES="$SERVICES $(basename "$d")"
+              SERVICES="$SERVICES ${d#app/}"
             fi
           done
           for d in app/*/*/; do
             if [ -f "$d/main.py" ]; then
-              SERVICES="$SERVICES $(basename "$(dirname "$d")")-$(basename "$d")"
+              SERVICES="$SERVICES $(basename "$(dirname "$d")")/$(basename "$d")"
             fi
           done
-          echo "services=$(printf '%s\n' $SERVICES | jq -cnR '[inputs | select(length > 0)]')" >> "$GITHUB_OUTPUT"
-          echo "Discovered: $SERVICES"
+          # emit [{name, path}]: name = k8s/image name (flat or <app>-<svc>),
+          # path = dir relative to app/ (Dockerfile COPY + lint/pip/import).
+          echo "services=$(printf '%s\n' $SERVICES | jq -cnR '[inputs | select(length > 0) | {name: gsub("/"; "-"), path: .}]')" >> "$GITHUB_OUTPUT"
+          echo "Discovered: $(printf '%s\n' $SERVICES | jq -cR '[inputs | select(length > 0)]')"
 
   # ──────────────────────────────────────────────
   # Step 1: Lint (FastAPI microservices + TF + YAML + manifests)
@@ -93,10 +96,11 @@ jobs:
       - name: Ruff lint all microservices + shared lib
         run: |
           ruff check app/shared/
-          for svc in $(echo "$SERVICES" | jq -r '.[]'); do
-            DIR="$(dirname "$(find app -mindepth 2 -maxdepth 2 -type d -name "$svc" | head -1)")"
-            echo "Linting $svc ($DIR)..."
-            ruff check "$DIR/"
+          for item in $(echo "$SERVICES" | jq -c '.[]'); do
+            svc=$(echo "$item" | jq -r .name)
+            PATH_REL=$(echo "$item" | jq -r .path)
+            echo "Linting $svc (app/$PATH_REL)..."
+            ruff check "app/$PATH_REL/"
           done
 
       - name: Validate Terraform format
@@ -132,11 +136,11 @@ jobs:
           # Helm chart must render for every discovered service and pass kubeconform.
           VALUES=/tmp/chart-values.yaml
           printf 'services:\n' > "$VALUES"
-          for svc in $(echo "$SERVICES" | jq -r '.[]'); do
-            printf '  - name: %s\n' "$svc" >> "$VALUES"
+          for item in $(echo "$SERVICES" | jq -c '.[]'); do
+            printf '  - name: %s\n' "$(echo "$item" | jq -r .name)" >> "$VALUES"
           done
           helm template ci k8s/apps/chart -f "$VALUES" > /tmp/chart-render.yaml
-          echo "Rendered $(grep -c '^kind:' /tmp/chart-render.yaml) objects for $(echo "$SERVICES" | jq -r '.[]' | wc -l) services"
+          echo "Rendered $(grep -c '^kind:' /tmp/chart-render.yaml) objects for $(echo "$SERVICES" | jq 'length') services"
           /tmp/kubeconform -strict -ignore-missing-schemas \
             -kubernetes-version 1.28.0 \
             -schema-location 'https://raw.githubusercontent.com/yannh/kubernetes-json-schema/master/master-standalone/{{.ResourceKind}}.json' \
@@ -188,17 +192,17 @@ jobs:
         run: |
           pip install pytest httpx pip-audit
           pip install -e app/shared/
-          for svc in $(echo "$SERVICES" | jq -r '.[]'); do
-            DIR="$(dirname "$(find app -mindepth 2 -maxdepth 2 -type d -name "$svc" | head -1)")"
-            pip install -r "$DIR/requirements.txt"
+          for item in $(echo "$SERVICES" | jq -c '.[]'); do
+            PATH_REL=$(echo "$item" | jq -r .path)
+            pip install -r "app/$PATH_REL/requirements.txt"
           done
 
       - name: Dependency audit (pip-audit) — fails on known-vulnerable pinned deps
         run: |
           REQS=""
-          for svc in $(echo "$SERVICES" | jq -r '.[]'); do
-            DIR="$(dirname "$(find app -mindepth 2 -maxdepth 2 -type d -name "$svc" | head -1)")"
-            REQS="$REQS -r $DIR/requirements.txt"
+          for item in $(echo "$SERVICES" | jq -c '.[]'); do
+            PATH_REL=$(echo "$item" | jq -r .path)
+            REQS="$REQS -r app/$PATH_REL/requirements.txt"
           done
           pip-audit -r app/shared/requirements.txt $REQS --strict
 
@@ -209,18 +213,19 @@ jobs:
       - name: Run unit tests (FastAPI TestClient + dev-environment fallbacks)
         run: |
           ENVIRONMENT=dev LOG_FORMAT=plain VAULT_ADDR="" pytest -q tests/ -v
-          for svc in $(echo "$SERVICES" | jq -r '.[]'); do
-            DIR="$(dirname "$(find app -mindepth 2 -maxdepth 2 -type d -name "$svc" | head -1)")"
-            echo "Import $svc ($DIR)..."
-            (cd "$DIR" && PYTHONPATH=../shared:. ENVIRONMENT=dev python -c "import main")
+          for item in $(echo "$SERVICES" | jq -c '.[]'); do
+            PATH_REL=$(echo "$item" | jq -r .path)
+            echo "Import $(echo "$item" | jq -r .name) (app/$PATH_REL)..."
+            (cd "app/$PATH_REL" && PYTHONPATH=../shared:. ENVIRONMENT=dev python -c "import main")
           done
 
       - name: Validate Dockerfiles build (generic app/Dockerfile + SERVICE_NAME build-arg)
         run: |
-          for svc in $(echo "$SERVICES" | jq -r '.[]'); do
-            DIR="$(dirname "$(find app -mindepth 2 -maxdepth 2 -type d -name "$svc" | head -1)")"
+          for item in $(echo "$SERVICES" | jq -c '.[]'); do
+            svc=$(echo "$item" | jq -r .name)
+            PATH_REL=$(echo "$item" | jq -r .path)
             echo "Building test image for $svc..."
-            docker build -t $svc:test -f app/Dockerfile --build-arg SERVICE_NAME=${DIR#app/} app/
+            docker build -t $svc:test -f app/Dockerfile --build-arg SERVICE_NAME=$PATH_REL app/
           done
 
       - name: Upload build logs as artifacts
@@ -262,7 +267,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/${{ matrix.service }}
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/${{ matrix.service.name }}
           tags: |
             type=ref,event=branch
             type=sha,prefix=commit-,format=short
@@ -276,7 +281,7 @@ jobs:
           context: app/  # context is app/ so shared/ is visible — see app/Dockerfile.
           file: app/Dockerfile
           build-args: |
-            SERVICE_NAME=${{ matrix.service }}
+            SERVICE_NAME=${{ matrix.service.path }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
@@ -318,7 +323,7 @@ jobs:
       - name: Resolve built image
         id: resolve
         run: |
-          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/${{ matrix.service }}:${{ github.ref_name }}"
+          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/${{ matrix.service.name }}:${{ github.ref_name }}"
           echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
           echo "Scanning target image: $IMAGE"
 
@@ -337,7 +342,7 @@ jobs:
         with:
           image-ref: ${{ steps.resolve.outputs.image }}
           format: sarif
-          output: trivy-${{ matrix.service }}.sarif
+          output: trivy-${{ matrix.service.name }}.sarif
           ignore-unfixed: true
 
       - name: Trivy vulnerability scan — fail on CRITICAL/HIGH
@@ -355,21 +360,21 @@ jobs:
         if: always()
         continue-on-error: true  # informational upload to GitHub Security tab
         with:
-          sarif_file: trivy-${{ matrix.service }}.sarif
+          sarif_file: trivy-${{ matrix.service.name }}.sarif
 
       - name: Trivy SBOM generation
         uses: aquasecurity/trivy-action@v0.24.0
         with:
           image-ref: ${{ steps.resolve.outputs.image }}
           format: spdx-json
-          output: sbom-${{ matrix.service }}.json
+          output: sbom-${{ matrix.service.name }}.json
         continue-on-error: true
 
       - name: Upload SBOM artifact
         uses: actions/upload-artifact@v4
         with:
-          name: sbom-${{ matrix.service }}
-          path: sbom-${{ matrix.service }}.json
+          name: sbom-${{ matrix.service.name }}
+          path: sbom-${{ matrix.service.name }}.json
           retention-days: 30
         if: always()
 
@@ -446,10 +451,10 @@ jobs:
         run: |
           VALUES=values.generated.yaml
           printf 'services:\n' > "$VALUES"
-          for svc in $(echo "$SERVICES" | jq -r '.[]'); do
+          for svc in $(echo "$SERVICES" | jq -r '.[].name'); do
             printf '  - name: %s\n    tag: %s\n' "$svc" "$COMMIT_TAG" >> "$VALUES"
           done
-          echo "Generated values for $(echo "$SERVICES" | jq -r '.[]' | wc -l) services"
+          echo "Generated values for $(echo "$SERVICES" | jq 'length') services"
           cat "$VALUES"
 
       - name: Render and validate manifests
@@ -463,7 +468,7 @@ jobs:
       - name: Sync service list to Vault namespace (for vault-setup provisioning)
         run: |
           kubectl create configmap devops-service-list -n vault \
-            --from-literal=services="$(echo "$SERVICES" | jq -r '.[]' | tr '\n' ' ')" \
+            --from-literal=services="$(echo "$SERVICES" | jq -r '.[].name' | tr '\n' ' ')" \
             --dry-run=client -o yaml | kubectl apply -f -
 
       - name: Deploy (server-side apply via helm template)
@@ -472,13 +477,13 @@ jobs:
           kubectl apply -f k8s/vault/manifests.yaml --server-side
           helm template apps k8s/apps/chart -f values.generated.yaml | kubectl apply --server-side -f -
           kubectl rollout status deploy/vault -n vault --timeout=120s
-          for svc in $(echo "$SERVICES" | jq -r '.[]'); do
+          for svc in $(echo "$SERVICES" | jq -r '.[].name'); do
             kubectl rollout status deploy/$svc -n devops-platform --timeout=120s
           done
 
       - name: Metrics smoke-test — /metrics returns Histogram (all discovered services)
         run: |
-          LIST="$(echo "$SERVICES" | jq -r '.[]' | tr '\n' ' ')"
+          LIST="$(echo "$SERVICES" | jq -r '.[].name' | tr '\n' ' ')"
           SCRIPT="for svc in $LIST; do echo \"Check \$svc...\"; curl -sf http://\$svc.devops-platform.svc.cluster.local:80/metrics | grep -q http_request_duration_seconds_bucket || exit 1; done; echo \"All /metrics OK\""
           kubectl run metrics-check --image=curlimages/curl:8.8.0 --restart=Never -- /bin/sh -c "$SCRIPT"
           kubectl wait --for=condition=Complete pod/metrics-check --timeout=60s 2>/dev/null

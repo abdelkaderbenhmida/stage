@@ -1,7 +1,6 @@
 import importlib
 import os
 import sys
-import pytest
 from fastapi.testclient import TestClient
 
 os.environ["ENVIRONMENT"] = "dev"

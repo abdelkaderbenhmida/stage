@@ -43,6 +43,8 @@ Prometheus / Grafana / ELK / AlertManager ──observability──▶ SLO dashb
 ├── terraform/                # IaC (main, variables, outputs, backend, inventory.tpl)
 ├── ansible/                  # Roles docker + k8s_*
 ├── app/                      # Services auto-discovered by main.py presence
+│   │                         #   flat: app/<service>/main.py
+│   │                         #   grouped: app/<app>/<service>/main.py  (k8s name: <app>-<service>)
 │   ├── Dockerfile            # ONE generic Dockerfile (SERVICE_NAME build-arg)
 │   ├── users-service/  products-service/  orders-service/
 │   └── shared/               # vault_client, log_config, config
@@ -55,6 +57,7 @@ Prometheus / Grafana / ELK / AlertManager ──observability──▶ SLO dashb
 │   ├── argocd/               # ApplicationSet + Applications + install
 │   └── vault/                # Vault manifests + policy.hcl
 ├── scripts/                  # validate-platform.sh, validate-security.sh, bootstrap-*, generate-inventory.sh
+├── ui/                       # Local dashboard — repo introspection (no cluster access)
 ├── .github/workflows/ci-cd.yml  # lint → gitleaks → test → build → trivy → deploy
 └── docs/                     # Specification and runbooks
 ```
@@ -153,6 +156,21 @@ grep -rn "<owner>\|<repo>" k8s/ app/ docs/ --include="*.yaml" --include="*.md" -
 ```
 
 Affected files: `k8s/argocd/**` (repoURLs), `app/Dockerfile` (OCI source label), `docs/comprendre-le-projet.md`.
+
+## Local UI dashboard
+
+Repo-introspection dashboard (no cluster needed) + management console:
+service discovery, live Helm render, CI matrix, Vault loop, SLO rules, ArgoCD
+ApplicationSet — all read from the actual files. The **Apps** view creates
+and deletes apps/services on disk (`app/<app>/<service>/main.py`); because the
+platform is discovery-driven, CI, Helm, Vault, ArgoCD and monitoring adapt
+automatically. Add/remove a service and the UI updates on refresh.
+
+```bash
+pip install -r ui/requirements.txt
+PYTHONPATH=ui uvicorn ui.main:app --port 8080
+# open http://127.0.0.1:8080  (see ui/README.md)
+```
 
 ## Security
 
