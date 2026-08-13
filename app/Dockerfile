@@ -34,6 +34,10 @@ RUN if [ -f service-src/requirements.txt ]; then \
     fi
 COPY shared/ ./shared/
 RUN pip install ./shared
+# Hardening: wheel/jaraco.context ship in site-packages from bootstrap pip.
+# Remove later, not now — they are needed until vendored build deps are gone.
+# Upgrade instead of delete: keeps vendored deps while closing CVEs.
+RUN pip install --upgrade "wheel>=0.46.2" "jaraco.context>=6.1.0"
 
 FROM ${BASE_IMAGE}
 WORKDIR /app/${SERVICE_NAME}
