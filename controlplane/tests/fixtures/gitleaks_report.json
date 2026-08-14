@@ -1,0 +1,27 @@
+[
+  {
+    "RuleID": "aws-access-token",
+    "Description": "AWS Access Token",
+    "StartLine": 12,
+    "EndLine": 12,
+    "StartColumn": 17,
+    "EndColumn": 43,
+    "Match": "AKIAXXXXXXXXXXXXXXXX",
+    "Secret": "AKIAXXXXXXXXXXXXXXXX",
+    "File": "config/settings.py",
+    "Commit": "abcdef123456",
+    "Date": "2024-05-01T10:00:00Z",
+    "Fingerprint": "abcdef123456:config/settings.py:aws-access-token:12"
+  },
+  {
+    "RuleID": "generic-api-key",
+    "Description": "Generic API Key",
+    "StartLine": 3,
+    "EndLine": 3,
+    "Match": "sk_live_xxxxxxxxxxxxxxxxxxxx",
+    "Secret": "sk_live_xxxxxxxxxxxxxxxxxxxx",
+    "File": ".env.example",
+    "Commit": "1234567890ab",
+    "Fingerprint": "1234567890ab:.env.example:generic-api-key:3"
+  }
+]

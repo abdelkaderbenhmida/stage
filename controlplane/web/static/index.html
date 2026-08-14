@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DevOps Central Platform</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚙️</text></svg>">
+</head>
+<body>
+  <div id="app">
+    <div class="boot">Loading…</div>
+  </div>
+
+  <nav id="nav" hidden>
+    <div class="brand">⚙️ Central Platform</div>
+    <a href="#/projects" data-nav="projects">Projects</a>
+    <a href="#/catalogue" data-nav="catalogue">Catalogue</a>
+    <a href="#/security" data-nav="security">Security</a>
+    <a href="#/teams" data-nav="teams">Teams</a>
+    <a href="#/jobs" data-nav="jobs">Jobs</a>
+    <a href="/platform">Platform</a>
+    <span class="spacer"></span>
+    <span id="whoami" class="muted"></span>
+    <button id="logout" class="link">Log out</button>
+  </nav>
+
+  <main id="view"></main>
+
+  <div id="toast" class="toast" hidden aria-live="polite"></div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,49 @@
+{
+  "SchemaVersion": 2,
+  "ArtifactName": "users-service:1.0.0",
+  "ArtifactType": "container_image",
+  "Metadata": {
+    "OS": { "Family": "ubuntu", "Name": "22.04" }
+  },
+  "Results": [
+    {
+      "Target": "usr/lib/x86_64-linux-gnu/libssl.so.3",
+      "Class": "os-pkgs",
+      "Type": "ubuntu",
+      "Vulnerabilities": [
+        {
+          "VulnerabilityID": "CVE-2024-0727",
+          "PkgName": "openssl",
+          "InstalledVersion": "3.0.2-0ubuntu1.10",
+          "FixedVersion": "3.0.2-0ubuntu1.12",
+          "Severity": "HIGH",
+          "Title": "openssl: denial of service",
+          "Description": "A flaw was found in openssl."
+        },
+        {
+          "VulnerabilityID": "CVE-2024-2511",
+          "PkgName": "openssl",
+          "InstalledVersion": "3.0.2-0ubuntu1.10",
+          "FixedVersion": "3.0.2-0ubuntu1.12",
+          "Severity": "MEDIUM",
+          "Title": "openssl: unconstrained session cache growth"
+        }
+      ]
+    },
+    {
+      "Target": "app/users-service",
+      "Class": "lang-pkgs",
+      "Type": "python",
+      "Vulnerabilities": [
+        {
+          "VulnerabilityID": "CVE-2024-24576",
+          "PkgName": "jinja2",
+          "InstalledVersion": "3.1.2",
+          "FixedVersion": "3.1.4",
+          "Severity": "CRITICAL",
+          "Title": "jinja2: sandbox escape"
+        }
+      ]
+    }
+  ]
+}

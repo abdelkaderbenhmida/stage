@@ -1,0 +1,6 @@
+{% for group, nodes in groups.items() %}
+[{{ group }}]
+{% for node in nodes %}{{ node.name }} ansible_host={{ node.ip }} ansible_user={{ ssh_user }}
+{% endfor %}
+{% endfor %}[all:vars]
+ansible_python_interpreter=/usr/bin/python3

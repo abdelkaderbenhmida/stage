@@ -1,0 +1,31 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: {{ name }}-slo
+  namespace: {{ namespace }}
+spec:
+  metrics:
+    - name: error-rate
+      # The platform's SLOs are expressed against the central Prometheus
+      # (docs/OPERATIONS.md §5, k8s/monitoring/). The query mirrors the
+      # platform SLO rules scaled to this namespace: any 5xx counted against
+      # total requests, so a canary that breaks the error budget rolls back
+      # automatically (docs/TODO.md Task 5.2).
+      interval: 30s
+      count: 5
+      failureLimit: 3
+      provider:
+        prometheus:
+          address: http://prometheus.monitoring:9090
+          query: |
+            sum(rate(http_requests_total{namespace="{{ namespace }}", code=~"5.."}[1m]))
+              / clamp_min(sum(rate(http_requests_total{namespace="{{ namespace }}"}[1m])), 1)
+    - name: p95-latency
+      interval: 30s
+      count: 5
+      failureLimit: 3
+      provider:
+        prometheus:
+          address: http://prometheus.monitoring:9090
+          query: |
+            histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{namespace="{{ namespace }}"}[1m])) by (le))

@@ -1,0 +1,12 @@
+---
+# Rendered from the InfraSpec config block. Only enum-constrained values are
+# ever substituted here (docs/PLATFORM_SPEC.md §7.1).
+k8s_version: "{{ config.kubernetes_version }}"
+k8s_version_deb: "{{ config.kubernetes_version }}.*"
+cni_plugin: "{{ config.cni_plugin }}"
+{% if config.calico_version %}calico_version: "{{ config.calico_version }}"
+{% endif %}pod_cidr: "{{ config.pod_cidr }}"
+service_cidr: "{{ config.service_cidr }}"
+containerd_socket: "{{ config.containerd_socket }}"
+cri_endpoint: "{{ config.cri_endpoint }}"
+docker_version: "{{ config.docker_version }}"

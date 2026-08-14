@@ -1,0 +1,29 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = [".."]
+markers = [
+    "integration: requires a real PostgreSQL via testcontainers (skipped without Docker)",
+    "security: asserts a §7 security requirement",
+    "network: reaches the public internet (provider downloads); deselected by default",
+    "e2e: full lifecycle test, gated (skipped by default)",
+]
+addopts = "-m 'not integration and not e2e and not network'"
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+ignore = [
+    "B008",  # FastAPI's Depends()/Query() in defaults is the framework idiom
+    "E501",  # line length is enforced by the formatter, not the linter
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests import inside functions deliberately, to control when the settings
+# singleton and the database engine are first constructed.
+"tests/*" = ["E402"]

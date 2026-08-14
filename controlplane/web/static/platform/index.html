@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DevOps Platform — Control Tower</title>
+  <link rel="stylesheet" href="/static/platform/style.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='22' fill='%234cc2ff'/><text x='50' y='70' font-size='54' text-anchor='middle' fill='white' font-family='monospace' font-weight='bold'>D</text></svg>">
+</head>
+<body>
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="logo">D</div>
+        <div>
+          <div class="t1">Control Tower</div>
+          <div class="t2">DevOps Platform</div>
+        </div>
+      </div>
+
+      <div class="nav-item active" data-view="topology"><span class="ico">◉</span> Platform Health</div>
+      <div class="nav-item" data-view="apps"><span class="ico">＋</span> Apps & Services
+        <span class="badge" id="nav-apps">0</span>
+      </div>
+      <div class="nav-item" data-view="overview"><span class="ico">▤</span> Overview</div>
+      <div class="nav-item" data-view="services"><span class="ico">◷</span> Services
+        <span class="badge" id="nav-services">0</span>
+      </div>
+      <div class="nav-item" data-view="config"><span class="ico">⚙</span> Operations</div>
+
+      <div class="spacer"></div>
+      <a href="/" style="padding:0 8px" class="small muted">&larr; Back to Central Platform</a>
+      <div style="padding:0 8px;display:flex;gap:12px;align-items:center">
+        <label class="small muted" style="display:flex;gap:6px;align-items:center;cursor:pointer">
+          <input type="checkbox" id="autorefresh" checked> auto 30s
+        </label>
+      </div>
+    </aside>
+
+    <main class="content">
+      <div class="topbar">
+        <span class="status-dot ok pulse" id="top-status"></span>
+        <span class="repo-badge"><span>:</span><span id="top-repo">loading…</span></span>
+        <span class="muted small" id="top-updated"></span>
+      </div>
+
+      <section class="view active" id="view-topology"></section>
+      <section class="view" id="view-apps"></section>
+      <section class="view" id="view-overview"></section>
+      <section class="view" id="view-services"></section>
+      <section class="view" id="view-config"></section>
+    </main>
+  </div>
+
+  <div class="toast" id="toast"></div>
+  <div class="detail-panel" id="detail-panel">
+    <div class="detail-header">
+      <span id="detail-title"></span>
+      <button class="detail-close" onclick="closeDetail()">✕</button>
+    </div>
+    <div class="detail-content" id="detail-content"></div>
+  </div>
+  <div class="detail-overlay" id="detail-overlay" onclick="closeDetail()"></div>
+
+  <script src="/static/platform/app.js"></script>
+</body>
+</html>

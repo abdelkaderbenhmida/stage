@@ -1,0 +1,55 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: {{ name }}
+  namespace: {{ namespace }}
+  labels:
+    app: {{ name }}
+spec:
+  replicas: {{ replicas }}
+  selector:
+    matchLabels:
+      app: {{ name }}
+  template:
+    metadata:
+      labels:
+        app: {{ name }}
+    spec:
+      containers:
+        - name: {{ name }}
+          image: {{ image }}
+          ports:
+            - containerPort: {{ port }}
+          readinessProbe:
+            httpGet:
+              path: /livez
+              port: {{ port }}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+{% if strategy == "bluegreen" %}
+  strategy:
+    blueGreen:
+      # The service manifest points at the active revision and is switched
+      # over by the Rollout on promotion; autoPromotion is off so a human
+      # (or a gate step) decides to promote.
+      activeService: {{ name }}
+      autoPromotionEnabled: false
+      previewReplicaCount: 1
+{% else %}
+  strategy:
+    canary:
+      steps:
+        - setWeight: 20
+        - pause: {duration: 30s}
+        - analysis:
+            templates:
+              - templateName: {{ name }}-slo
+        - setWeight: 100
+{% endif %}

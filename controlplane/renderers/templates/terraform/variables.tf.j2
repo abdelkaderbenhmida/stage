@@ -1,0 +1,91 @@
+variable "libvirt_uri" {
+  description = "Libvirt connection URI."
+  type        = string
+  default     = "qemu:///system"
+}
+
+variable "storage_pool" {
+  description = "Libvirt storage pool that contains the base cloud image."
+  type        = string
+  default     = "default"
+}
+
+variable "base_image_name" {
+  description = "Name to give the cloned base image inside the storage pool."
+  type        = string
+}
+
+variable "base_image_path" {
+  description = "Path to the Ubuntu cloud image used as the VM base disk."
+  type        = string
+}
+
+variable "network_name" {
+  description = "Private network name for the project."
+  type        = string
+}
+
+variable "network_domain" {
+  description = "DNS domain assigned to the private network."
+  type        = string
+}
+
+variable "network_cidr" {
+  description = "Private network CIDR for all nodes."
+  type        = string
+}
+
+variable "network_prefix" {
+  description = "CIDR prefix length used by cloud-init networking."
+  type        = number
+}
+
+variable "gateway_ip" {
+  description = "Gateway IP used by the private network."
+  type        = string
+  default     = null
+}
+
+variable "dns_servers" {
+  description = "DNS resolvers configured on the nodes and in the libvirt network forwarders."
+  type        = list(string)
+}
+
+variable "network_interface" {
+  description = "Guest network interface name used by cloud-init."
+  type        = string
+  default     = "enp1s0"
+}
+
+variable "nodes" {
+  description = "Validated node definitions: name, static IP, vCPU, memory, disk, role."
+  type = list(object({
+    name      = string
+    ip        = string
+    vcpu      = number
+    memory_mb = number
+    disk_gb   = number
+    role      = string
+  }))
+}
+
+variable "ssh_user" {
+  description = "Administrative SSH user created by cloud-init."
+  type        = string
+}
+
+variable "ssh_public_key" {
+  description = "SSH public key authorized on the nodes."
+  type        = string
+  sensitive   = true
+}
+
+variable "libvirt_volume_owner_uid" {
+  description = "Numeric UID owning the libvirt volumes."
+  type        = number
+}
+
+variable "libvirt_volume_group_gid" {
+  description = "Numeric GID owning the libvirt volumes."
+  type        = number
+}

@@ -1,0 +1,1418 @@
+/* Control-plane UI.
+ *
+ * Buildless SPA: hash routing, vanilla DOM, talks to /api/v1 with the same
+ * bearer token any API client would use. Kept in one file deliberately so the
+ * UI ships with the API container and needs no bundler.
+ */
+
+const API = "/api/v1";
+const TOKEN_KEY = "cp.access_token";
+const REFRESH_KEY = "cp.refresh_token";
+
+const $ = (sel, root = document) => root.querySelector(sel);
+const view = () => $("#view");
+
+/* ---------------------------------------------------------------- utils */
+
+function esc(value) {
+  return String(value ?? "").replace(/[&<>"']/g, (c) => (
+    { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
+  ));
+}
+
+function pill(status) {
+  return `<span class="pill ${esc(status)}">${esc(status)}</span>`;
+}
+
+function fmtDate(iso) {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  return d.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+}
+
+/** Human countdown to an environment's automatic destruction. */
+function fmtRemaining(iso) {
+  if (!iso) return null;
+  const ms = new Date(iso) - Date.now();
+  if (ms <= 0) return "expired";
+  const hours = Math.floor(ms / 3600000);
+  const minutes = Math.floor((ms % 3600000) / 60000);
+  return hours > 0 ? `${hours}h ${minutes}m left` : `${minutes}m left`;
+}
+
+function ttlBadge(project) {
+  if (!project.expires_at || project.auto_destroy === false) return "";
+  const remaining = fmtRemaining(project.expires_at);
+  const urgent = project.expiry_warned || remaining === "expired";
+  return `<span class="pill ${urgent ? "failed" : "draft"}" title="Automatically destroyed at ${esc(fmtDate(project.expires_at))}">${esc(remaining)}</span>`;
+}
+
+let toastTimer;
+function toast(message, isError = false) {
+  const el = $("#toast");
+  el.textContent = message;
+  el.classList.toggle("err", isError);
+  el.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { el.hidden = true; }, 4000);
+}
+
+function token() { return localStorage.getItem(TOKEN_KEY); }
+
+/* -------------------------------------------------------------- modals
+ * Task 6.2: real dialogs instead of prompt()/confirm(). Close on Escape,
+ * focus the first field, return focus to the trigger. */
+function modalShell(title, body) {
+  const backdrop = document.createElement("div");
+  backdrop.className = "modal-backdrop";
+  backdrop.innerHTML = `
+    <div class="modal" role="dialog" aria-modal="true" aria-label="${esc(title)}">
+      <h3>${esc(title)}</h3>
+      ${body}
+      <div class="modal-actions">
+        <button type="button" class="small" data-action="cancel">Cancel</button>
+        <button type="button" class="small primary" data-action="ok">OK</button>
+      </div>
+    </div>`;
+  const close = () => {
+    backdrop.remove();
+    document.removeEventListener("keydown", onKey);
+  };
+  const onKey = (event) => {
+    if (event.key === "Escape") close();
+    if (event.key === "Tab" && backdrop.querySelector(".modal").contains(event.target) === false) {
+      event.preventDefault();
+      backdrop.querySelector(".modal").focus();
+    }
+  };
+  document.addEventListener("keydown", onKey);
+  return { backdrop, close, shell: backdrop.querySelector(".modal") };
+}
+
+/** Ask a free-form question; resolves with the value or null on cancel. */
+function modalPrompt(title, message, options = {}) {
+  const value = options.value ?? "";
+  const { backdrop, close, shell } = modalShell(title, `
+    <p>${esc(message)}</p>
+    <input type="${options.type || "text"}" value="${esc(value)}" placeholder="${esc(options.placeholder || "")}">`);
+  return new Promise((resolve) => {
+    const input = backdrop.querySelector("input");
+    backdrop.querySelector('[data-action="ok"]').onclick = () => {
+      const answer = input.value.trim();
+      close();
+      resolve(answer);
+    };
+    backdrop.querySelector('[data-action="cancel"]').onclick = () => { close(); resolve(null); };
+    document.body.appendChild(backdrop);
+    input.focus();
+    input.select();
+  });
+}
+
+/** Confirm an irreversible action; resolves true/false. */
+function modalConfirm(title, message, okLabel = "Confirm") {
+  const { backdrop, close, shell } = modalShell(title, `<p>${esc(message)}</p>`);
+  shell.querySelector('[data-action="ok"]').textContent = okLabel;
+  return new Promise((resolve) => {
+    backdrop.querySelector('[data-action="ok"]').onclick = () => { close(); resolve(true); };
+    backdrop.querySelector('[data-action="cancel"]').onclick = () => { close(); resolve(false); };
+    document.body.appendChild(backdrop);
+    backdrop.querySelector('[data-action="ok"]').focus();
+  });
+}
+
+function setTokens(access, refresh) {
+  if (access) localStorage.setItem(TOKEN_KEY, access);
+  if (refresh) localStorage.setItem(REFRESH_KEY, refresh);
+}
+
+function clearTokens() {
+  localStorage.removeItem(TOKEN_KEY);
+  localStorage.removeItem(REFRESH_KEY);
+}
+
+/* ------------------------------------------------------------ API client */
+
+/** Turn a FastAPI error body into one readable line. */
+function errorText(body, status) {
+  const detail = body?.detail;
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail)) {
+    return detail
+      .map((e) => `${(e.loc || []).filter((p) => p !== "body").join(".")}: ${e.msg}`)
+      .join("; ");
+  }
+  return `Request failed (HTTP ${status})`;
+}
+
+async function api(path, { method = "GET", body, auth = true } = {}) {
+  const headers = {};
+  if (body !== undefined) headers["Content-Type"] = "application/json";
+  if (auth && token()) headers["Authorization"] = `Bearer ${token()}`;
+
+  const resp = await fetch(API + path, {
+    method,
+    headers,
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+
+  if (resp.status === 401 && auth) {
+    // Try one silent refresh before bouncing the user to the login screen.
+    if (await tryRefresh()) return api(path, { method, body, auth });
+    clearTokens();
+    location.hash = "#/login";
+    throw new Error("Session expired — please log in again.");
+  }
+
+  if (resp.status === 204) return null;
+
+  const text = await resp.text();
+  let data = null;
+  if (text) {
+    try {
+      data = JSON.parse(text);
+    } catch {
+      data = null;
+    }
+  }
+  if (!resp.ok) throw new Error(errorText(data, resp.status));
+  return data;
+}
+
+async function tryRefresh() {
+  const refresh = localStorage.getItem(REFRESH_KEY);
+  if (!refresh) return false;
+  try {
+    const resp = await fetch(`${API}/auth/refresh`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ refresh_token: refresh }),
+    });
+    if (!resp.ok) return false;
+    const data = await resp.json();
+    setTokens(data.access_token, data.refresh_token);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/* --------------------------------------------------------------- chrome */
+
+function setNav(active) {
+  const nav = $("#nav");
+  nav.hidden = !token();
+  nav.querySelectorAll("[data-nav]").forEach((a) => {
+    a.classList.toggle("active", a.dataset.nav === active);
+  });
+}
+
+function loading(message = "Loading…") {
+  // Skeleton rows instead of bare text (docs/TODO.md Task 6.3).
+  view().innerHTML = `
+    <div class="panel">
+      <div class="skeleton-line w60"></div>
+      <div class="skeleton-line w90"></div>
+      <div class="skeleton-line w80"></div>
+    </div>`;
+}
+
+function showError(err, retry) {
+  view().innerHTML = `<div class="panel">
+    <p class="error">${esc(err.message)}</p>
+    ${retry ? `<button class="small" id="retry-view">Try again</button>` : ""}
+  </div>`;
+  const btn = $("#retry-view");
+  if (btn) btn.onclick = () => { route(); };
+}
+
+/* ---------------------------------------------------------------- login */
+
+function renderAuth() {
+  setNav(null);
+  // Test build: no real password storage on a lab machine, so the form is
+  // username-only and the API receives a fixed development password.
+  const TEST_PASSWORD = "Test!Passw0rd123";
+  view().innerHTML = `
+    <div class="auth-wrap">
+      <div class="panel">
+        <h1>Central Platform</h1>
+        <p class="subtitle">Self-service infrastructure, deployments and security scanning.<br><span class="muted small">Test mode — sign in with a username, no password.</span></p>
+        <form id="auth-form">
+          <div class="field">
+            <label for="email">Username</label>
+            <input id="email" type="text" autocomplete="username" placeholder="alice" required>
+          </div>
+          <div class="row">
+            <button class="primary" type="submit" id="submit-btn">Log in</button>
+            <button class="link" type="button" id="toggle-mode">Create an account</button>
+          </div>
+          <div class="row" id="sso-row" hidden>
+            <button class="primary" type="button" id="sso-btn">Sign in with SSO</button>
+          </div>
+          <p class="error" id="auth-error"></p>
+        </form>
+      </div>
+    </div>`;
+
+  let mode = "login";
+
+  // SSO availability (docs/TODO.md Task 3.3). When the platform is
+  // SSO-only, the email/password form is pointless — hide it.
+  api("/auth/config", { auth: false }).then((cfg) => {
+    if (cfg.oidc_enabled) {
+      $("#sso-row").hidden = false;
+      if (!cfg.local_auth_enabled) {
+        $("#sso-row").classList.add("sso-only");
+      }
+    }
+  }).catch(() => {});
+
+  $("#sso-btn").onclick = () => {
+    window.open("/api/v1/auth/oidc/login", "controlplane-sso", "popup,width=520,height=620");
+  };
+
+  $("#toggle-mode").onclick = () => {
+    mode = mode === "login" ? "register" : "login";
+    $("#submit-btn").textContent = mode === "register" ? "Create account" : "Log in";
+    $("#toggle-mode").textContent = mode === "register" ? "I already have an account" : "Create an account";
+    $("#auth-error").textContent = "";
+  };
+
+  $("#auth-form").onsubmit = async (e) => {
+    e.preventDefault();
+    const email = `${$("#email").value.trim()}@example.com`;
+    $("#auth-error").textContent = "";
+    $("#submit-btn").disabled = true;
+    try {
+      if (mode === "register") {
+        await api("/auth/register", {
+          auth: false,
+          method: "POST",
+          body: { email, password: TEST_PASSWORD, password_confirm: TEST_PASSWORD },
+        });
+      }
+      const tokens = await api("/auth/login", {
+        auth: false,
+        method: "POST",
+        body: { email, password: TEST_PASSWORD },
+      });
+      setTokens(tokens.access_token, tokens.refresh_token);
+      location.hash = "#/projects";
+    } catch (err) {
+      $("#auth-error").textContent = err.message;
+    } finally {
+      $("#submit-btn").disabled = false;
+    }
+  };
+}
+
+/* ------------------------------------------------------------- projects */
+
+async function renderProjects() {
+  setNav("projects");
+  loading();
+  try {
+    const projects = await api("/projects");
+    view().innerHTML = `
+      <div class="between">
+        <div>
+          <h1>Projects</h1>
+          <p class="subtitle">Each project is one cluster you own.</p>
+        </div>
+        <button class="primary" id="new-project">New project</button>
+      </div>
+      ${projects.length === 0
+        ? `<div class="panel"><div class="empty">
+            <h2>No environments yet</h2>
+            <p>An environment is a Kubernetes cluster (or a shared-cluster namespace) where you test a branch of a service.
+               Pick a size and the platform provisions it, destroys it when the time is up, and scans deployments before they go live.</p>
+            <button class="primary" id="empty-create">Create your first environment</button>
+          </div></div>`
+        : `<div class="panel table-wrap"><table>
+             <thead><tr><th>Name</th><th>Status</th><th>Lifetime</th><th>Description</th><th>Created</th></tr></thead>
+             <tbody>${projects.map((p) => `
+               <tr>
+                 <td><a href="#/projects/${p.id}">${esc(p.name)}</a></td>
+                 <td>${pill(p.status)}</td>
+                 <td>${ttlBadge(p) || '<span class="muted">no expiry</span>'}</td>
+                 <td class="muted">${esc(p.description || "—")}</td>
+                 <td class="muted">${fmtDate(p.created_at)}</td>
+               </tr>`).join("")}
+           </tbody></table></div>`}`;
+    $("#new-project").onclick = () => { location.hash = "#/projects/new"; };
+    const emptyCreate = $("#empty-create");
+    if (emptyCreate) emptyCreate.onclick = () => { location.hash = "#/projects/new"; };
+  } catch (err) {
+    showError(err, route);
+  }
+}
+
+/* ------------------------------------------- infrastructure designer form */
+
+const ROLES = ["k8s_master", "k8s_worker", "docker_host"];
+const CAPS = { nodes: 10, vcpu: 8, memory_mb: 16384, disk_gb: 200, totalVcpu: 24, totalMemory: 49152 };
+
+function nodeRowHtml(node, index) {
+  return `
+    <div class="node-row" data-index="${index}">
+      <div><label>Name</label><input class="n-name" value="${esc(node.name)}" pattern="[a-z0-9-]{1,20}" required></div>
+      <div><label>vCPU</label><input class="n-vcpu" type="number" min="1" max="8" value="${node.vcpu}" required></div>
+      <div><label>Memory (MB)</label><input class="n-mem" type="number" min="1024" max="16384" step="512" value="${node.memory_mb}" required></div>
+      <div><label>Disk (GB)</label><input class="n-disk" type="number" min="20" max="200" value="${node.disk_gb}" required></div>
+      <div><label>Role</label><select class="n-role">
+        ${ROLES.map((r) => `<option value="${r}"${r === node.role ? " selected" : ""}>${r}</option>`).join("")}
+      </select></div>
+      <div><button type="button" class="small danger remove-node">Remove</button></div>
+    </div>`;
+}
+
+function renderNewProject() {
+  setNav("projects");
+  const nodes = [
+    { name: "master", vcpu: 4, memory_mb: 8192, disk_gb: 50, role: "k8s_master" },
+    { name: "worker-1", vcpu: 2, memory_mb: 4096, disk_gb: 30, role: "k8s_worker" },
+  ];
+
+  view().innerHTML = `
+    <h1>New environment</h1>
+    <p class="subtitle">Pick a size and the platform generates the infrastructure for you. Environments are destroyed automatically when their time is up.</p>
+    <form id="project-form">
+      <div class="panel">
+        <div class="grid">
+          <div class="field"><label for="p-name">Project name</label>
+            <input id="p-name" pattern="[a-z0-9-]{3,30}" placeholder="my-cluster" required></div>
+          <div class="field"><label for="p-desc">Description (optional)</label>
+            <input id="p-desc" placeholder="What is this for?"></div>
+        </div>
+        <div class="grid">
+          <div class="field"><label for="p-mode">Isolation</label>
+            <select id="p-mode">
+              <option value="namespace">Shared cluster — ready in seconds</option>
+              <option value="vm" selected>Dedicated VMs — stronger isolation, ~10 minutes</option>
+            </select></div>
+          <div class="field"><label for="p-ttl">Destroy after</label>
+            <select id="p-ttl">
+              <option value="4">4 hours</option>
+              <option value="24" selected>24 hours</option>
+              <option value="72">3 days</option>
+              <option value="168">7 days (maximum)</option>
+            </select></div>
+        </div>
+        <p class="muted" id="mode-note" style="margin-bottom:0"></p>
+      </div>
+
+      <div class="panel">
+        <div class="between"><h2 style="margin:0">Size</h2>
+          <button type="button" class="link" id="toggle-advanced">Configure nodes individually</button></div>
+        <div class="grid" id="preset-picker">
+          <label class="preset"><input type="radio" name="preset" value="small" checked> <b>Small</b><br><span class="muted">1 node · 2 vCPU · 4 GB</span></label>
+          <label class="preset"><input type="radio" name="preset" value="medium"> <b>Medium</b><br><span class="muted">2 nodes · 4 vCPU · 8 GB each</span></label>
+          <label class="preset"><input type="radio" name="preset" value="large"> <b>Large</b><br><span class="muted">3 nodes · 4 vCPU · 8 GB each</span></label>
+        </div>
+      </div>
+
+      <div class="panel" id="advanced" hidden>
+        <div class="grid">
+          <div class="field"><label for="p-cidr">Network CIDR</label>
+            <input id="p-cidr" value="192.168.56.0/24"></div>
+          <div class="field"><label for="p-domain">Domain</label>
+            <input id="p-domain" value="devops.local"></div>
+        </div>
+        <div class="between"><h2 style="margin:0">Nodes</h2>
+          <button type="button" class="small" id="add-node">Add node</button></div>
+        <div id="nodes"></div>
+        <div class="totals" id="totals"></div>
+      </div>
+
+      <div class="panel">
+        <h2 style="margin-top:0">Configuration</h2>
+        <div class="grid">
+          <div class="field"><label for="c-k8s">Kubernetes version</label>
+            <select id="c-k8s"><option>1.27</option><option selected>1.28</option><option>1.29</option></select></div>
+          <div class="field"><label for="c-runtime">Container runtime</label>
+            <select id="c-runtime"><option selected>containerd</option><option>crio</option></select></div>
+          <div class="field"><label for="c-cni">CNI plugin</label>
+            <select id="c-cni"><option selected>calico</option><option>flannel</option></select></div>
+          <div class="field"><label for="c-docker">Docker version</label>
+            <select id="c-docker"><option selected>24.0</option><option>25.0</option><option>26.1</option></select></div>
+        </div>
+      </div>
+
+      <div class="row">
+        <button class="primary" type="submit" id="create-btn">Create environment</button>
+        <button type="button" class="link" id="cancel">Cancel</button>
+      </div>
+      <p class="error" id="form-error"></p>
+    </form>`;
+
+  let advanced = false;
+
+  const MODE_NOTES = {
+    namespace:
+      "Runs in an isolated, quota-bounded namespace on a shared cluster. " +
+      "Fast, but isolation is weaker than a dedicated VM — avoid for sensitive workloads.",
+    vm: "Provisions dedicated virtual machines. Strongest isolation; takes several minutes.",
+  };
+
+  function updateModeNote() {
+    $("#mode-note").textContent = MODE_NOTES[$("#p-mode").value];
+  }
+  $("#p-mode").onchange = updateModeNote;
+  updateModeNote();
+
+  $("#toggle-advanced").onclick = () => {
+    advanced = !advanced;
+    $("#advanced").hidden = !advanced;
+    $("#preset-picker").hidden = advanced;
+    $("#toggle-advanced").textContent = advanced
+      ? "Use a standard size instead"
+      : "Configure nodes individually";
+    if (advanced) paint();
+  };
+
+  function paint() {
+    $("#nodes").innerHTML = nodes.map(nodeRowHtml).join("");
+    $("#nodes").querySelectorAll(".remove-node").forEach((btn) => {
+      btn.onclick = () => {
+        if (nodes.length === 1) return toast("A project needs at least one node.", true);
+        nodes.splice(Number(btn.closest(".node-row").dataset.index), 1);
+        paint();
+      };
+    });
+    $("#nodes").querySelectorAll("input, select").forEach((el) => {
+      el.oninput = () => { syncFromDom(); updateTotals(); };
+    });
+    updateTotals();
+  }
+
+  function syncFromDom() {
+    $("#nodes").querySelectorAll(".node-row").forEach((row, i) => {
+      nodes[i] = {
+        name: $(".n-name", row).value.trim(),
+        vcpu: Number($(".n-vcpu", row).value),
+        memory_mb: Number($(".n-mem", row).value),
+        disk_gb: Number($(".n-disk", row).value),
+        role: $(".n-role", row).value,
+      };
+    });
+  }
+
+  function updateTotals() {
+    const vcpu = nodes.reduce((s, n) => s + (n.vcpu || 0), 0);
+    const mem = nodes.reduce((s, n) => s + (n.memory_mb || 0), 0);
+    const disk = nodes.reduce((s, n) => s + (n.disk_gb || 0), 0);
+    const over = vcpu > CAPS.totalVcpu || mem > CAPS.totalMemory || nodes.length > CAPS.nodes;
+    const el = $("#totals");
+    el.classList.toggle("over", over);
+    el.textContent =
+      `${nodes.length}/${CAPS.nodes} nodes · ${vcpu}/${CAPS.totalVcpu} vCPU · ` +
+      `${(mem / 1024).toFixed(1)}/${(CAPS.totalMemory / 1024).toFixed(0)} GB memory · ${disk} GB disk` +
+      (over ? "  — exceeds the allowed limits" : "");
+  }
+
+  $("#add-node").onclick = () => {
+    syncFromDom();
+    if (nodes.length >= CAPS.nodes) return toast(`Limit is ${CAPS.nodes} nodes per project.`, true);
+    nodes.push({
+      name: `worker-${nodes.length}`, vcpu: 2, memory_mb: 4096, disk_gb: 30, role: "k8s_worker",
+    });
+    paint();
+  };
+
+  $("#cancel").onclick = () => { location.hash = "#/projects"; };
+
+  $("#project-form").onsubmit = async (e) => {
+    e.preventDefault();
+    $("#form-error").textContent = "";
+    $("#create-btn").disabled = true;
+    const name = $("#p-name").value.trim();
+
+    // The API takes exactly one of preset / infra_spec.
+    const body = {
+      name,
+      description: $("#p-desc").value.trim() || null,
+      mode: $("#p-mode").value,
+      ttl_hours: Number($("#p-ttl").value),
+    };
+
+    if (advanced) {
+      syncFromDom();
+      body.infra_spec = {
+        version: 1,
+        project: name,
+        network: { cidr: $("#p-cidr").value.trim(), domain: $("#p-domain").value.trim() },
+        nodes,
+        config: {
+          kubernetes_version: $("#c-k8s").value,
+          container_runtime: $("#c-runtime").value,
+          cni_plugin: $("#c-cni").value,
+          docker_version: $("#c-docker").value,
+        },
+      };
+    } else {
+      body.preset = view().querySelector('input[name="preset"]:checked').value;
+    }
+
+    try {
+      const project = await api("/projects", { method: "POST", body });
+      toast("Environment created.");
+      location.hash = `#/projects/${project.id}`;
+    } catch (err) {
+      $("#form-error").textContent = err.message;
+    } finally {
+      $("#create-btn").disabled = false;
+    }
+  };
+}
+
+/* -------------------------------------------------------- project detail */
+
+async function renderProject(id) {
+  setNav("projects");
+  loading();
+  try {
+    const [project, deployments, scans] = await Promise.all([
+      api(`/projects/${id}`),
+      api(`/projects/${id}/deployments`).catch(() => []),
+      api(`/projects/${id}/scans`).catch(() => []),
+    ]);
+
+    view().innerHTML = `
+      <div class="between">
+        <div>
+          <h1>${esc(project.name)} ${pill(project.status)} ${ttlBadge(project)}</h1>
+          <p class="subtitle">${esc(project.description || "No description")}</p>
+        </div>
+        <div class="row">
+          ${project.expires_at ? `<button id="extend-btn">Extend</button>` : ""}
+          <button id="plan-btn">Preview plan</button>
+          <button class="primary" id="provision-btn">Provision</button>
+          <button class="danger" id="destroy-btn">Destroy</button>
+        </div>
+      </div>
+      ${project.expiry_warned
+        ? `<div class="panel"><p class="error">This environment expires soon and will be destroyed automatically. Extend it if you still need it.</p></div>`
+        : ""}
+
+      <h2>Infrastructure</h2>
+      <div class="panel table-wrap">
+        <table>
+          <thead><tr><th>Node</th><th>Role</th><th>vCPU</th><th>Memory</th><th>Disk</th><th>IP address</th><th>Status</th></tr></thead>
+          <tbody>${project.nodes.map((n) => `
+            <tr>
+              <td>${esc(n.name)}</td>
+              <td class="mono">${esc(n.role)}</td>
+              <td>${n.vcpu}</td>
+              <td>${(n.memory_mb / 1024).toFixed(1)} GB</td>
+              <td>${n.disk_gb} GB</td>
+              <td class="mono">${esc(n.ip_address || "—")}</td>
+              <td>${pill(n.status)}</td>
+            </tr>`).join("")}
+          </tbody>
+        </table>
+      </div>
+
+      <div class="between"><h2>Deployments</h2>
+        <button class="small primary" id="deploy-btn">Deploy an app</button></div>
+      <div class="panel table-wrap" id="deployments">
+        ${deployments.length === 0
+          ? `<div class="empty">Nothing deployed yet.</div>`
+          : `<table>
+              <thead><tr><th>Service</th><th>Branch</th><th>Status</th><th>Live URL</th><th></th></tr></thead>
+              <tbody>${deployments.map((d) => `
+                <tr>
+                  <td>${esc(d.service_name)}</td>
+                  <td class="mono">${esc(d.branch)}</td>
+                  <td>${pill(d.status)}</td>
+                  <td>${d.live_url ? `<a href="${esc(d.live_url)}" target="_blank" rel="noopener">${esc(d.live_url)}</a>` : "—"}</td>
+                  <td><button class="small redeploy" data-id="${d.id}">Redeploy</button></td>
+                </tr>`).join("")}
+              </tbody></table>`}
+      </div>
+
+      <div class="between"><h2>Security scans</h2>
+        <div class="row">
+          <select id="scan-tool" style="width:auto">
+            <option value="all">All tools</option>
+            <option value="trivy">Trivy only</option>
+            <option value="gitleaks">Gitleaks only</option>
+            <option value="pip_audit">pip-audit only</option>
+          </select>
+          <button class="small" id="scan-btn">Run scan</button>
+          <a href="#/security/${project.id}">View report</a>
+        </div></div>
+      <div class="panel table-wrap">
+        ${scans.length === 0
+          ? `<div class="empty">No scans run yet.</div>`
+          : `<table>
+              <thead><tr><th>Tool</th><th>Target</th><th>Status</th><th>Findings</th><th>When</th></tr></thead>
+              <tbody>${scans.slice(0, 10).map((s) => `
+                <tr>
+                  <td class="mono">${esc(s.tool)}</td>
+                  <td class="mono">${esc(s.target)}</td>
+                  <td>${pill(s.status)}</td>
+                  <td>${s.summary ? severityInline(s.summary) : "—"}</td>
+                  <td class="muted">${fmtDate(s.created_at)}</td>
+                </tr>`).join("")}
+              </tbody></table>`}
+      </div>
+
+      <div class="between"><h2>Logs</h2>
+        <div class="row">
+          <input id="logs-search" placeholder="search term (e.g. error)" style="width:16rem">
+          <button class="small" id="logs-btn">Fetch logs</button>
+        </div></div>
+      <div class="panel" id="project-logs">
+        <div class="empty">Fetch recent log lines from Loki for this project's namespace.</div>
+      </div>`;
+
+    $("#provision-btn").onclick = async () => {
+      try {
+        const { job_id } = await api(`/projects/${id}/provision`, { method: "POST" });
+        toast("Provisioning started.");
+        location.hash = `#/jobs/${job_id}`;
+      } catch (err) { toast(err.message, true); }
+    };
+
+    $("#plan-btn").onclick = async () => {
+      toast("Running terraform plan…");
+      try {
+        const result = await api(`/projects/${id}/plan`);
+        view().insertAdjacentHTML("beforeend",
+          `<h2>Plan output</h2><div class="panel"><div class="log">${esc(result.output)}</div></div>`);
+      } catch (err) { toast(err.message, true); }
+    };
+
+    $("#destroy-btn").onclick = async () => {
+      // Destroying is irreversible, so require the project name to be typed.
+      const typed = await modalPrompt(
+        "Destroy environment",
+        `This permanently destroys all infrastructure for "${project.name}". This cannot be undone. Type the project name to confirm:`,
+        { placeholder: project.name },
+      );
+      if (typed === null || typed === "") return;
+      if (typed !== project.name) return toast("Name did not match — nothing was destroyed.", true);
+      try {
+        const { job_id } = await api(`/projects/${id}/destroy`, {
+          method: "POST", body: { confirm_name: typed },
+        });
+        toast("Destroy started.");
+        location.hash = `#/jobs/${job_id}`;
+      } catch (err) { toast(err.message, true); }
+    };
+
+    $("#scan-btn").onclick = async () => {
+      const target = await modalPrompt(
+        "New scan",
+        "Scan target (image reference or https repository URL):",
+        { placeholder: "users-service:1.0.0" },
+      );
+      if (!target) return;
+      try {
+        await api(`/projects/${id}/scans`, {
+          method: "POST", body: { tool: $("#scan-tool").value, target },
+        });
+        toast("Scan queued.");
+        renderProject(id);
+      } catch (err) { toast(err.message, true); }
+    };
+
+    $("#deploy-btn").onclick = () => renderDeployForm(project);
+
+    const loadLogs = async (search) => {
+      const el = $("#project-logs");
+      el.innerHTML = '<div class="empty">Loading logs…</div>';
+      try {
+        const body = await api(
+          `/logs?project=${encodeURIComponent(project.name)}&limit=200` +
+          (search ? `&search=${encodeURIComponent(search)}` : ""),
+        );
+        el.innerHTML = body.lines.length === 0
+          ? '<div class="empty">No log lines yet.</div>'
+          : `<div class="log">${body.lines.map((l) => {
+              const d = new Date(Number(l.timestamp) / 1e6);
+              return `<span class="muted mono" style="user-select:none">${esc(d.toLocaleTimeString())}</span> ${esc(l.line)}`;
+            }).join("\n")}</div>`;
+      } catch (err) {
+        el.innerHTML = `<p class="error">${esc(err.message)}</p>`;
+      }
+    };
+    $("#logs-btn").onclick = () => loadLogs($("#logs-search").value.trim());
+    $("#logs-search").onkeydown = (ev) => {
+      if (ev.key === "Enter") loadLogs(ev.target.value.trim());
+    };
+
+    const extendBtn = $("#extend-btn");
+    if (extendBtn) {
+      extendBtn.onclick = async () => {
+        const hours = await modalPrompt(
+          "Extend environment",
+          "Extend this environment by how many hours?",
+          { value: "24", type: "number", placeholder: "24" },
+        );
+        if (hours === null || hours === "") return;
+        try {
+          await api(`/projects/${id}/extend`, {
+            method: "POST", body: { hours: Number(hours) },
+          });
+          toast("Environment extended.");
+          renderProject(id);
+        } catch (err) { toast(err.message, true); }
+      };
+    }
+
+    view().querySelectorAll(".redeploy").forEach((btn) => {
+      btn.onclick = async () => {
+        try {
+          await api(`/deployments/${btn.dataset.id}/redeploy`, { method: "POST" });
+          toast("Redeploy queued.");
+          renderProject(id);
+        } catch (err) { toast(err.message, true); }
+      };
+    });
+
+    autoRefresh(renderProject, id, [
+      project.status,
+      ...deployments.map((d) => d.status),
+      ...scans.map((s) => s.status),
+    ]);
+  } catch (err) {
+    showError(err, route);
+  }
+}
+
+function renderDeployForm(project) {
+  const html = `
+    <h2>Deploy an application</h2>
+    <div class="panel">
+      <form id="deploy-form">
+        <div class="grid">
+          <div class="field"><label for="d-name">Service name</label>
+            <input id="d-name" pattern="[a-z0-9-]{1,60}" placeholder="users-service" required></div>
+          <div class="field"><label for="d-port">Port</label>
+            <input id="d-port" type="number" min="1" max="65535" value="8000" required></div>
+        </div>
+        <div class="grid">
+          <div class="field"><label for="d-repo">Repository URL (https only)</label>
+            <input id="d-repo" type="url" placeholder="https://github.com/org/repo" required></div>
+          <div class="field"><label for="d-branch">Branch</label>
+            <input id="d-branch" value="main" required></div>
+          <div class="field"><label for="d-replicas">Replicas</label>
+            <input id="d-replicas" type="number" min="1" max="10" value="2" required></div>
+        </div>
+        <div class="row"><button class="primary" type="submit">Build, scan and deploy</button></div>
+        <p class="muted" style="margin-bottom:0">The image is scanned before it reaches the cluster; a CRITICAL or HIGH finding blocks the deployment.</p>
+        <p class="error" id="deploy-error"></p>
+      </form>
+    </div>`;
+  view().insertAdjacentHTML("beforeend", html);
+  $("#deploy-form").scrollIntoView({ behavior: "smooth" });
+
+  $("#deploy-form").onsubmit = async (e) => {
+    e.preventDefault();
+    $("#deploy-error").textContent = "";
+    try {
+      await api(`/projects/${project.id}/deployments`, {
+        method: "POST",
+        body: {
+          service_name: $("#d-name").value.trim(),
+          repo_url: $("#d-repo").value.trim(),
+          branch: $("#d-branch").value.trim(),
+          port: Number($("#d-port").value),
+          replicas: Number($("#d-replicas").value),
+        },
+      });
+      toast("Deployment queued.");
+      renderProject(project.id);
+    } catch (err) {
+      $("#deploy-error").textContent = err.message;
+    }
+  };
+}
+
+/* ------------------------------------------------------------- security */
+
+const SEVERITIES = ["critical", "high", "medium", "low", "unknown"];
+
+function severityInline(summary) {
+  return SEVERITIES
+    .filter((s) => summary[s])
+    .map((s) => `<span class="sev-tag ${s}">${summary[s]} ${s}</span>`)
+    .join(" ") || `<span class="muted">clean</span>`;
+}
+
+/**
+ * Inline SVG sparkline of critical+high findings over time.
+ * Hand-drawn rather than pulling in a charting library for one small chart.
+ */
+function sparkline(trend) {
+  if (!trend || trend.length < 2) return "";
+  const values = trend.map((point) => (point.critical || 0) + (point.high || 0));
+  const max = Math.max(...values, 1);
+  const width = 320;
+  const height = 48;
+  const step = width / (values.length - 1);
+  const points = values
+    .map((value, index) => `${(index * step).toFixed(1)},${(height - (value / max) * (height - 6) - 3).toFixed(1)}`)
+    .join(" ");
+
+  return `
+    <div class="panel">
+      <div class="between" style="margin-bottom:.5rem">
+        <span class="muted">Critical + high findings, last 30 days</span>
+        <span class="muted">peak ${max}</span>
+      </div>
+      <svg viewBox="0 0 ${width} ${height}" width="100%" height="${height}"
+           preserveAspectRatio="none" role="img"
+           aria-label="Trend of critical and high findings over the last 30 days">
+        <polyline points="${points}" fill="none" stroke="currentColor"
+                  stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+      </svg>
+      <div class="between muted" style="font-size:.8rem">
+        <span>${esc(trend[0].date)}</span><span>${esc(trend[trend.length - 1].date)}</span>
+      </div>
+    </div>`;
+}
+
+async function renderSecurity(projectId) {
+  setNav("security");
+  loading();
+  try {
+    if (!projectId) {
+      const projects = await api("/projects");
+      view().innerHTML = `
+        <h1>Security</h1>
+        <p class="subtitle">Vulnerability and secret findings across your projects.</p>
+        ${projects.length === 0
+          ? `<div class="panel"><div class="empty">No projects yet.</div></div>`
+          : `<div class="panel"><table><tbody>${projects.map((p) => `
+              <tr><td><a href="#/security/${p.id}">${esc(p.name)}</a></td><td>${pill(p.status)}</td></tr>`
+            ).join("")}</tbody></table></div>`}`;
+      return;
+    }
+
+    const [project, summary, scans] = await Promise.all([
+      api(`/projects/${projectId}`),
+      api(`/projects/${projectId}/security/summary`),
+      api(`/projects/${projectId}/scans`),
+    ]);
+
+    view().innerHTML = `
+      <h1>Security — ${esc(project.name)}</h1>
+      <p class="subtitle">Current findings from the most recent scan of each tool.</p>
+
+      <div class="sev-grid">
+        ${SEVERITIES.map((s) => `
+          <div class="sev ${s}"><div class="n">${summary.current[s] ?? 0}</div><div class="k">${s}</div></div>`
+        ).join("")}
+      </div>
+
+      ${sparkline(summary.trend)}
+
+      <h2>Top issues</h2>
+      <div class="panel table-wrap">
+        ${summary.top_issues.length === 0
+          ? `<div class="empty">No findings recorded.</div>`
+          : `<table>
+              <thead><tr><th>Severity</th><th>Identifier</th><th>Package</th><th>Fixed in</th><th>Count</th></tr></thead>
+              <tbody>${summary.top_issues.map((i) => `
+                <tr>
+                  <td><span class="sev-tag ${esc(i.severity)}">${esc(i.severity)}</span></td>
+                  <td class="mono">${esc(i.identifier || i.title || "—")}</td>
+                  <td class="mono">${esc(i.package_name || "—")}</td>
+                  <td class="mono">${esc(i.fixed_version || "no fix")}</td>
+                  <td>${i.count}</td>
+                </tr>`).join("")}
+              </tbody></table>`}
+      </div>
+
+      <h2>Scan history</h2>
+      <div class="panel table-wrap">
+        ${scans.length === 0
+          ? `<div class="empty">No scans yet.</div>`
+          : `<table>
+              <thead><tr><th>Tool</th><th>Target</th><th>Status</th><th>Findings</th><th>When</th><th></th></tr></thead>
+              <tbody>${scans.map((s) => `
+                <tr>
+                  <td class="mono">${esc(s.tool)}</td>
+                  <td class="mono">${esc(s.target)}</td>
+                  <td>${pill(s.status)}</td>
+                  <td>${s.summary ? severityInline(s.summary) : "—"}</td>
+                  <td class="muted">${fmtDate(s.created_at)}</td>
+                  <td><button class="small view-findings" data-id="${s.id}">Details</button></td>
+                </tr>`).join("")}
+              </tbody></table>`}
+      </div>
+      <div id="findings"></div>`;
+
+    // The findings endpoint supports severity filtering and pagination; keep
+    // the current selection when re-rendering so a filter survives paging.
+    async function showFindings(scanId, severityFilter = "", page = 1) {
+      const query = new URLSearchParams({ page: String(page), page_size: "50" });
+      if (severityFilter) query.set("severity", severityFilter);
+      const result = await api(`/scans/${scanId}/findings?${query}`);
+      const pages = Math.max(1, Math.ceil(result.total / 50));
+
+      $("#findings").innerHTML = `
+        <div class="between">
+          <h2>Findings (${result.total})</h2>
+          <select id="sev-filter" style="width:auto">
+            <option value="">All severities</option>
+            ${SEVERITIES.map((s) =>
+              `<option value="${s}"${s === severityFilter ? " selected" : ""}>${s}</option>`
+            ).join("")}
+          </select>
+        </div>
+        <div class="panel table-wrap">
+          ${result.items.length === 0
+            ? `<div class="empty">Nothing found${severityFilter ? ` at severity “${esc(severityFilter)}”` : " — this target is clean"}.</div>`
+            : `<table>
+                <thead><tr><th>Severity</th><th>Identifier</th><th>Package</th><th>Installed</th><th>Fixed in</th><th>Location</th></tr></thead>
+                <tbody>${result.items.map((f) => `
+                  <tr>
+                    <td><span class="sev-tag ${esc(f.severity)}">${esc(f.severity)}</span></td>
+                    <td class="mono">${esc(f.identifier || "—")}</td>
+                    <td class="mono">${esc(f.package_name || "—")}</td>
+                    <td class="mono">${esc(f.installed_version || "—")}</td>
+                    <td class="mono">${esc(f.fixed_version || "no fix")}</td>
+                    <td class="mono">${esc(f.file_path ? `${f.file_path}:${f.line_number ?? ""}` : "—")}</td>
+                  </tr>`).join("")}
+</tbody></table>`}
+      </div>
+        ${pages > 1 ? `<div class="row">
+          <button class="small" id="prev-page" ${page <= 1 ? "disabled" : ""}>Previous</button>
+          <span class="muted">Page ${page} of ${pages}</span>
+          <button class="small" id="next-page" ${page >= pages ? "disabled" : ""}>Next</button>
+        </div>` : ""}`;
+
+      $("#sev-filter").onchange = (e) => showFindings(scanId, e.target.value, 1);
+      const prev = $("#prev-page");
+      const next = $("#next-page");
+      if (prev) prev.onclick = () => showFindings(scanId, severityFilter, page - 1);
+      if (next) next.onclick = () => showFindings(scanId, severityFilter, page + 1);
+      $("#findings").scrollIntoView({ behavior: "smooth" });
+    }
+
+    view().querySelectorAll(".view-findings").forEach((btn) => {
+      btn.onclick = async () => {
+        try {
+          await showFindings(btn.dataset.id);
+        } catch (err) { toast(err.message, true); }
+      };
+    });
+  } catch (err) {
+    showError(err, route);
+  }
+}
+
+/* ------------------------------------------------------------ catalogue */
+
+async function renderCatalogue() {
+  setNav("catalogue");
+  loading();
+  try {
+    const [entries, teams] = await Promise.all([api("/catalogue"), api("/teams")]);
+    const teamById = new Map(teams.map((t) => [t.id, t.name]));
+    view().innerHTML = `
+      <h1>Service catalogue</h1>
+      <p class="subtitle">Every service running across your teams, with its current security posture.</p>
+      <div class="panel">
+        <div class="row" style="align-items:flex-end">
+          <div class="field">
+            <label for="cat-filter-status">Status</label>
+            <select id="cat-filter-status">
+              <option value="">All</option>
+              <option value="live">live</option>
+              <option value="building">building</option>
+              <option value="scanning">scanning</option>
+              <option value="failed">failed</option>
+              <option value="undeployed">undeployed</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="cat-filter-sev">Findings</label>
+            <select id="cat-filter-sev">
+              <option value="">All</option>
+              <option value="critical">Critical</option>
+              <option value="high">High</option>
+              <option value="clean">Clean</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="cat-filter-team">Team</label>
+            <select id="cat-filter-team">
+              <option value="">All teams</option>
+              ${teams.map((t) => `<option value="${t.id}">${esc(t.name)}</option>`).join("")}
+            </select>
+          </div>
+        </div>
+      </div>
+      <div class="panel table-wrap">
+        <div id="cat-rows">${catalogueRows(entries, teamById)}</div>
+      </div>`;
+
+    const apply = () => {
+      const status = $("#cat-filter-status").value;
+      const sev = $("#cat-filter-sev").value;
+      const team = $("#cat-filter-team").value;
+      $("#cat-rows").innerHTML = catalogueRows(
+        entries.filter((e) =>
+          (!status || e.status === status) &&
+          (!sev || (sev === "clean" ? !e.critical && !e.high : (sev === "critical" ? e.critical : e.high))) &&
+          (!team || e.team_id === team)
+        ),
+        teamById,
+      );
+    };
+    $("#cat-filter-status").onchange = apply;
+    $("#cat-filter-sev").onchange = apply;
+    $("#cat-filter-team").onchange = apply;
+  } catch (err) {
+    showError(err, route);
+  }
+}
+
+function catalogueRows(entries, teamById) {
+  if (entries.length === 0) {
+    return `<div class="empty">Nothing deployed yet. Create an environment and deploy an app to see it here.</div>`;
+  }
+  return `<table>
+    <thead><tr><th>Service</th><th>Project</th><th>Owner</th><th>Team</th><th>Status</th><th>Findings</th><th>Live URL</th><th>Logs</th><th>Updated</th></tr></thead>
+    <tbody>${entries.map((e) => `
+      <tr>
+        <td>${esc(e.service_name)}</td>
+        <td><a href="#/projects/${e.project_id}">${esc(e.project_name)}</a></td>
+        <td class="muted">${esc(e.owner_email || "—")}</td>
+        <td class="muted">${esc(teamById.get(e.team_id) || "")}</td>
+        <td>${pill(e.status)}</td>
+        <td>${e.critical || e.high
+            ? `${e.critical ? `<span class="sev-tag critical">${e.critical} critical</span> ` : ""}${e.high ? `<span class="sev-tag high">${e.high} high</span>` : ""}`
+            : `<span class="muted">clean</span>`}</td>
+        <td>${e.live_url ? `<a href="${esc(e.live_url)}" target="_blank" rel="noopener">open</a>` : "—"}</td>
+        <td>${e.logs_job_id ? `<a href="#/jobs/${e.logs_job_id}">logs</a>` : "—"}</td>
+        <td class="muted">${fmtDate(e.updated_at)}</td>
+      </tr>`).join("")}
+    </tbody></table>`;
+}
+
+/* ---------------------------------------------------------------- teams */
+
+async function renderTeams() {
+  setNav("teams");
+  loading();
+  try {
+    const teams = await api("/teams");
+    const costs = await Promise.all(
+      teams.map((team) => api(`/teams/${team.id}/costs`).catch(() => null))
+    );
+
+    view().innerHTML = `
+      <div class="between">
+        <div>
+          <h1>Teams</h1>
+          <p class="subtitle">Projects belong to a team. Everyone in the team can see them.</p>
+        </div>
+        <button class="primary" id="new-team">New team</button>
+      </div>
+      ${teams.map((team, index) => {
+        const cost = costs[index];
+        return `
+        <div class="panel">
+          <div class="between">
+            <div>
+              <h2 style="margin:0">${esc(team.name)} ${team.is_personal ? '<span class="pill draft">personal</span>' : ""}</h2>
+              <p class="muted" style="margin:.25rem 0 0">${esc(team.description || "")}</p>
+            </div>
+            <div style="text-align:right">
+              ${cost ? `<div><b>${cost.total.toFixed(2)} ${esc(cost.currency)}</b></div>
+                        <div class="muted" style="font-size:.85rem">${cost.projects.length} project(s) to date</div>` : ""}
+            </div>
+          </div>
+          <div class="row" style="margin-top:.75rem">
+            <button class="small view-members" data-id="${team.id}">Members</button>
+            <button class="small add-member" data-id="${team.id}">Add member</button>
+          </div>
+          <div id="members-${team.id}"></div>
+        </div>`;
+      }).join("")}`;
+
+    $("#new-team").onclick = async () => {
+      const name = await modalPrompt("New team", "Team name:");
+      if (!name) return;
+      try {
+        await api("/teams", { method: "POST", body: { name } });
+        toast("Team created.");
+        renderTeams();
+      } catch (err) { toast(err.message, true); }
+    };
+
+    view().querySelectorAll(".view-members").forEach((btn) => {
+      btn.onclick = async () => {
+        try {
+          const members = await api(`/teams/${btn.dataset.id}/members`);
+          $(`#members-${btn.dataset.id}`).innerHTML = `
+            <div class="table-wrap" style="margin-top:.75rem"><table>
+              <thead><tr><th>Member</th><th>Role</th><th></th></tr></thead>
+              <tbody>${members.map((m) => `
+                <tr>
+                  <td>${esc(m.email)}</td>
+                  <td class="mono">${esc(m.role)}</td>
+                  <td><button class="small danger remove-member" data-team="${btn.dataset.id}" data-user="${m.user_id}">Remove</button></td>
+                </tr>`).join("")}
+              </tbody></table></div>`;
+          bindRemoveMember();
+        } catch (err) { toast(err.message, true); }
+      };
+    });
+
+    view().querySelectorAll(".add-member").forEach((btn) => {
+      btn.onclick = async () => {
+        const email = await modalPrompt("Add member", "Email address of the user to add:");
+        if (!email) return;
+        const role = await modalPrompt(
+          "Add member",
+          `Role for ${email} (viewer / developer / owner / admin):`,
+          { value: "developer" },
+        );
+        if (!role) return;
+        try {
+          await api(`/teams/${btn.dataset.id}/members`, {
+            method: "POST", body: { email, role },
+          });
+          toast("Member added.");
+          renderTeams();
+        } catch (err) { toast(err.message, true); }
+      };
+    });
+
+    function bindRemoveMember() {
+      view().querySelectorAll(".remove-member").forEach((btn) => {
+        btn.onclick = async () => {
+          const ok = await modalConfirm("Remove member", "Revoke this member's team access?");
+          if (!ok) return;
+          try {
+            await api(`/teams/${btn.dataset.team}/members/${btn.dataset.user}`, { method: "DELETE" });
+            toast("Member removed.");
+            renderTeams();
+          } catch (err) { toast(err.message, true); }
+        };
+      });
+    }
+  } catch (err) {
+    showError(err, route);
+  }
+}
+
+/* ----------------------------------------------------------------- jobs */
+
+async function renderJobs() {
+  setNav("jobs");
+  loading();
+  try {
+    const projects = await api("/projects");
+    view().innerHTML = `
+      <h1>Jobs</h1>
+      <p class="subtitle">Open a project to follow its provisioning and deployment jobs, or paste a job ID below.</p>
+      <div class="panel">
+        <form id="job-lookup" class="row">
+          <input id="job-id" placeholder="Job ID" style="max-width:340px">
+          <button class="primary" type="submit">Open job</button>
+        </form>
+      </div>
+      ${projects.length
+        ? `<div class="panel"><table><tbody>${projects.map((p) =>
+            `<tr><td><a href="#/projects/${p.id}">${esc(p.name)}</a></td><td>${pill(p.status)}</td></tr>`
+          ).join("")}</tbody></table></div>`
+        : ""}`;
+    $("#job-lookup").onsubmit = (e) => {
+      e.preventDefault();
+      const id = $("#job-id").value.trim();
+      if (id) location.hash = `#/jobs/${id}`;
+    };
+  } catch (err) {
+    showError(err, route);
+  }
+}
+
+let activeStream;
+
+async function renderJob(jobId) {
+  setNav("jobs");
+  loading();
+  if (activeStream) { activeStream.close(); activeStream = null; }
+
+  try {
+    const job = await api(`/jobs/${jobId}`);
+    view().innerHTML = `
+      <div class="between">
+        <div>
+          <h1>${esc(job.type)} job ${pill(job.status)}</h1>
+          <p class="subtitle mono">${esc(job.id)}</p>
+        </div>
+        <button class="danger" id="cancel-job">Cancel job</button>
+      </div>
+      ${job.error_message ? `<div class="panel"><p class="error">${esc(job.error_message)}</p></div>` : ""}
+      <div class="panel">
+        <div class="between" style="margin-bottom:.6rem">
+          <span class="muted">Started ${fmtDate(job.started_at)}${job.finished_at ? ` · finished ${fmtDate(job.finished_at)}` : ""}</span>
+          <span class="muted" id="stream-state"></span>
+        </div>
+        <div class="log" id="log">${esc(job.log || "Waiting for output…")}</div>
+      </div>`;
+
+    $("#cancel-job").onclick = async () => {
+      try {
+        await api(`/jobs/${jobId}/cancel`, { method: "POST" });
+        toast("Cancellation requested.");
+      } catch (err) { toast(err.message, true); }
+    };
+
+    // Only stream while the job can still produce output.
+    if (job.status === "queued" || job.status === "running") {
+      streamJobLog(jobId);
+    } else {
+      $("#stream-state").textContent = "finished";
+    }
+  } catch (err) {
+    showError(err, route);
+  }
+}
+
+function streamJobLog(jobId) {
+  const logEl = $("#log");
+  const stateEl = $("#stream-state");
+  stateEl.textContent = "streaming…";
+
+  // EventSource cannot send an Authorization header, so the log stream uses a
+  // short-lived stream token minted server-side instead of the access token
+  // (which would otherwise appear in proxy logs).
+  fetch(`${API}/jobs/${jobId}/stream-token`, { method: "POST", headers: { Authorization: `Bearer ${token()}` } })
+    .then((res) => {
+      if (!res.ok) throw new Error(`stream-token ${res.status}`);
+      return res.json();
+    })
+    .then((body) => {
+      const stream = new EventSource(`${API}/jobs/${jobId}/logs?stream_token=${encodeURIComponent(body.message)}`);
+      activeStream = stream;
+
+      // The server emits named "log" events carrying {"delta": "..."} — the
+      // incremental tail of the job log since the last send.
+      stream.addEventListener("log", (event) => {
+        let delta = "";
+        try { delta = JSON.parse(event.data).delta || ""; } catch { return; }
+        if (!delta) return;
+        if (logEl.textContent === "Waiting for output…") logEl.textContent = "";
+        logEl.textContent += delta;
+        logEl.scrollTop = logEl.scrollHeight;
+      });
+
+      stream.addEventListener("done", () => {
+        stateEl.textContent = "finished";
+        stream.close();
+        if (activeStream === stream) activeStream = null;
+        renderJob(jobId);
+      });
+
+      stream.onerror = () => {
+        stateEl.textContent = "stream disconnected";
+        stream.close();
+        if (activeStream === stream) activeStream = null;
+      };
+    })
+    .catch((err) => {
+      stateEl.textContent = `stream error: ${err.message}`;
+    });
+}
+
+/* --------------------------------------------------------------- router */
+
+const ROUTES = [
+  [/^\/login$/, renderAuth],
+  [/^\/projects$/, renderProjects],
+  [/^\/projects\/new$/, renderNewProject],
+  [/^\/projects\/([0-9a-f-]{36})$/, renderProject],
+  [/^\/catalogue$/, renderCatalogue],
+  [/^\/teams$/, renderTeams],
+  [/^\/security$/, () => renderSecurity(null)],
+  [/^\/security\/([0-9a-f-]{36})$/, renderSecurity],
+  [/^\/jobs$/, renderJobs],
+  [/^\/jobs\/([0-9a-f-]{36})$/, renderJob],
+];
+
+// Statuses that are still moving, so the view should refresh itself.
+const IN_FLIGHT = new Set([
+  "provisioning", "destroying", "queued", "building", "scanning", "deploying",
+]);
+
+let refreshTimer;
+
+function scheduleRefresh(handler, arg) {
+  clearTimeout(refreshTimer);
+  refreshTimer = setTimeout(() => {
+    // Only refresh if the user is still on the same view.
+    if (!document.hidden) handler(arg);
+  }, 5000);
+}
+
+/** Re-render while anything on screen is still in progress. */
+function autoRefresh(handler, arg, statuses) {
+  if (statuses.some((status) => IN_FLIGHT.has(status))) scheduleRefresh(handler, arg);
+}
+
+function route() {
+  clearTimeout(refreshTimer);
+  if (activeStream) { activeStream.close(); activeStream = null; }
+
+  const path = location.hash.replace(/^#/, "") || "/projects";
+
+  if (!token()) {
+    setNav(null);
+    return renderAuth();
+  }
+
+  for (const [pattern, handler] of ROUTES) {
+    const match = path.match(pattern);
+    if (match) return handler(match[1]);
+  }
+  location.hash = "#/projects";
+}
+
+async function boot() {
+  $("#app").remove();
+
+  $("#logout").onclick = async () => {
+    const refresh = localStorage.getItem(REFRESH_KEY);
+    if (refresh) {
+      // Best effort: revoke server-side, but log out locally regardless.
+      await api("/auth/logout", { method: "POST", body: { refresh_token: refresh } }).catch(() => {});
+    }
+    clearTokens();
+    location.hash = "#/login";
+    route();
+  };
+
+  if (token()) {
+    try {
+      const me = await api("/auth/me");
+      $("#whoami").textContent = me.email;
+    } catch {
+      clearTokens();
+    }
+  }
+
+  // SSO popup (docs/TODO.md Task 3.3): the IdP callback page postMessages
+  // the tokens back; only accept messages from our own origin.
+  window.addEventListener("message", (event) => {
+    if (event.origin !== window.location.origin) return;
+    if (!event.data || event.data.source !== "controlplane-oidc") return;
+    setTokens(event.data.access_token, event.data.refresh_token);
+    $("#whoami").textContent = event.data.email || $("#whoami").textContent;
+    route();
+  });
+
+  window.addEventListener("hashchange", route);
+  route();
+}
+
+boot();

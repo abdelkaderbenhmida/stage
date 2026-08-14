@@ -1,0 +1,11 @@
+output "node_ips" {
+  description = "All node names and their IP addresses."
+  value       = { for name, node in local.nodes : name => node.ip }
+  sensitive   = true
+}
+
+output "node_roles" {
+  description = "All node names and their assigned roles."
+  value       = { for name, node in local.nodes : name => node.role }
+  sensitive   = true
+}
