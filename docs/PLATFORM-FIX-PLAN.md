@@ -32,7 +32,7 @@ and rejects it with `missing properties: 'selector'`. Lint fails → **Tests, Bu
 Confirmed on commit `f67b912`. It is the only partial manifest in the tree.
 
 **(b) Every healthy pod runs a hand-built local image.** `orders-service:latest` exists only on the nodes from a
-manual `docker build`. Every pod pulling `ghcr.io/abdelkaderbenhmida/*:secondary` fails. The GitOps pipeline has
+manual `docker build`. Every pod pulling `ghcr.io/<owner>/*:secondary` fails. The GitOps pipeline has
 never delivered an image to this cluster.
 
 ### Decisions already taken
@@ -48,14 +48,14 @@ is achievable *after cleanup*, not today. **The UI must refuse with the real rea
 
 ## 2. Codebase orientation (reuse these — do not reinvent)
 
-**`ui/introspect.py`** (~1400 lines) — all logic; `ui/main.py` (~330) is thin routes; `ui/static/app.js` (~1100,
+**`controlplane/platform_ops.py`** (~1400 lines) — all logic; `controlplane/api/routers/platform.py` (~330) is thin routes; `controlplane/web/static/platform/app.js` (~1100,
 vanilla JS, **no build step**).
 
 | Helper | Purpose |
 |---|---|
 | `_run(cmd, timeout=KUBECTL_TIMEOUT, input_=None)` | subprocess wrapper → `{ok, stdout, stderr}`, never raises. `KUBECTL_TIMEOUT=6`, `GH_TIMEOUT=25` |
 | `_git(args)` | `git -C ROOT …`, swallows errors |
-| `_repo_slug()` | → `abdelkaderbenhmida/stage` |
+| `_repo_slug()` | → `<owner>/<repo>` |
 | `ServiceError(ValueError)` | mutations raise this; `main.py::_guard` maps it to HTTP 400 |
 | `_vault_root_token()` / `_es_credentials()` | read + b64decode a k8s Secret — **the pattern for any credential** |
 | `SCRIPTS` + `run_script` / `script_output` / `stop_script` / `_script_reader` | **already-built streaming runner**: allowlist + `Popen` + daemon thread + offset polling + ANSI strip. Terraform/Ansible streaming must extend this, not duplicate it |
@@ -68,11 +68,11 @@ Operations view = `renderConfig()`, sub-tabs `["ci","argocd","vault","monitoring
 in `loadConfigTab(tab)`; `refreshConfigTab()`. `renderRunTab` already implements the 1.2 s offset-polling pattern
 (`state.runTimer`, cleared in `switchConfigTab`) — reuse it for any streamed output.
 
-Tests: `tests/test_ui.py`, 21 passing. Run `ENVIRONMENT=dev PYTHONPATH=ui pytest tests/test_ui.py`.
+Tests: `tests/test_ui.py`, 21 passing. Run `ENVIRONMENT=dev pytest controlplane/tests`.
 Precedent exists for pure-function unit tests (`_parse_top_output`, `_parse_rollout_history`) and YAML-conformance
 tests (`test_alertmanager_receiver_is_wired`).
 
-Tooling present and authenticated: `gh` (as `abdelkaderbenhmida`; **note its token lacks `read:packages`**),
+Tooling present and authenticated: `gh` (as `<owner>`; **note its token lacks `read:packages`**),
 `terraform` v1.15.7, `ansible-core` 2.21.1, `kubectl`, `helm`, `virsh`.
 
 ### Conventions to hold
@@ -95,9 +95,9 @@ find k8s/ -name '*.yaml' ! -name '*values*.yaml' ! -name 'Chart.yaml' ! -name 'c
   xargs -0 /tmp/kubeconform -strict -ignore-missing-schemas -kubernetes-version 1.28.0 …
 ```
 
-**Verify:** push, then `gh run view <id> --repo abdelkaderbenhmida/stage --json jobs` shows Lint green and
+**Verify:** push, then `gh run view <id> --repo <owner>/<repo> --json jobs` shows Lint green and
 **Build & Push Images** running for the first time in this branch's history. Then confirm
-`ghcr.io/abdelkaderbenhmida/users-service:secondary` resolves.
+`ghcr.io/<owner>/users-service:secondary` resolves.
 
 ---
 
@@ -144,7 +144,7 @@ Give them an owner: extend `devops-platform-base` (or add a small `shared` Appli
 
 ## WS-A — Golden path: actually ship a service
 
-### `ui/introspect.py`
+### `controlplane/platform_ops.py`
 ```python
 def ship_service(app_name, svc_name, open_pr=True) -> dict   # MUTATING → ServiceError
 #   1. create_service()  (existing; extend to also write service.yaml)
@@ -177,9 +177,9 @@ def service_pipeline(service) -> dict   # READ, fails soft — the stage tracker
 
 **The feature is naming the first blocking stage.** Today nothing tells you which of 11 steps you're stuck on.
 
-### `ui/main.py`
-`POST /api/ship/service` (`ShipIn{app, name, open_pr}`) · `POST /api/ship/{service}/secrets` ·
-`POST /api/ship/vault/resync` · `GET /api/ship/{service}/pipeline`. Mutations through `_guard`.
+### `controlplane/api/routers/platform.py`
+`POST /api/v1/platform/ship/service` (`ShipIn{app, name, open_pr}`) · `POST /api/v1/platform/ship/{service}/secrets` ·
+`POST /api/v1/platform/ship/vault/resync` · `GET /api/v1/platform/ship/{service}/pipeline`. Mutations through `_guard`.
 
 ### Frontend
 Rework the Apps & Services create box into a Ship flow. Render the stage list with `pill()` per stage, highlight
@@ -265,7 +265,7 @@ work it knows will fail. After freeing space and setting `disk_size_gb=10`, a re
 
 ## WS-D — Honest status
 
-`platform_overview()` (`ui/introspect.py` ~line 655) derives `status: "ready"` purely from `layer_checks`
+`platform_overview()` (`controlplane/platform_ops.py` ~line 655) derives `status: "ready"` purely from `layer_checks`
 file-existence booleans. Replace with an outcome roll-up over `service_pipeline()`: `healthy` only when every
 service reaches pods-ready; otherwise `degraded` with the count and the first blocking stage. Surface per-service
 on Platform Health (`loadHealthBoard`).
@@ -287,8 +287,8 @@ never-started — not `ready`.
 
 ## Verification overall
 
-- `node --check ui/static/app.js` after every frontend change.
-- `ENVIRONMENT=dev PYTHONPATH=ui pytest tests/test_ui.py` — 31 pass today. Add cluster-free tests:
+- `node --check controlplane/web/static/platform/app.js` after every frontend change.
+- `ENVIRONMENT=dev pytest controlplane/tests` — 31 pass today. Add cluster-free tests:
   tfvars conformance (every key declared in `variables.tf`), no partial manifests outside `*-patch.yaml`,
   `service_pipeline` stage-transition table, terraform import-command generation, command allowlists.
 - End-to-end proof: CI goes green and pushes an image for the first time; a shipped service reaches pods-ready;
@@ -305,8 +305,8 @@ curl -s localhost:8099/api/platform | jq '.overview.status'
 kubectl get deploy -n devops-platform -o custom-columns=NAME:.metadata.name,READY:.status.readyReplicas,DESIRED:.spec.replicas
 
 # CI dead: Lint fails, Build & Push skipped
-gh run list --repo abdelkaderbenhmida/stage --branch secondary --limit 1
-gh run view <id> --repo abdelkaderbenhmida/stage --json jobs \
+gh run list --repo <owner>/<repo> --branch secondary --limit 1
+gh run view <id> --repo <owner>/<repo> --json jobs \
   --jq '.jobs[] | "\(.conclusion // .status)\t\(.name)"'
 
 # healthy pods run local images; registry pulls fail

@@ -1,12 +1,12 @@
 # Example tfvars — copy to terraform.tfvars (gitignored) and edit.
-# Backend (remote S3 + locking): pass via `terraform init -backend-config=...`
-# instead of tfvars. Bucket must have versioning + SSE-KMS + public access blocked
-# and a DynamoDB table "terraform-locks" with a LockID primary key.
 #
-#   terraform init \
-#     -backend-config="bucket=stage-terraform-state" \
-#     -backend-config="key=stage/terraform.tfstate" \
-#     -backend-config="region=eu-west-1"
+# Everything here provisions local VMs through libvirt/KVM. There is no cloud
+# account and no remote state: see backend.tf for why state is a local file
+# and what that costs you.
+#
+# Prerequisites on this host:
+#   - libvirt + qemu-kvm installed, your user in the `libvirt` group
+#   - the base image below present in the storage pool (virsh pool-list)
 
 # ── VM specs ──
 vm_vcpu      = 2

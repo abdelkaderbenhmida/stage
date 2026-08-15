@@ -15,7 +15,7 @@ End-to-end DevOps platform built around **3 FastAPI microservices** (Users, Prod
 
 | Layer | Tool |
 |---|---|
-| Infrastructure as Code | Terraform (libvirt/KVM homelab provider or equivalent cloud) |
+| Infrastructure as Code | Terraform (libvirt/KVM — local VMs, no cloud account) |
 | Configuration | Ansible (roles `docker`, `k8s_common`, `k8s_master`, `k8s_worker`) |
 | Containerization | Docker multi-stage builds, non-root images + HEALTHCHECK |
 | Orchestration | Kubernetes + Helm (Prometheus, Grafana, ELK charts) |
@@ -57,7 +57,7 @@ Prometheus / Grafana / ELK / AlertManager ──observability──▶ SLO dashb
 │   ├── argocd/               # ApplicationSet + Applications + install
 │   └── vault/                # Vault manifests + policy.hcl
 ├── scripts/                  # validate-platform.sh, validate-security.sh, bootstrap-*, generate-inventory.sh
-├── ui/                       # Local dashboard — repo introspection (no cluster access)
+├── controlplane/             # Console: API + web UI (control plane + platform ops)
 ├── .github/workflows/ci-cd.yml  # lint → gitleaks → test → build → trivy → deploy
 └── docs/                     # Specification and runbooks
 ```
@@ -65,7 +65,8 @@ Prometheus / Grafana / ELK / AlertManager ──observability──▶ SLO dashb
 ## Requirements
 
 - `git`, `terraform` (~> 1.5), `ansible`, `docker`, `kubectl`, `helm`, `jq`
-- Homelab: 8 GB RAM + 4 vCPU per node (libvirt/KVM), or an equivalent AWS/GCP/Azure setup
+- `libvirt` + `qemu-kvm`, with your user in the `libvirt` group
+- Homelab host: 8 GB RAM + 4 vCPU per node — everything runs locally, no cloud account
 
 ## Quick start
 
@@ -157,20 +158,38 @@ grep -rn "<owner>\|<repo>" k8s/ app/ docs/ --include="*.yaml" --include="*.md" -
 
 Affected files: `k8s/argocd/**` (repoURLs), `app/Dockerfile` (OCI source label), `docs/comprendre-le-projet.md`.
 
-## Local UI dashboard
+## Console
 
-Repo-introspection dashboard (no cluster needed) + management console:
-service discovery, live Helm render, CI matrix, Vault loop, SLO rules, ArgoCD
-ApplicationSet — all read from the actual files. The **Apps** view creates
-and deletes apps/services on disk (`app/<app>/<service>/main.py`); because the
-platform is discovery-driven, CI, Helm, Vault, ArgoCD and monitoring adapt
-automatically. Add/remove a service and the UI updates on refresh.
+One web app at `/`, served by the control-plane API. Two halves behind a
+shared sidebar, both hash-routed:
+
+**Control plane** — projects, catalogue, security scans, teams, jobs. Renders
+Terraform/Ansible from templates, runs them sandboxed, streams the logs.
+
+**Platform** (`#/platform/*`) — repo introspection plus live cluster control,
+no build step and no cluster required for the read-only views:
+
+| View | What it shows |
+|---|---|
+| Platform Health | Live topology: cluster, CI runs, ArgoCD apps, firing alerts, pods |
+| Apps & Services | Create/delete apps and services on disk, or ship one (branch + PR) |
+| Overview | Platform identity (branch/commit), layer checks, discovered services |
+| Services | Every `app/*/main.py`: title, version, endpoints, vault usage, drill-down |
+| Operations | CI/CD, Vault, ArgoCD, monitoring, logs, Terraform drift, ops scripts |
+
+Because the platform is discovery-driven, adding or removing a service under
+`app/<app>/<service>/main.py` makes CI, Helm, Vault, ArgoCD and monitoring
+adapt on their own — the console just shows it.
 
 ```bash
-pip install -r ui/requirements.txt
-PYTHONPATH=ui uvicorn ui.main:app --port 8080
-# open http://127.0.0.1:8080  (see ui/README.md)
+pip install -r controlplane/requirements.txt
+JWT_SECRET=$(openssl rand -base64 32) uvicorn controlplane.api.main:app --port 8000
+# open http://127.0.0.1:8000
 ```
+
+The Helm view shells out to `helm template`, and the live views to `kubectl`,
+`gh` and `vault`; each degrades to a warning when its binary or cluster is
+missing, so the rest of the console still works.
 
 ## Security
 

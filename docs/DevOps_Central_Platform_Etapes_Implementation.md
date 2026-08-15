@@ -6,7 +6,7 @@ Ce guide détaille, phase par phase, comment construire la plateforme de A à Z.
 
 ## Prérequis
 
-- Une machine hôte avec au moins 8 Go de RAM et 4 vCPU disponibles (ou un compte cloud AWS/GCP/Azure en free tier).
+- Une machine hôte avec au moins 8 Go de RAM et 4 vCPU disponibles, avec libvirt/KVM installé. Tout tourne en local : aucun compte cloud n'est nécessaire.
 - Outils installés en local : `git`, `terraform`, `ansible`, `docker`, `kubectl`, `helm`.
 - Un compte GitHub (ou GitLab) pour héberger le dépôt et exécuter le pipeline CI/CD.
 - Un compte Docker Hub ou GHCR pour héberger les images construites.

@@ -30,6 +30,8 @@ metadata:
     app.kubernetes.io/name: {{ $svc.name }}
     {{- include "apps-common.labels" $ | nindent 4 }}
 automountServiceAccountToken: false
+imagePullSecrets:
+  - name: ghcr-pull
 ---
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler

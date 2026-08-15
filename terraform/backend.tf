@@ -1,51 +1,33 @@
 # Terraform state backend.
 #
-# Production contract (Incident 8 / section 8.1 of the cahier des charges): the
-# state MUST live in a remote backend with locking. The previous `backend
-# "local"` config stored terraform.tfstate (containing the cloud-init SSH
-# public key in cleartext) inside the repo, with no locking — two engineers
-# running `terraform apply` concurrently corrupt the state (Incident 8).
+# This project runs entirely on the local machine: libvirt/KVM VMs, no cloud
+# account, no cloud state bucket. State therefore lives in a local file.
 #
-# Active backend: S3 + DynamoDB locking. Bucket/key/region are passed via
-# `terraform init -backend-config=...` so the same code runs in CI (AWS OIDC
-# federation) and on a workstation with short-lived creds. Override file
-# `terraform.backend.tfvars.example` documents the variables.
+# Incident 8 / section 8.1 of the cahier des charges asks for a backend with
+# locking, because two people running `terraform apply` at once corrupt the
+# state. `backend "local"` gives no locking, so the rule here is the one a
+# single-operator homelab can actually keep: never run two applies against
+# this directory at the same time. The control plane enforces that for
+# workspaces it renders itself — it serialises Terraform jobs per project.
 #
-#   terraform init \
-#     -backend-config="bucket=stage-terraform-state" \
-#     -backend-config="key=stage/terraform.tfstate" \
-#     -backend-config="region=eu-west-1"
+# terraform.tfstate stays gitignored regardless. It contains the cloud-init
+# SSH public key in cleartext, and re-adding it to the repo is what caused
+# Incident 8 in the first place.
 #
-# CI uses AWS OIDC federation (preferred) instead of long-lived AWS keys:
-#   - Configure an IAM role that trusts `token.actions.githubusercontent.com`
-#   - With `sub=repo:<owner>/<repo>:environment:production`
-#   - The role grants: s3:PutObject/GetObject on the state bucket +
-#     dynamodb:PutItem/GetItem/Scan/Query on terraform-locks.
-#
-# Homelab fallback (single-user only): comment the S3 block and uncomment the
-# local block below. terraform.tfstate MUST stay gitignored either way.
+# If you ever do need shared state without taking on a cloud dependency, the
+# control plane can render a per-project `backend "http"` block pointing at a
+# self-hosted state server (see `state_url` in
+# controlplane/renderers/terraform.py). That path keeps everything local too.
 #
 # Provider upgrade safety: when renaming or moving `libvirt_domain.node`
 # (or any tracked resource), always wrap in a `moved {}` block so a future
-# `terraform apply` does not destroy + recreate VMs in production. Example:
+# `terraform apply` does not destroy + recreate VMs. Example:
 #   moved {
 #     from = libvirt_domain.cluster_nodes
 #     to   = libvirt_domain.node
 #   }
 
 terraform {
-  # Remote state with locking — required for any team / CI use (Incident 8).
-  # backend "s3" {
-  #   bucket         = "stage-terraform-state"
-  #   key            = "stage/terraform.tfstate"
-  #   region         = "eu-west-1"
-  #   dynamodb_table = "terraform-locks"
-  #   encrypt        = true
-  #   acl            = "private"
-  # }
-
-  # Local fallback — homelab single-user only. No locking provided: never run
-  # `terraform apply` concurrently on the same host. State stays gitignored.
   backend "local" {
     path = "terraform.tfstate"
   }
