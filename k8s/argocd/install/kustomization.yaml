@@ -24,8 +24,14 @@ metadata:
 # no argocd-server/dex — the anonymous-access patch below targets the
 # argocd-server Deployment and silently no-ops (or errors) without it, and the
 # platform UI's embedded console has no API to talk to.
+# `timeout` + `submodules=false` are kustomize remote-fetch options, not
+# decoration: kustomize defaults to a 27s timeout on the `git fetch` behind a
+# remote base and clones submodules it never needs. On a slow or jittery link
+# that fetch overruns and the whole Application fails to render with
+#   "hit 27s timeout running '/usr/bin/git fetch --depth=1 ...'"
+# leaving argocd-install permanently at SYNC=Unknown.
 resources:
-  - https://github.com/argoproj/argo-cd/manifests/install?ref=v3.5.1
+  - https://github.com/argoproj/argo-cd/manifests/install?ref=v3.5.1&timeout=300&submodules=false
 
 patches:
   - path: anonymous-access-patch.yaml
