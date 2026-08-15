@@ -43,6 +43,7 @@ resources:
 
 patches:
   - path: anonymous-access-patch.yaml
+  - path: timeouts-patch.yaml
 
 namespace: argocd
 

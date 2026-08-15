@@ -1,0 +1,56 @@
+# Git/exec timeouts for ArgoCD.
+#
+# Defaults are tuned for a fast link and are too tight here: the repo-server
+# gives `git fetch` 90s (ARGOCD_EXEC_TIMEOUT) and the application-controller
+# gives the whole repo-server call 60s. On a slow or jittery connection the
+# first clone of this repo overruns both, and the symptom is not a timeout
+# message on the Application — it is
+#   "Failed to load target state: ... failed to get repo objects"
+# with every Application parked at SYNC=Unknown while health still reports
+# Healthy, which reads like a broken cluster rather than a slow network.
+#
+# These MUST live in git, not be applied with `kubectl set env`: argocd-install
+# self-manages this namespace, so anything not declared here is absent from any
+# cluster rebuilt from the repo, silently restoring the 90s failure.
+#
+# ARGOCD_EXEC_TIMEOUT is a direct env var — upstream does not source it from
+# argocd-cmd-params-cm, so it is patched onto the workloads rather than added to
+# the ConfigMap below.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: argocd-cmd-params-cm
+data:
+  # controller -> repo-server gRPC deadline (default 60s).
+  controller.repo.server.timeout.seconds: "300"
+  # repo-server git request timeout, wired to ARGOCD_GIT_REQUEST_TIMEOUT.
+  reposerver.git.request.timeout: "300s"
+  # applicationset controller -> repo-server, used by the git files generator
+  # that discovers app/**/service.yaml.
+  applicationsetcontroller.repo.server.timeout.seconds: "300"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: argocd-repo-server
+spec:
+  template:
+    spec:
+      containers:
+        - name: argocd-repo-server
+          env:
+            - name: ARGOCD_EXEC_TIMEOUT
+              value: 300s
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: argocd-application-controller
+spec:
+  template:
+    spec:
+      containers:
+        - name: argocd-application-controller
+          env:
+            - name: ARGOCD_EXEC_TIMEOUT
+              value: 300s
