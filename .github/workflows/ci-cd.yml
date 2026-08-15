@@ -189,6 +189,19 @@ jobs:
       - name: Install dependencies
         run: |
           pip install pytest httpx pip-audit
+          # tests/test_ui.py exercises the platform console, which now lives in
+          # controlplane/ (it used to be the standalone ui/ app). Importing it
+          # pulls controlplane.api.deps -> sqlalchemy, so the control plane's
+          # own requirements must be installed or collection fails outright with
+          # "ModuleNotFoundError: No module named 'sqlalchemy'".
+          #
+          # Installed BEFORE app/shared and the services on purpose: the two
+          # dependency sets overlap and disagree (controlplane wants hvac 2.3.0
+          # and prometheus-fastapi-instrumentator 8.1.0, app/shared pins 2.1.0
+          # and 6.1.0). Whatever is installed last wins, and the versions that
+          # must win are the ones the services actually ship — this job builds
+          # and imports them.
+          pip install -r controlplane/requirements.txt
           pip install -e app/shared/
           for item in $(echo "$SERVICES" | jq -c '.[]'); do
             PATH_REL=$(echo "$item" | jq -r .path)

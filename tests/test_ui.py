@@ -3,10 +3,40 @@ import re
 import sys
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-UI_DIR = os.path.join(REPO_ROOT, "ui")
-sys.path.insert(0, UI_DIR)
+sys.path.insert(0, REPO_ROOT)
 
-import introspect  # noqa: E402
+# Importing the console reaches the settings object, which builds an engine
+# from DATABASE_URL. Nothing here queries a database, so point it at an
+# in-memory one rather than depending on whatever the repo's .env holds.
+os.environ.setdefault("DATABASE_URL", "sqlite://")
+os.environ.setdefault("JWT_SECRET", "test-secret-not-used-for-signing-here")
+
+# The standalone ui/ app was folded into the control plane; its introspection
+# module now lives there and is served over /api/v1/platform/*. Same code, so
+# these tests keep their original name for it.
+from controlplane import platform_ops as introspect  # noqa: E402
+
+CONSOLE_STATIC = os.path.join(REPO_ROOT, "controlplane", "web", "static")
+
+
+def console_client():
+    """A TestClient over just the platform router, with auth stubbed out.
+
+    Mounted standalone rather than via ``create_app()``: the full console
+    pulls in a database and JWT config that these tests neither have nor
+    need. Auth and middleware are covered by controlplane/tests; what is
+    under test here is the introspection payload.
+    """
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from controlplane.api.deps import get_current_user
+    from controlplane.api.routers import platform
+
+    app = FastAPI()
+    app.include_router(platform.router, prefix="/api/v1")
+    app.dependency_overrides[get_current_user] = lambda: None
+    return TestClient(app)
 
 
 def test_git_failure_looks_like_absence():
@@ -21,7 +51,7 @@ def test_git_failure_looks_like_absence():
 def test_config_tab_default_is_a_real_tab():
     """Regression guard: state.configTab must be one of renderConfig's tabs,
     or the Operations view renders blank until the user clicks a tab."""
-    src = open(os.path.join(UI_DIR, "static", "app.js")).read()
+    src = open(os.path.join(CONSOLE_STATIC, "platform", "app.js")).read()
     default = re.search(r'configTab:\s*"([^"]+)"', src).group(1)
     tabs = re.search(r'const tabs = \[([^\]]+)\]', src).group(1)
     tab_list = [t.strip().strip('"') for t in tabs.split(",")]
@@ -148,8 +178,14 @@ def test_monitoring_matches_any_service_count():
 def test_argocd_generates_one_app_per_service():
     argocd = introspect.parse_argocd()
     assert argocd["generator_type"] == "files"
-    assert "app/*/service.yaml" in argocd["files_pattern"]
-    assert "app/*/*/service.yaml" in argocd["files_pattern"]
+    # Exactly ONE generator, matching both the flat (app/<svc>/service.yaml) and
+    # grouped (app/<app>/<svc>/service.yaml) layouts via doublestar.
+    #
+    # It must not be split into the two patterns this test previously required:
+    # ArgoCD's matcher lets `*` cross `/`, so `app/*/service.yaml` also matches
+    # the nested marker and every grouped service is generated twice, which
+    # aborts the whole set with "contains applications with duplicate name".
+    assert argocd["files_pattern"] == ["app/**/service.yaml"]
     assert argocd["helm_tag_param"] is True
     assert argocd["sync_policy"]["automated"]["prune"] is True
 
@@ -289,10 +325,6 @@ def test_command_allowlist_blocks_path_traversal():
 
 
 def test_api_endpoints(monkeypatch):
-    import importlib.util
-
-    from fastapi.testclient import TestClient
-
     def fake_pipeline(service):
         return {
             "service": service,
@@ -304,28 +336,18 @@ def test_api_endpoints(monkeypatch):
 
     monkeypatch.setattr(introspect, "service_pipeline", fake_pipeline)
 
-    spec = importlib.util.spec_from_file_location(
-        "ui_main", os.path.join(UI_DIR, "main.py")
-    )
-    ui_main = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(ui_main)
-
-    client = TestClient(ui_main.app)
-    assert client.get("/api/health").json()["status"] == "ok"
-    ov = client.get("/api/overview").json()
+    client = console_client()
+    assert client.get("/api/v1/platform/health").json()["status"] == "ok"
+    ov = client.get("/api/v1/platform/overview").json()
     assert ov["service_count"] == len(introspect.discover_services())
     assert ov["status"] == "healthy"
-    svc = client.get("/api/services").json()
+    svc = client.get("/api/v1/platform/services").json()
     assert svc["count"] == len(introspect.discover_services())
 
 
 def test_overview_status_is_degraded_when_a_service_is_stuck(monkeypatch):
     """WS-D: honest status — one stuck service makes the platform degraded,
     and the blocker names the first failing stage."""
-    import importlib.util
-
-    from fastapi.testclient import TestClient
-
     def fake_pipeline(service):
         return {
             "service": service,
@@ -337,14 +359,7 @@ def test_overview_status_is_degraded_when_a_service_is_stuck(monkeypatch):
 
     monkeypatch.setattr(introspect, "service_pipeline", fake_pipeline)
 
-    spec = importlib.util.spec_from_file_location(
-        "ui_main_degraded", os.path.join(UI_DIR, "main.py")
-    )
-    ui_main = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(ui_main)
-
-    client = TestClient(ui_main.app)
-    ov = client.get("/api/overview").json()
+    ov = console_client().get("/api/v1/platform/overview").json()
     assert ov["status"] == "degraded"
     blockers = {b["service"]: b["stage"] for b in ov["blockers"]}
     assert blockers["catalog-items"] == "vault"
