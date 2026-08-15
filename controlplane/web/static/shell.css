@@ -1,0 +1,131 @@
+/* Shell — the one stylesheet that is not scoped to a subtree.
+ *
+ * The console is a single page built from two halves that used to be separate
+ * apps: the control-plane views (#cp-root, style.css) and the platform-ops
+ * views (#platform-root, platform/style.css). They share ~24 class and element
+ * names — .row, .grid, .toast, td, input — with different rules, so each
+ * stylesheet is prefixed with the id of the subtree it owns and neither can
+ * reach the other. This file holds what genuinely is global: the palette, the
+ * page background, and the reset.
+ *
+ * One palette, dark, unconditional. The control-plane half was light with a
+ * prefers-color-scheme override; keeping that would have put a light content
+ * pane next to the platform sidebar, which is dark-only. Its variable names
+ * are preserved and remapped onto the dark values it already shipped, so its
+ * rules did not have to change.
+ */
+
+:root {
+  /* Surfaces */
+  --bg: #070a10;
+  --bg2: #0b1019;
+  --panel: rgba(20, 27, 41, .72);
+  --panel-solid: #131a29;
+  --panel2: rgba(28, 37, 56, .6);
+  --border: rgba(90, 110, 150, .18);
+  --border-hi: rgba(120, 150, 200, .32);
+
+  /* Text */
+  --text: #e6ecf5;
+  --muted: #8a97ad;
+  --dim: #5c6880;
+
+  /* Accents */
+  --accent: #4cc2ff;
+  --accent2: #7a5cff;
+  --accent-text: #061019;
+
+  /* Status */
+  --green: #34d399;
+  --red: #f87171;
+  --amber: #fbbf24;
+  --violet: #a78bfa;
+  --ok: #34d399;
+  --warn: #fbbf24;
+  --fail: #f87171;
+
+  /* Severity ramp (control-plane security views) */
+  --critical: #f87171;
+  --high: #fb923c;
+  --medium: #fbbf24;
+  --low: #4ade80;
+  --unknown: #8a97ad;
+
+  /* Type + shape */
+  --mono: "JetBrains Mono", "SFMono-Regular", Menlo, Consolas, monospace;
+  --sans: "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --radius: 14px;
+  --shadow: 0 10px 40px rgba(0, 0, 0, .45);
+  --glow-accent: 0 0 18px rgba(76, 194, 255, .35);
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+/* `nav` and `.row` set `display: flex` unconditionally, which — per the
+   cascade — beats the UA stylesheet's `[hidden] { display: none }`, so
+   toggling `hidden` on those elements left them visibly on screen. */
+[hidden] { display: none !important; }
+
+html, body { height: 100%; }
+
+body {
+  background:
+    radial-gradient(1100px 500px at 15% -10%, rgba(76, 194, 255, .10), transparent 60%),
+    radial-gradient(1100px 500px at 90% -10%, rgba(122, 92, 255, .10), transparent 60%),
+    var(--bg);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 14px;
+  line-height: 1.5;
+  overflow-x: hidden;
+}
+
+/* The control-plane half renders into a pane inside the platform layout, so
+   it must not re-establish a page-height flex column of its own. */
+#cp-root { display: block; }
+
+/* Shown before either half has booted, so it belongs to neither subtree. */
+.boot { padding: 3rem; color: var(--muted); }
+
+/* Sidebar section labels — shell chrome, above both halves. */
+#platform-root .nav-group {
+  padding: 14px 8px 4px;
+  font-size: 10px;
+  letter-spacing: .13em;
+  text-transform: uppercase;
+  color: var(--dim);
+  font-weight: 700;
+}
+
+/* Session controls pinned to the bottom of the sidebar. */
+#platform-root .sidebar-footer {
+  padding: 10px 8px 0;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+#platform-root .sidebar-footer .who {
+  font-size: 11px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#platform-root .sidebar-footer button {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--muted);
+  padding: 5px 8px;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+#platform-root .sidebar-footer button:hover {
+  color: var(--text);
+  border-color: var(--border-hi);
+}

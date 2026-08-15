@@ -46,6 +46,7 @@ class SandboxRun:
     command: list[str]
     image: str = DEFAULT_IMAGE
     workspace: Path | None = None
+    workspace_writable: bool = False
     writable_paths: list[str] = field(default_factory=list)
     mounts: list[tuple[Path, str, bool]] = field(default_factory=list)
     env: dict[str, str] = field(default_factory=dict)
@@ -74,12 +75,18 @@ def run_sandbox(run: SandboxRun) -> SandboxResult:
     args = ["docker", "run", "--name", name, "--rm"]
     if run.workspace is not None:
         workspace = run.workspace.resolve()
-        args += _mount_flag(workspace, str(workspace), readonly=True)
+        args += _mount_flag(workspace, str(workspace), readonly=not run.workspace_writable)
         args += ["-w", str(workspace)]
-        for relative in run.writable_paths:
-            writable = (workspace / relative).resolve()
-            writable.parent.mkdir(parents=True, exist_ok=True)
-            args += _mount_flag(writable, str(writable), readonly=False)
+        # File-level writable overlays only help tools that write in place.
+        # Tools that replace a file via write-temp-then-rename (terraform's
+        # lock file, state file) need the *containing directory* writable,
+        # which workspace_writable=True grants — these per-file mounts are
+        # then redundant but harmless.
+        if not run.workspace_writable:
+            for relative in run.writable_paths:
+                writable = (workspace / relative).resolve()
+                writable.parent.mkdir(parents=True, exist_ok=True)
+                args += _mount_flag(writable, str(writable), readonly=False)
     for host_path, container_path, readonly in run.mounts:
         args += _mount_flag(host_path.resolve(), container_path, readonly)
     if not run.network_enabled:

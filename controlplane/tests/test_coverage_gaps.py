@@ -148,13 +148,46 @@ def test_env_pool_empty_and_malformed(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_dev_secret_store_roundtrip():
-    from controlplane.core.vault import _DEV_STORE, DevSecretStore
+class _FakeRedis:
+    """Minimal stand-in for redis.Redis covering the DevSecretStore surface.
 
-    _DEV_STORE.clear()
-    store = DevSecretStore()
+    Defined at module scope on purpose: test_no_test_function_returns_value
+    walks each test function's AST and rejects any `return <value>`, including
+    ones inside a nested class or def, so `get` cannot live inside the test.
+    """
+
+    def __init__(self) -> None:
+        self.data: dict[str, str] = {}
+
+    def set(self, key, value):
+        self.data[key] = value
+
+    def get(self, key):
+        return self.data.get(key)
+
+    def delete(self, key):
+        self.data.pop(key, None)
+
+
+def test_dev_secret_store_roundtrip():
+    """DevSecretStore is Redis-backed, not an in-process dict.
+
+    It used to keep a module-level ``_DEV_STORE`` dict, which this test cleared
+    directly. That could never work outside a single process: the API mints the
+    SSH keypair at registration and the worker reads it at provision time, and
+    those are always separate processes, so provisioning never found the key.
+    The store now writes to Redis; a fake client keeps the test hermetic and
+    free of a live Redis (which is what the real dependency would otherwise
+    require just to exercise get/set/delete).
+    """
+    from controlplane.core import vault as vault_mod
+
+    store = vault_mod.DevSecretStore.__new__(vault_mod.DevSecretStore)
+    store._client = _FakeRedis()
+
     store.set("u1", "ssh", "key-material")
     assert store.get("u1", "ssh") == "key-material"
+    # Namespaced per user: another user must not see u1's secret.
     assert store.get("u2", "ssh") is None
     store.delete("u1", "ssh")
     assert store.get("u1", "ssh") is None

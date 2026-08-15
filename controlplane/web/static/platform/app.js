@@ -1,5 +1,12 @@
 "use strict";
 
+// The platform console shares a page (and a DOM) with the main control-plane
+// SPA, which defines its own `api`, `esc`, `toast`, `$` … at top level. Both
+// files are plain scripts, so this module wraps itself in an IIFE and exports
+// exactly one symbol — `window.PlatformConsole` — rather than leaking ~80
+// globals that would silently overwrite the SPA's.
+window.PlatformConsole = (function () {
+
 const state = { data: null, view: "topology", search: "", timer: null, detail: null, configTab: "ci", runTimer: null, pipelineTimer: null };
 
 const $ = (id) => document.getElementById(id);
@@ -10,12 +17,13 @@ function esc(s) {
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 let toastTimer = null;
 function toast(msg, ok = true) {
-  const t = $("toast");
+  const t = $("platform-toast");
   t.textContent = msg;
   t.className = `toast show ${ok ? "ok" : "err"}`;
   clearTimeout(toastTimer);
@@ -23,7 +31,7 @@ function toast(msg, ok = true) {
 }
 
 function loading(show = true) {
-  const t = $("toast");
+  const t = $("platform-toast");
   if (show) {
     t.textContent = "…";
     t.className = "toast show";
@@ -163,7 +171,7 @@ function renderTopology() {
         <h1>Platform Health</h1>
         <div class="sub">Real status, right now — pods, CI, ArgoCD sync, and firing alerts per service. Click a service to act on it.</div>
       </div>
-      <button class="act-btn" onclick="renderTopology()">↻ refresh</button>
+      <button class="act-btn" data-act="renderTopology">↻ refresh</button>
     </div>
     <div id="health-body"><div class="cfg-loading">loading live status…</div></div>`;
   loadHealthBoard();
@@ -236,7 +244,7 @@ async function loadHealthBoard() {
       : pill(`blocked: ${pl.blocking}`, "red");
 
     return `
-      <div class="health-row" onclick="showDetail('${esc(s.name)}')">
+      <div class="health-row" data-act="showDetail" data-a1="${esc(s.name)}">
         <div class="health-name">
           <div class="mono" style="font-weight:800;color:var(--accent)">${esc(s.name)}</div>
           <div class="muted small">${esc(s.title)} · v${esc(s.version)}</div>
@@ -356,7 +364,7 @@ function renderPipeline(r) {
     return `
       <div class="cfg-item" style="${isBlock ? "border-color:var(--red)" : ""}">
         <span><b>${esc(s.stage)}</b> ${pipelinePill(s.state)} <span class="muted small">${esc(s.detail || "")}</span></span>
-        ${s.stage === "vault" && s.state !== "ok" ? `<button class="act-btn" onclick="seedSecretsFlow('${esc(r.service)}')">⚙ seed secrets</button>` : ""}
+        ${s.stage === "vault" && s.state !== "ok" ? `<button class="act-btn" data-act="seedSecretsFlow" data-a1="${esc(r.service)}">⚙ seed secrets</button>` : ""}
       </div>`;
   }).join("");
   const blockPill = r.all_ok ? pill("all stages ok — healthy", "green") : pill(`blocked at: ${esc(r.blocking)}`, "red");
@@ -364,7 +372,7 @@ function renderPipeline(r) {
     <div class="cfg-toolbar">
       <span class="cfg-repo">${esc(r.service)} — end-to-end pipeline · ${blockPill}</span>
       <span class="sp"></span>
-      <button class="act-btn" onclick="showPipeline('${esc(r.service)}')">↻ refresh</button>
+      <button class="act-btn" data-act="showPipeline" data-a1="${esc(r.service)}">↻ refresh</button>
     </div>
     <div class="run-list">${rows}</div>`;
 }
@@ -439,12 +447,12 @@ function renderApps() {
           <span class="svc-meta">v${esc(s.version)} · ${s.endpoints.length} routes · ${s.loc} LOC</span>
           ${s.uses_vault ? pill("vault", "accent") : pill("no vault", "muted")}
           <span class="sp"></span>
-          <button class="act-btn" onclick="showPipeline('${esc(s.name)}')">▤ pipeline</button>
+          <button class="act-btn" data-act="showPipeline" data-a1="${esc(s.name)}">▤ pipeline</button>
           <button class="act-btn danger" data-del-svc="${esc(a.name)}" data-svc="${esc(s.key.split("/").pop())}">✕ delete</button>
         </div>`).join("");
 
     return `
-      <div class="card app-card" style="cursor:pointer" onclick="switchView('services')">
+      <div class="card app-card" style="cursor:pointer" data-act="gotoServices">
         <div class="app-head">
           <div class="app-icon">${esc(a.name[0].toUpperCase())}</div>
           <div>
@@ -453,15 +461,15 @@ function renderApps() {
           </div>
           <span class="sp"></span>
           ${pill(`${a.services.length} service${a.services.length === 1 ? "" : "s"}`, isDefault ? "muted" : "accent")}
-          <button class="btn danger sm" onclick="event.stopPropagation()" data-del-app="${esc(a.name)}" ${isDefault ? "disabled title='legacy flat group — not deletable'" : ""}>delete app</button>
+          <button class="btn danger sm" data-stop data-del-app="${esc(a.name)}" ${isDefault ? "disabled title='legacy flat group — not deletable'" : ""}>delete app</button>
         </div>
         ${svcList || `<div class="empty">no services yet</div>`}
-        <div class="add-svc-panel" onclick="event.stopPropagation()">
+        <div class="add-svc-panel" data-stop>
           <div class="add-svc-label">＋ Add or 🚀 ship a service to <b>${esc(a.name)}</b></div>
           <div class="add-svc">
-            <input placeholder="e.g. cart, payments…" id="add-svc-${esc(a.name)}" onkeydown="if(event.key==='Enter'){addServiceFlow('${esc(a.name)}',event.target.value)}">
-            <button class="btn sm" onclick="addServiceFlow('${esc(a.name)}',$('add-svc-${esc(a.name)}').value)">Add</button>
-            <button class="btn sm" style="background:var(--accent);color:#0a0e14" onclick="shipServiceFlow('${esc(a.name)}',$('add-svc-${esc(a.name)}').value)">🚀 Ship (branch + PR)</button>
+            <input placeholder="e.g. cart, payments…" id="add-svc-${esc(a.name)}" data-enter="addServiceFromSelf" data-a1="${esc(a.name)}">
+            <button class="btn sm" data-act="addServiceFromInput" data-a1="${esc(a.name)}" data-input="add-svc-${esc(a.name)}">Add</button>
+            <button class="btn sm" style="background:var(--accent);color:#0a0e14" data-act="shipServiceFromInput" data-a1="${esc(a.name)}" data-input="add-svc-${esc(a.name)}">🚀 Ship (branch + PR)</button>
           </div>
         </div>
       </div>`;
@@ -483,8 +491,8 @@ function renderApps() {
           <div class="step-title">Create a new app</div>
           <div class="step-sub">A folder under <span class="mono">app/</span> that groups related services.</div>
           <div class="add-svc mt1">
-            <input placeholder="e.g. checkout, billing…" id="new-app-input" onkeydown="if(event.key==='Enter'){createAppFlow(event.target.value)}">
-            <button class="btn" onclick="createAppFlow($('new-app-input').value)">＋ Create app</button>
+            <input placeholder="e.g. checkout, billing…" id="new-app-input" data-enter="createAppFromSelf">
+            <button class="btn" data-act="createAppFromInput" data-input="new-app-input">＋ Create app</button>
           </div>
         </div>
       </div>
@@ -622,7 +630,7 @@ function renderServices() {
   const list = d.services.filter((s) => !q || s.name.toLowerCase().includes(q) || s.title.toLowerCase().includes(q));
 
   const rows = list.map((s) => `
-    <tr onclick="showDetail('${esc(s.name)}')" style="cursor:pointer">
+    <tr data-act="showDetail" data-a1="${esc(s.name)}" style="cursor:pointer">
       <td><span class="mono" style="color:var(--accent);font-weight:700">${esc(s.name)}</span></td>
       <td><span class="chip">${esc(s.app)}</span></td>
       <td>${esc(s.title)}</td>
@@ -632,7 +640,7 @@ function renderServices() {
       <td>${s.has_requirements ? pill("pinned", "green") : pill("none", "red")}</td>
       <td>${s.uses_vault ? pill("vault", "accent") : pill("none", "muted")}</td>
       <td><div class="chips" style="gap:4px">${s.endpoints.map((e) => `<span class="chip">${esc(e)}</span>`).join("")}</div></td>
-      <td onclick="event.stopPropagation()"><button class="act-btn danger" data-del-svc-row="${esc(s.app)}" data-svc-row="${esc(s.key.split("/").pop())}">✕</button></td>
+      <td data-stop><button class="act-btn danger" data-del-svc-row="${esc(s.app)}" data-svc-row="${esc(s.key.split("/").pop())}">✕</button></td>
     </tr>`).join("");
 
   $("view-services").innerHTML = `
@@ -696,7 +704,7 @@ function offlineCard(label, err) {
 function renderConfig() {
   const tabs = ["ci", "argocd", "vault", "monitoring", "run", "infra", "drift", "logs"];
   const tabHtml = tabs.map((t) => `
-    <button class="cfg-tab ${t === state.configTab ? "active" : ""}" onclick="switchConfigTab('${t}')">
+    <button class="cfg-tab ${t === state.configTab ? "active" : ""}" data-act="switchConfigTab" data-a1="${t}">
       ${t.toUpperCase()}
     </button>`).join("");
 
@@ -821,9 +829,9 @@ async function renderCiTab(body) {
       </div>
       <div class="run-actions">
         <a class="act-btn" href="${esc(r.url)}" target="_blank" rel="noopener">↗ open in GitHub</a>
-        ${r.status === "completed" ? `<button class="act-btn" onclick="viewCiLogs('${r.databaseId}')">▤ logs</button>` : ""}
-        ${r.conclusion === "failure" ? `<button class="act-btn" onclick="ciRerun('${r.databaseId}')">↻ rerun failed</button>` : ""}
-        ${r.status === "in_progress" || r.status === "queued" ? `<button class="act-btn danger" onclick="ciCancel('${r.databaseId}')">✕ cancel</button>` : ""}
+        ${r.status === "completed" ? `<button class="act-btn" data-act="viewCiLogs" data-a1="${r.databaseId}">▤ logs</button>` : ""}
+        ${r.conclusion === "failure" ? `<button class="act-btn" data-act="ciRerun" data-a1="${r.databaseId}">↻ rerun failed</button>` : ""}
+        ${r.status === "in_progress" || r.status === "queued" ? `<button class="act-btn danger" data-act="ciCancel" data-a1="${r.databaseId}">✕ cancel</button>` : ""}
       </div>
     </div>`).join("");
 
@@ -831,8 +839,8 @@ async function renderCiTab(body) {
     <div class="cfg-toolbar">
       <span class="cfg-repo">${esc(data.repo)}</span>
       <span class="sp"></span>
-      <button class="btn sm" onclick="ciTrigger()">▶ run workflow</button>
-      <button class="act-btn" onclick="refreshConfigTab()">↻ refresh</button>
+      <button class="btn sm" data-act="ciTrigger">▶ run workflow</button>
+      <button class="act-btn" data-act="refreshConfigTab">↻ refresh</button>
     </div>
     <div class="run-list">${rows || `<div class="empty">no runs found</div>`}</div>`;
 }
@@ -878,15 +886,15 @@ async function renderArgocdTab(body) {
 
   const rows = (data.apps || []).map((a) => `
     <div class="app-row">
-      <div class="app-row-main clickable" onclick="showArgoResources('${esc(a.name)}')">
+      <div class="app-row-main clickable" data-act="showArgoResources" data-a1="${esc(a.name)}">
         <div class="app-row-name">${esc(a.name)}</div>
         <div class="app-row-meta">${esc(a.path)} @ ${esc(a.revision || "–")} · click for resources</div>
       </div>
       ${pill(a.sync_status, syncCls(a.sync_status))}
       ${pill(a.health_status, healthCls(a.health_status))}
       <div class="run-actions">
-        <button class="act-btn" onclick="argoRefresh('${esc(a.name)}')">↻ refresh</button>
-        <button class="act-btn" onclick="argoSync('${esc(a.name)}')">⇌ sync</button>
+        <button class="act-btn" data-act="argoRefresh" data-a1="${esc(a.name)}">↻ refresh</button>
+        <button class="act-btn" data-act="argoSync" data-a1="${esc(a.name)}">⇌ sync</button>
       </div>
     </div>`).join("");
 
@@ -894,9 +902,9 @@ async function renderArgocdTab(body) {
     <div class="cfg-toolbar">
       <span class="cfg-repo">${data.apps.length} applications</span>
       <span class="sp"></span>
-      <button class="btn sm" onclick="openDashboard('argocd','ArgoCD UI')">⧉ open ArgoCD dashboard</button>
-      <button class="act-btn" onclick="showArgoCreds()">🔑 admin password</button>
-      <button class="act-btn" onclick="refreshConfigTab()">↻ refresh all</button>
+      <button class="btn sm" data-act="openDashboard" data-a1="argocd" data-a2="ArgoCD UI">⧉ open ArgoCD dashboard</button>
+      <button class="act-btn" data-act="showArgoCreds">🔑 admin password</button>
+      <button class="act-btn" data-act="refreshConfigTab">↻ refresh all</button>
     </div>
     <div class="run-list">${rows || `<div class="empty">no applications found</div>`}</div>`;
 }
@@ -963,10 +971,10 @@ async function renderVaultTab(body) {
       <span class="status-dot ${data.sealed ? "bad" : "ok"}"></span>
       <span class="cfg-repo">${data.sealed ? "SEALED" : "UNSEALED"} · v${esc(data.version)}</span>
       <span class="sp"></span>
-      <button class="btn sm" onclick="syncServiceList()">⇌ sync service list</button>
-      <button class="btn sm" onclick="rerunVaultSetup()">▶ re-run setup job</button>
-      <button class="btn sm" onclick="openDashboard('vault','Vault UI')">⧉ open Vault dashboard</button>
-      <button class="act-btn" onclick="refreshConfigTab()">↻ refresh</button>
+      <button class="btn sm" data-act="syncServiceList">⇌ sync service list</button>
+      <button class="btn sm" data-act="rerunVaultSetup">▶ re-run setup job</button>
+      <button class="btn sm" data-act="openDashboard" data-a1="vault" data-a2="Vault UI">⧉ open Vault dashboard</button>
+      <button class="act-btn" data-act="refreshConfigTab">↻ refresh</button>
     </div>
     <div class="grid two mb">
       <div class="cfg-target"><div class="cfg-item"><span>Initialized</span><span class="val">${data.initialized ? "✓ yes" : "✗ no"}</span></div></div>
@@ -981,11 +989,11 @@ async function renderVaultTab(body) {
     if (!sec.reachable) { box.innerHTML = offlineCard("secret listing", sec.error); return; }
     box.innerHTML = (sec.keys || []).map((k) => `
       <div class="cfg-item">
-        <span class="mono clickable" onclick="showVaultSecretMeta('${esc(k)}')">${esc(k)}</span>
+        <span class="mono clickable" data-act="showVaultSecretMeta" data-a1="${esc(k)}">${esc(k)}</span>
         <span class="val">
-          <button class="act-btn" onclick="seedSecretsFlow('${esc(k)}')">⚙ seed secrets</button>
-          <button class="act-btn" onclick="showPipeline('${esc(k)}')">▤ pipeline</button>
-          <span class="muted small clickable" onclick="showVaultSecretMeta('${esc(k)}')">metadata →</span>
+          <button class="act-btn" data-act="seedSecretsFlow" data-a1="${esc(k)}">⚙ seed secrets</button>
+          <button class="act-btn" data-act="showPipeline" data-a1="${esc(k)}">▤ pipeline</button>
+          <span class="muted small clickable" data-act="showVaultSecretMeta" data-a1="${esc(k)}">metadata →</span>
         </span>
       </div>`).join("") || `<div class="empty">no keys — run setup job after syncing the service list</div>`;
   } catch (e) { /* leave loading state message */ }
@@ -1020,7 +1028,7 @@ async function renderMonitoringTab(body) {
   const sevCls = (s) => s === "critical" ? "red" : s === "warning" ? "amber" : "muted";
   window._alertsData = data.alerts || [];
   const rows = (data.alerts || []).map((a, i) => `
-    <div class="app-row clickable" onclick="showFiringAlertDetail(${i})">
+    <div class="app-row clickable" data-act="showFiringAlertDetail" data-a1="${i}">
       <div class="app-row-main">
         <div class="app-row-name">${esc(a.name)}</div>
         <div class="app-row-meta">${esc(a.service || "–")} · firing since ${esc(new Date(a.starts_at).toLocaleString())}</div>
@@ -1034,10 +1042,10 @@ async function renderMonitoringTab(body) {
       <span class="status-dot ${data.alerts.length ? "bad" : "ok"}"></span>
       <span class="cfg-repo">${data.alerts.length} alerts firing</span>
       <span class="sp"></span>
-      <button class="btn sm" onclick="openDashboard('grafana','Grafana')">⧉ open Grafana</button>
-      <button class="btn sm" onclick="openDashboard('prometheus','Prometheus')">⧉ open Prometheus</button>
-      <button class="btn sm" onclick="openDashboard('alertmanager','Alertmanager')">⧉ open Alertmanager</button>
-      <button class="act-btn" onclick="refreshConfigTab()">↻ refresh</button>
+      <button class="btn sm" data-act="openDashboard" data-a1="grafana" data-a2="Grafana">⧉ open Grafana</button>
+      <button class="btn sm" data-act="openDashboard" data-a1="prometheus" data-a2="Prometheus">⧉ open Prometheus</button>
+      <button class="btn sm" data-act="openDashboard" data-a1="alertmanager" data-a2="Alertmanager">⧉ open Alertmanager</button>
+      <button class="act-btn" data-act="refreshConfigTab">↻ refresh</button>
     </div>
     <div class="run-list">${rows || `<div class="empty">no alerts firing — all green</div>`}</div>
 
@@ -1064,7 +1072,7 @@ async function loadAlertHistory() {
     window._alertHistory = r.alerts;
     const sevCls = (s) => s === "critical" ? "red" : s === "warning" ? "amber" : "muted";
     box.innerHTML = r.alerts.map((a, i) => `
-      <div class="cfg-item clickable" onclick="showAlertHistoryDetail(${i})">
+      <div class="cfg-item clickable" data-act="showAlertHistoryDetail" data-a1="${i}">
         <span>${pill(a.status, a.status === "firing" ? "red" : "green")} ${pill(a.severity || "info", sevCls(a.severity))} ${esc(a.name)} <span class="muted small">${esc(a.service || "")}</span></span>
         <span class="val small">${esc(new Date(a.received_at).toLocaleString())}</span>
       </div>`).join("") || `<div class="empty">no history yet</div>`;
@@ -1100,14 +1108,14 @@ async function loadMonitoringPods() {
     if (!r.reachable) { box.innerHTML = offlineCard("pods", r.error); return; }
     box.innerHTML = r.pods.map((p) => `
       <div class="app-row">
-        <div class="app-row-main clickable" onclick="showMonitoringPodDetail('${esc(p.name)}')">
+        <div class="app-row-main clickable" data-act="showMonitoringPodDetail" data-a1="${esc(p.name)}">
           <div class="app-row-name">${esc(p.name)}</div>
           <div class="app-row-meta">${esc(p.phase)} · restarts: ${p.restarts}${p.waiting_reason ? " · " + esc(p.waiting_reason) : ""}</div>
         </div>
         ${pill(p.ready ? "ready" : "not ready", p.ready ? "green" : "red")}
         <div class="run-actions">
-          <button class="act-btn" onclick="viewPodLogs('monitoring','${esc(p.name)}','${esc(p.name)} logs')">▤ logs</button>
-          <button class="act-btn danger" onclick="restartPod('monitoring','${esc(p.name)}')">↻ restart</button>
+          <button class="act-btn" data-act="viewPodLogs" data-a1="monitoring" data-a2="${esc(p.name)}" data-a3="${esc(p.name)} logs">▤ logs</button>
+          <button class="act-btn danger" data-act="restartPod" data-a1="monitoring" data-a2="${esc(p.name)}">↻ restart</button>
         </div>
       </div>`).join("") || `<div class="empty">no pods</div>`;
   } catch (e) { /* ignore */ }
@@ -1149,9 +1157,9 @@ async function renderRunTab(body) {
         </div>
       </div>
       <div class="run-actions">
-        <button class="act-btn" onclick="runScript('${s.key}', ${s.destructive})" ${s.running ? "disabled" : ""}>▶ run</button>
-        ${s.running ? `<button class="act-btn danger" onclick="stopScript('${s.key}')">✕ stop</button>` : ""}
-        <button class="act-btn" onclick="viewScriptOutput('${s.key}')">▤ output</button>
+        <button class="act-btn" data-act="runScript" data-a1="${s.key}" data-a2="${s.destructive}" ${s.running ? "disabled" : ""}>▶ run</button>
+        ${s.running ? `<button class="act-btn danger" data-act="stopScript" data-a1="${s.key}">✕ stop</button>` : ""}
+        <button class="act-btn" data-act="viewScriptOutput" data-a1="${s.key}">▤ output</button>
       </div>
     </div>`).join("");
 
@@ -1159,7 +1167,7 @@ async function renderRunTab(body) {
     <div class="cfg-toolbar">
       <span class="cfg-repo">scripts/*.sh — non-interactive --ci mode</span>
       <span class="sp"></span>
-      <button class="act-btn" onclick="refreshConfigTab()">↻ refresh</button>
+      <button class="act-btn" data-act="refreshConfigTab">↻ refresh</button>
     </div>
     <div class="run-list">${rows}</div>
     <div class="cfg-section mt" id="run-output-section" style="display:none">
@@ -1248,7 +1256,7 @@ async function renderInfraTab(body) {
     <div class="cfg-toolbar">
       <span class="cfg-repo">capacity + libvirt terraform</span>
       <span class="sp"></span>
-      <button class="act-btn" onclick="refreshConfigTab()">↻ refresh</button>
+      <button class="act-btn" data-act="refreshConfigTab">↻ refresh</button>
     </div>
 
     <div class="cfg-section"><h3>Cluster capacity</h3>${capHtml}</div>
@@ -1261,16 +1269,16 @@ async function renderInfraTab(body) {
       </div>
       <div class="run-list mb">${tf.reachable ? findingsHtml : offlineCard("terraform", tf.error)}</div>
       <div class="add-svc">
-        <button class="btn" onclick="reconcileTerraform()">⚙ Reconcile state (lock + tfvars + import)</button>
-        <button class="btn sm" onclick="preflightFlow()">🔍 preflight node-add</button>
+        <button class="btn" data-act="reconcileTerraform">⚙ Reconcile state (lock + tfvars + import)</button>
+        <button class="btn sm" data-act="preflightFlow">🔍 preflight node-add</button>
       </div>
       <div id="preflight-out" class="mt"></div>
     </div>
 
     <div class="cfg-section">
       <h3>Provision / remove workers</h3>
-      <div class="cfg-item"><span>Add next worker VM (terraform apply + ansible join, streams in Run tab)</span><span class="val"><button class="btn sm" onclick="workerProvision()">🚀 Provision</button></span></div>
-      <div class="cfg-item"><span>Drain + remove last worker VM (order matters: drain → delete node → apply)</span><span class="val"><button class="btn sm danger" onclick="workerDeprovision()">✕ Remove last</button></span></div>
+      <div class="cfg-item"><span>Add next worker VM (terraform apply + ansible join, streams in Run tab)</span><span class="val"><button class="btn sm" data-act="workerProvision">🚀 Provision</button></span></div>
+      <div class="cfg-item"><span>Drain + remove last worker VM (order matters: drain → delete node → apply)</span><span class="val"><button class="btn sm danger" data-act="workerDeprovision">✕ Remove last</button></span></div>
       <div class="kbd mt" style="margin-bottom:0">These are the scripts/*.sh entries — see the <b>run</b> tab for streamed live output.</div>
     </div>`;
 }
@@ -1352,7 +1360,7 @@ async function renderDriftTab(body) {
       <span class="status-dot ${untracked ? "bad" : "ok"}"></span>
       <span class="cfg-repo">${untracked} object${untracked === 1 ? "" : "s"} running but not in git</span>
       <span class="sp"></span>
-      <button class="act-btn" onclick="refreshConfigTab()">↻ refresh</button>
+      <button class="act-btn" data-act="refreshConfigTab">↻ refresh</button>
     </div>
     <div class="cfg-stat">Checked: ${esc(data.namespaces.join(", "))} · ${pill(data.counts["argocd"] || 0, "green")} argocd-managed · ${pill(data.counts["in-git-not-gitops"] || 0, "amber")} in-git-not-gitops · ${pill(untracked, "red")} untracked</div>
     <div class="run-list mt">${rows || `<div class="empty">nothing found</div>`}</div>`;
@@ -1374,8 +1382,8 @@ async function renderLogsTab(body) {
     <div class="cfg-toolbar">
       <span class="cfg-repo">log pipeline status</span>
       <span class="sp"></span>
-      <button class="btn sm" onclick="openDashboard('kibana','Kibana')">⧉ open Kibana</button>
-      <button class="act-btn" onclick="refreshConfigTab()">↻ refresh</button>
+      <button class="btn sm" data-act="openDashboard" data-a1="kibana" data-a2="Kibana">⧉ open Kibana</button>
+      <button class="act-btn" data-act="refreshConfigTab">↻ refresh</button>
     </div>
     <div class="cfg-section"><h3>Pipeline health</h3>${links}</div>
 
@@ -1386,8 +1394,8 @@ async function renderLogsTab(body) {
           <option value="">all services</option>
           ${svcOptions}
         </select>
-        <input id="log-query" placeholder="filter text (optional)…" onkeydown="if(event.key==='Enter')searchLogs()">
-        <button class="btn sm" onclick="searchLogs()">Search</button>
+        <input id="log-query" placeholder="filter text (optional)…" data-enter="searchLogs">
+        <button class="btn sm" data-act="searchLogs">Search</button>
       </div>
       <div id="log-results" class="empty">enter a query and press Search</div>
     </div>`;
@@ -1504,8 +1512,8 @@ async function loadServiceRuntime(service) {
           <span class="mono small muted">${m ? `${m.cpu} · ${m.memory}` : "–"}</span>
           <span class="mono small muted">restarts: ${c.restart_count ?? 0}</span>
           <div class="run-actions">
-            <button class="act-btn" onclick="viewPodLogs('devops-platform','${esc(p.name)}','${esc(p.name)} logs')">▤ logs</button>
-            <button class="act-btn danger" onclick="restartPod('devops-platform','${esc(p.name)}')">↻ restart</button>
+            <button class="act-btn" data-act="viewPodLogs" data-a1="devops-platform" data-a2="${esc(p.name)}" data-a3="${esc(p.name)} logs">▤ logs</button>
+            <button class="act-btn danger" data-act="restartPod" data-a1="devops-platform" data-a2="${esc(p.name)}">↻ restart</button>
           </div>
         </div>`;
     }).join("") || `<div class="empty">no pods running</div>`;
@@ -1517,7 +1525,7 @@ async function loadServiceRuntime(service) {
     const revRows = (r.rollout.reachable ? r.rollout.revisions : []).slice().reverse().map((rev) => `
       <div class="cfg-item">
         <span>rev ${rev.revision} <span class="mono small muted">${esc(rev.image || "")}</span></span>
-        <button class="act-btn" onclick="rollbackDeployment('devops-platform','${esc(service)}',${rev.revision})">↩ rollback here</button>
+        <button class="act-btn" data-act="rollbackDeployment" data-a1="devops-platform" data-a2="${esc(service)}" data-a3="${rev.revision}">↩ rollback here</button>
       </div>`).join("") || `<div class="empty">no rollout history</div>`;
 
     box.innerHTML = `
@@ -1545,38 +1553,148 @@ function closeDetail() {
   $("detail-overlay").classList.remove("show");
 }
 
-/* ═══════════ NAV / TIMER / TOOLTIP ═══════════ */
+/* ═══════════ ACTION DISPATCH ═══════════ */
+
+// Every button/row in this console used to carry an inline `onclick="fn(…)"`.
+// Sharing a page with the main SPA means sharing its Content-Security-Policy,
+// and inline handlers are the one thing a CSP nonce cannot whitelist — only
+// 'unsafe-inline' would, for the whole document. So markup now emits
+// `data-act="name"` plus `data-a1…data-a3`, and this table is the only place
+// that maps a name to a call. Arguments arrive as strings; entries that need
+// a number or a boolean coerce it here.
+const ACTIONS = {
+  renderTopology: () => renderTopology(),
+  refreshConfigTab: () => refreshConfigTab(),
+  ciTrigger: () => ciTrigger(),
+  showArgoCreds: () => showArgoCreds(),
+  syncServiceList: () => syncServiceList(),
+  rerunVaultSetup: () => rerunVaultSetup(),
+  reconcileTerraform: () => reconcileTerraform(),
+  preflightFlow: () => preflightFlow(),
+  workerProvision: () => workerProvision(),
+  workerDeprovision: () => workerDeprovision(),
+  searchLogs: () => searchLogs(),
+  closeDetail: () => closeDetail(),
+  gotoServices: () => switchView("services"),
+
+  showDetail: (el) => showDetail(el.dataset.a1),
+  showPipeline: (el) => showPipeline(el.dataset.a1),
+  seedSecretsFlow: (el) => seedSecretsFlow(el.dataset.a1),
+  switchConfigTab: (el) => switchConfigTab(el.dataset.a1),
+  viewCiLogs: (el) => viewCiLogs(el.dataset.a1),
+  ciRerun: (el) => ciRerun(el.dataset.a1),
+  ciCancel: (el) => ciCancel(el.dataset.a1),
+  showArgoResources: (el) => showArgoResources(el.dataset.a1),
+  argoRefresh: (el) => argoRefresh(el.dataset.a1),
+  argoSync: (el) => argoSync(el.dataset.a1),
+  showVaultSecretMeta: (el) => showVaultSecretMeta(el.dataset.a1),
+  showMonitoringPodDetail: (el) => showMonitoringPodDetail(el.dataset.a1),
+  stopScript: (el) => stopScript(el.dataset.a1),
+  viewScriptOutput: (el) => viewScriptOutput(el.dataset.a1),
+  showFiringAlertDetail: (el) => showFiringAlertDetail(Number(el.dataset.a1)),
+  showAlertHistoryDetail: (el) => showAlertHistoryDetail(Number(el.dataset.a1)),
+
+  openDashboard: (el) => openDashboard(el.dataset.a1, el.dataset.a2),
+  restartPod: (el) => restartPod(el.dataset.a1, el.dataset.a2),
+  viewPodLogs: (el) => viewPodLogs(el.dataset.a1, el.dataset.a2, el.dataset.a3),
+  runScript: (el) => runScript(el.dataset.a1, el.dataset.a2 === "true"),
+  rollbackDeployment: (el) =>
+    rollbackDeployment(el.dataset.a1, el.dataset.a2, Number(el.dataset.a3)),
+
+  // Buttons that read the value out of a named input next to them.
+  addServiceFromInput: (el) => addServiceFlow(el.dataset.a1, inputValue(el.dataset.input)),
+  shipServiceFromInput: (el) => shipServiceFlow(el.dataset.a1, inputValue(el.dataset.input)),
+  createAppFromInput: (el) => createAppFlow(inputValue(el.dataset.input)),
+};
+
+// Enter pressed inside an input, reading that same input's value.
+const ENTER_ACTIONS = {
+  addServiceFromSelf: (el) => addServiceFlow(el.dataset.a1, el.value),
+  createAppFromSelf: (el) => createAppFlow(el.value),
+  searchLogs: () => searchLogs(),
+};
+
+function inputValue(id) {
+  const el = $(id);
+  return el ? el.value : "";
+}
+
+function bindDispatch(root) {
+  root.addEventListener("click", (event) => {
+    // Nearest match wins, which reproduces what the old inline
+    // `event.stopPropagation()` barriers did: a [data-stop] ancestor shields
+    // its subtree from the clickable row or card wrapping it.
+    const hit = event.target.closest("[data-act],[data-stop]");
+    if (!hit || !root.contains(hit)) return;
+    const name = hit.dataset.act;
+    if (!name) return;
+    const fn = ACTIONS[name];
+    if (!fn) {
+      console.warn(`[platform] unknown action: ${name}`);
+      return;
+    }
+    fn(hit);
+  });
+
+  root.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter") return;
+    const el = event.target.closest("[data-enter]");
+    if (!el || !root.contains(el)) return;
+    const fn = ENTER_ACTIONS[el.dataset.enter];
+    if (fn) fn(el);
+  });
+}
+
+/* ═══════════ NAV / TIMER / MOUNT ═══════════ */
 
 function switchView(name) {
   if (state.pipelineTimer) { clearInterval(state.pipelineTimer); state.pipelineTimer = null; }
-  document.querySelectorAll(".nav-item").forEach((n) => n.classList.toggle("active", n.dataset.view === name));
-  document.querySelectorAll(".view").forEach((v) => v.classList.toggle("active", v.id === `view-${name}`));
+  const root = $("platform-root");
+  if (!root) return;
+  root.querySelectorAll(".nav-item").forEach((n) => n.classList.toggle("active", n.dataset.view === name));
+  root.querySelectorAll(".view").forEach((v) => v.classList.toggle("active", v.id === `view-${name}`));
   state.view = name;
-  window.location.hash = name;
-}
-
-function bindNav() {
-  document.querySelectorAll(".nav-item").forEach((el) => {
-    el.addEventListener("click", () => switchView(el.dataset.view));
-  });
+  if (window.location.hash !== `#/platform/${name}`) {
+    window.location.hash = `#/platform/${name}`;
+  }
 }
 
 function startTimer() {
   if (state.timer) clearInterval(state.timer);
   state.timer = setInterval(async () => {
-    if (!$("autorefresh").checked) return;
+    const box = $("autorefresh");
+    // Paused while the user is on a control-plane route: the poll hits six
+    // live endpoints (cluster, CI, ArgoCD, Vault, alerts, pods) and there is
+    // nothing on screen to update.
+    if (!state.mounted || !box || !box.checked) return;
     try { await fetchData(); } catch { /* keep last data */ }
   }, 30000);
 }
 
-(async function init() {
-  bindNav();
-  const hash = window.location.hash.replace("#", "");
-  if (VIEWS.includes(hash)) switchView(hash);
+let booted = false;
+
+/** Called by the shell router whenever a #/platform/* route becomes active. */
+async function mount(view) {
+  state.mounted = true;
+  switchView(VIEWS.includes(view) ? view : state.view);
+  if (booted) return;
+  booted = true;
+  bindDispatch($("platform-root"));
   try {
     await fetchData();
   } catch (e) {
     $("view-topology").innerHTML = `<div class="card" style="border-color:var(--red)"><span class="red">Failed to load: ${esc(e.message)}</span></div>`;
   }
   startTimer();
+}
+
+/** Called by the shell router when the user leaves for a control-plane route. */
+function unmount() {
+  state.mounted = false;
+  if (state.pipelineTimer) { clearInterval(state.pipelineTimer); state.pipelineTimer = null; }
+  if (state.runTimer) { clearInterval(state.runTimer); state.runTimer = null; }
+  closeDetail();
+}
+
+return { mount, unmount, views: VIEWS };
 })();

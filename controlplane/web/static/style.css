@@ -1,96 +1,24 @@
-/* Control-plane UI. Single stylesheet, no framework, dark/light aware. */
+/* Control-plane views. Scoped to #cp-root: this half shares a page with the
+   platform-ops console, whose stylesheet uses many of the same class names.
+   The palette and reset live in shell.css. */
 
-:root {
-  --bg: #f6f7f9;
-  --panel: #ffffff;
-  --border: #dfe3e8;
-  --text: #1c2024;
-  --muted: #6b7480;
-  --accent: #2563eb;
-  --accent-text: #ffffff;
-  --critical: #b91c1c;
-  --high: #c2410c;
-  --medium: #a16207;
-  --low: #15803d;
-  --unknown: #6b7480;
-  --ok: #15803d;
-  --warn: #a16207;
-  --fail: #b91c1c;
-  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #0f1115;
-    --panel: #171a21;
-    --border: #2a2f3a;
-    --text: #e6e8ec;
-    --muted: #9aa3b0;
-    --accent: #3b82f6;
-    --critical: #f87171;
-    --high: #fb923c;
-    --medium: #fbbf24;
-    --low: #4ade80;
-    --unknown: #9aa3b0;
-    --ok: #4ade80;
-    --warn: #fbbf24;
-    --fail: #f87171;
-  }
-}
-
-* { box-sizing: border-box; }
-
-body {
-  margin: 0;
-  background: var(--bg);
-  color: var(--text);
-  font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-}
-
-.boot { padding: 3rem; color: var(--muted); }
-
-/* ---------- nav ---------- */
-
-nav {
-  display: flex;
-  align-items: center;
-  gap: 1.25rem;
-  padding: 0 1.25rem;
-  height: 52px;
-  background: var(--panel);
-  border-bottom: 1px solid var(--border);
-  position: sticky;
-  top: 0;
-  z-index: 10;
-}
-
-nav .brand { font-weight: 600; }
-nav .spacer { flex: 1; }
-
-nav a {
-  color: var(--muted);
-  text-decoration: none;
-  padding: 4px 2px;
-  border-bottom: 2px solid transparent;
-}
-
-nav a:hover { color: var(--text); }
-nav a.active { color: var(--text); border-bottom-color: var(--accent); }
-
+#cp-root .boot { padding: 3rem; color: var(--muted); }
 /* ---------- layout ---------- */
-
-main {
+#cp-root main {
   max-width: 1080px;
   margin: 0 auto;
   padding: 1.75rem 1.25rem 4rem;
 }
 
-h1 { font-size: 1.5rem; margin: 0 0 .35rem; }
-h2 { font-size: 1.1rem; margin: 2rem 0 .75rem; }
-.muted { color: var(--muted); }
-.subtitle { color: var(--muted); margin: 0 0 1.5rem; }
+#cp-root h1 { font-size: 1.5rem; margin: 0 0 .35rem; }
 
-.panel {
+#cp-root h2 { font-size: 1.1rem; margin: 2rem 0 .75rem; }
+
+#cp-root .muted { color: var(--muted); }
+
+#cp-root .subtitle { color: var(--muted); margin: 0 0 1.5rem; }
+
+#cp-root .panel {
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 10px;
@@ -98,14 +26,13 @@ h2 { font-size: 1.1rem; margin: 2rem 0 .75rem; }
   margin-bottom: 1rem;
 }
 
-.row { display: flex; gap: .6rem; align-items: center; flex-wrap: wrap; }
-.between { display: flex; justify-content: space-between; align-items: center; gap: 1rem; }
+#cp-root .row { display: flex; gap: .6rem; align-items: center; flex-wrap: wrap; }
 
+#cp-root .between { display: flex; justify-content: space-between; align-items: center; gap: 1rem; }
 /* ---------- forms ---------- */
+#cp-root label { display: block; font-size: .85rem; color: var(--muted); margin-bottom: .25rem; }
 
-label { display: block; font-size: .85rem; color: var(--muted); margin-bottom: .25rem; }
-
-input, select {
+#cp-root input, #cp-root select {
   font: inherit;
   color: var(--text);
   background: var(--bg);
@@ -115,12 +42,13 @@ input, select {
   width: 100%;
 }
 
-input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+#cp-root input:focus, #cp-root select:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 
-.field { margin-bottom: .9rem; }
-.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: .75rem; }
+#cp-root .field { margin-bottom: .9rem; }
 
-button {
+#cp-root .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: .75rem; }
+
+#cp-root button {
   font: inherit;
   cursor: pointer;
   border-radius: 6px;
@@ -130,28 +58,33 @@ button {
   padding: .5rem .9rem;
 }
 
-button:hover { border-color: var(--accent); }
-button:disabled { opacity: .5; cursor: not-allowed; }
+#cp-root button:hover { border-color: var(--accent); }
 
-button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
-button.danger { color: var(--fail); border-color: var(--fail); }
-button.link { background: none; border: none; color: var(--muted); padding: 0; }
-button.link:hover { color: var(--text); text-decoration: underline; }
-button.small { padding: .3rem .6rem; font-size: .85rem; }
+#cp-root button:disabled { opacity: .5; cursor: not-allowed; }
 
+#cp-root button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+
+#cp-root button.danger { color: var(--fail); border-color: var(--fail); }
+
+#cp-root button.link { background: none; border: none; color: var(--muted); padding: 0; }
+
+#cp-root button.link:hover { color: var(--text); text-decoration: underline; }
+
+#cp-root button.small { padding: .3rem .6rem; font-size: .85rem; }
 /* ---------- tables ---------- */
+#cp-root .table-wrap { overflow-x: auto; }
 
-.table-wrap { overflow-x: auto; }
+#cp-root table { width: 100%; border-collapse: collapse; font-size: .9rem; }
 
-table { width: 100%; border-collapse: collapse; font-size: .9rem; }
-th { text-align: left; color: var(--muted); font-weight: 500; padding: .5rem .6rem; border-bottom: 1px solid var(--border); white-space: nowrap; }
-td { padding: .55rem .6rem; border-bottom: 1px solid var(--border); }
-tr:last-child td { border-bottom: none; }
-td.mono, .mono { font-family: var(--mono); font-size: .85em; }
+#cp-root th { text-align: left; color: var(--muted); font-weight: 500; padding: .5rem .6rem; border-bottom: 1px solid var(--border); white-space: nowrap; }
 
+#cp-root td { padding: .55rem .6rem; border-bottom: 1px solid var(--border); }
+
+#cp-root tr:last-child td { border-bottom: none; }
+
+#cp-root td.mono, #cp-root .mono { font-family: var(--mono); font-size: .85em; }
 /* ---------- status pills ---------- */
-
-.pill {
+#cp-root .pill {
   display: inline-block;
   padding: .1rem .5rem;
   border-radius: 999px;
@@ -160,39 +93,48 @@ td.mono, .mono { font-family: var(--mono); font-size: .85em; }
   white-space: nowrap;
 }
 
-.pill.ready, .pill.live, .pill.succeeded, .pill.running, .pill.completed { color: var(--ok); }
-.pill.draft, .pill.queued, .pill.pending, .pill.building, .pill.scanning, .pill.deploying, .pill.provisioning, .pill.destroying { color: var(--warn); }
-.pill.failed, .pill.blocked, .pill.unreachable, .pill.stopped, .pill.destroyed, .pill.cancelled { color: var(--fail); }
+#cp-root .pill.ready, #cp-root .pill.live, #cp-root .pill.succeeded, #cp-root .pill.running, #cp-root .pill.completed { color: var(--ok); }
 
+#cp-root .pill.draft, #cp-root .pill.queued, #cp-root .pill.pending, #cp-root .pill.building, #cp-root .pill.scanning, #cp-root .pill.deploying, #cp-root .pill.provisioning, #cp-root .pill.destroying { color: var(--warn); }
+
+#cp-root .pill.failed, #cp-root .pill.blocked, #cp-root .pill.unreachable, #cp-root .pill.stopped, #cp-root .pill.destroyed, #cp-root .pill.cancelled { color: var(--fail); }
 /* ---------- severity ---------- */
+#cp-root .sev-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: .75rem; }
 
-.sev-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: .75rem; }
-
-.sev {
+#cp-root .sev {
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: .75rem;
   text-align: center;
 }
 
-.sev .n { font-size: 1.75rem; font-weight: 600; line-height: 1.1; }
-.sev .k { font-size: .78rem; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
-.sev.critical .n { color: var(--critical); }
-.sev.high .n { color: var(--high); }
-.sev.medium .n { color: var(--medium); }
-.sev.low .n { color: var(--low); }
-.sev.unknown .n { color: var(--unknown); }
+#cp-root .sev .n { font-size: 1.75rem; font-weight: 600; line-height: 1.1; }
 
-.sev-tag { font-weight: 600; font-size: .8rem; text-transform: uppercase; }
-.sev-tag.critical { color: var(--critical); }
-.sev-tag.high { color: var(--high); }
-.sev-tag.medium { color: var(--medium); }
-.sev-tag.low { color: var(--low); }
-.sev-tag.unknown { color: var(--unknown); }
+#cp-root .sev .k { font-size: .78rem; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
 
+#cp-root .sev.critical .n { color: var(--critical); }
+
+#cp-root .sev.high .n { color: var(--high); }
+
+#cp-root .sev.medium .n { color: var(--medium); }
+
+#cp-root .sev.low .n { color: var(--low); }
+
+#cp-root .sev.unknown .n { color: var(--unknown); }
+
+#cp-root .sev-tag { font-weight: 600; font-size: .8rem; text-transform: uppercase; }
+
+#cp-root .sev-tag.critical { color: var(--critical); }
+
+#cp-root .sev-tag.high { color: var(--high); }
+
+#cp-root .sev-tag.medium { color: var(--medium); }
+
+#cp-root .sev-tag.low { color: var(--low); }
+
+#cp-root .sev-tag.unknown { color: var(--unknown); }
 /* ---------- logs ---------- */
-
-.log {
+#cp-root .log {
   background: #0b0d11;
   color: #d6dae2;
   font-family: var(--mono);
@@ -205,20 +147,20 @@ td.mono, .mono { font-family: var(--mono); font-size: .85em; }
   white-space: pre-wrap;
   word-break: break-word;
 }
-
 /* ---------- misc ---------- */
+#cp-root .empty { color: var(--muted); padding: 1.5rem 0; text-align: center; }
 
-.empty { color: var(--muted); padding: 1.5rem 0; text-align: center; }
-.error { color: var(--fail); }
-.node-row { display: grid; grid-template-columns: 1.4fr 1fr 1fr 1fr 1.4fr auto; gap: .5rem; align-items: end; margin-bottom: .6rem; }
-.totals { font-size: .85rem; color: var(--muted); margin-top: .5rem; }
-.totals.over { color: var(--fail); }
+#cp-root .error { color: var(--fail); }
 
-.auth-wrap { max-width: 380px; margin: 4rem auto; }
+#cp-root .node-row { display: grid; grid-template-columns: 1.4fr 1fr 1fr 1fr 1.4fr auto; gap: .5rem; align-items: end; margin-bottom: .6rem; }
 
+#cp-root .totals { font-size: .85rem; color: var(--muted); margin-top: .5rem; }
+
+#cp-root .totals.over { color: var(--fail); }
+
+#cp-root .auth-wrap { max-width: 380px; margin: 4rem auto; }
 /* preset picker */
-
-label.preset {
+#cp-root label.preset {
   display: block;
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -228,21 +170,18 @@ label.preset {
   line-height: 1.4;
 }
 
-label.preset:hover { border-color: var(--accent); }
-label.preset:has(input:checked) { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
-label.preset input { width: auto; margin-right: .35rem; }
+#cp-root label.preset:hover { border-color: var(--accent); }
 
+#cp-root label.preset:has(input:checked) { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+
+#cp-root label.preset input { width: auto; margin-right: .35rem; }
 /* focus visibility for keyboard users */
-
-a:focus-visible,
-button:focus-visible,
-input:focus-visible,
-select:focus-visible {
+#cp-root a:focus-visible, #cp-root button:focus-visible, #cp-root input:focus-visible, #cp-root select:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
 
-.toast {
+#cp-root .toast {
   position: fixed;
   bottom: 1.25rem;
   left: 50%;
@@ -257,14 +196,13 @@ select:focus-visible {
   z-index: 100;
 }
 
-.toast.err { border-left-color: var(--fail); }
+#cp-root .toast.err { border-left-color: var(--fail); }
 
 @media (max-width: 700px) {
-  .node-row { grid-template-columns: 1fr 1fr; }
-}
 
+#cp-root .node-row { grid-template-columns: 1fr 1fr; }}
 /* Modal dialog (docs/TODO.md Task 6.2) */
-.modal-backdrop {
+#cp-root .modal-backdrop {
   position: fixed;
   inset: 0;
   background: rgba(0, 0, 0, .55);
@@ -273,7 +211,8 @@ select:focus-visible {
   justify-content: center;
   z-index: 200;
 }
-.modal {
+
+#cp-root .modal {
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 10px;
@@ -282,9 +221,12 @@ select:focus-visible {
   width: calc(100vw - 2rem);
   box-shadow: 0 12px 40px rgba(0,0,0,.4);
 }
-.modal h3 { margin: 0 0 .4rem; }
-.modal p { margin: .3rem 0 .9rem; }
-.modal input[type="number"], .modal input[type="text"] {
+
+#cp-root .modal h3 { margin: 0 0 .4rem; }
+
+#cp-root .modal p { margin: .3rem 0 .9rem; }
+
+#cp-root .modal input[type="number"], #cp-root .modal input[type="text"] {
   width: 100%;
   padding: .45rem .6rem;
   border: 1px solid var(--border);
@@ -292,11 +234,12 @@ select:focus-visible {
   background: var(--bg);
   color: var(--fg);
 }
-.modal-actions { display: flex; gap: .6rem; justify-content: flex-end; margin-top: 1rem; }
-.modal-actions .small { padding: .45rem .9rem; }
 
+#cp-root .modal-actions { display: flex; gap: .6rem; justify-content: flex-end; margin-top: 1rem; }
+
+#cp-root .modal-actions .small { padding: .45rem .9rem; }
 /* Skeleton loading (docs/TODO.md Task 6.3) */
-.skeleton-line {
+#cp-root .skeleton-line {
   height: .9rem;
   border-radius: 4px;
   margin: .7rem 0;
@@ -304,13 +247,15 @@ select:focus-visible {
   background-size: 200% 100%;
   animation: skeleton-shimmer 1.2s infinite;
 }
-.w60 { width: 60%; }
-.w80 { width: 80%; }
-.w90 { width: 90%; }
-@keyframes skeleton-shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
 
+#cp-root .w60 { width: 60%; }
+
+#cp-root .w80 { width: 80%; }
+
+#cp-root .w90 { width: 90%; }
+@keyframes skeleton-shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
 /* Skeleton loading (docs/TODO.md Task 6.3) */
-.skeleton-line {
+#cp-root .skeleton-line {
   height: .9rem;
   border-radius: 4px;
   margin: .7rem 0;
@@ -318,13 +263,16 @@ select:focus-visible {
   background-size: 200% 100%;
   animation: skeleton-shimmer 1.2s infinite;
 }
-.w60 { width: 60%; }
-.w80 { width: 80%; }
-.w90 { width: 90%; }
+
+#cp-root .w60 { width: 60%; }
+
+#cp-root .w80 { width: 80%; }
+
+#cp-root .w90 { width: 90%; }
 @keyframes skeleton-shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
-
-
 /* SSO-only login: hide the password form, keep the SSO button (TODO 3.3) */
-.auth-wrap .sso-only .field, .auth-wrap .sso-only #toggle-mode { display: none; }
-.auth-wrap .sso-only #submit-btn { display: none; }
-.auth-wrap .sso-only { justify-content: center; }
+#cp-root .auth-wrap .sso-only .field, #cp-root .auth-wrap .sso-only #toggle-mode { display: none; }
+
+#cp-root .auth-wrap .sso-only #submit-btn { display: none; }
+
+#cp-root .auth-wrap .sso-only { justify-content: center; }

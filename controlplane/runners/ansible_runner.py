@@ -23,7 +23,8 @@ roles_path = /opt/ansible/roles
 host_key_checking = False
 retry_files_enabled = False
 pipelining = True
-stdout_callback = yaml
+stdout_callback = ansible.builtin.default
+default_result_format = yaml
 gathering = smart
 """
 
@@ -51,11 +52,11 @@ def ansible_playbook(
     key_dir = None
     if ssh_private_key:
         key_dir = tempfile.mkdtemp(prefix="ctl-ssh-")
-        key_path = Path(key_dir) / "id_ed25519"
+        key_path = Path(key_dir) / "id_rsa"
         key_path.write_text(ssh_private_key)
         key_path.chmod(0o600)
-        mounts.append((key_path, "/run/ssh/id_ed25519", True))
-        env["ANSIBLE_PRIVATE_KEY_FILE"] = "/run/ssh/id_ed25519"
+        mounts.append((key_path, "/run/ssh/id_rsa", True))
+        env["ANSIBLE_PRIVATE_KEY_FILE"] = "/run/ssh/id_rsa"
 
     try:
         run = SandboxRun(

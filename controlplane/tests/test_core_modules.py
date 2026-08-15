@@ -169,13 +169,21 @@ def test_terraform_runtime_injects_ssh_key_from_vault(monkeypatch):
 
 
 def test_terraform_runtime_empty_key_when_unset(monkeypatch):
+    """No stored key for this user -> empty ssh_public_key, not a crash.
+
+    Previously cleared the module-level ``_DEV_STORE`` dict. DevSecretStore is
+    now Redis-backed (the API and worker are separate processes, so an
+    in-process dict was invisible across them), so the isolation this test
+    needs comes from using a user id whose key is explicitly deleted rather
+    than from wiping a shared dict.
+    """
     import controlplane.core.runtime as runtime
-    from controlplane.core.vault import _DEV_STORE
 
     object.__setattr__(runtime.settings, "environment", "dev")
     object.__setattr__(runtime.settings, "vault_addr", "")
-    _DEV_STORE.clear()
-    config = runtime.terraform_runtime(uuid.UUID(int=2))
+    user_id = uuid.UUID(int=2)
+    runtime.get_secret_store().delete(str(user_id), "ssh_public_key")
+    config = runtime.terraform_runtime(user_id)
     assert config.ssh_public_key == ""
 
 

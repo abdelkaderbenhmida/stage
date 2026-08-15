@@ -7,6 +7,7 @@ before they are written to the database (§7.4).
 
 import json
 import socket
+import time
 import uuid
 from datetime import UTC
 from pathlib import Path
@@ -201,9 +202,39 @@ def provision_task(
             ProjectRepository(db, scope).update_node_ip(uuid.UUID(project_id), node_name, ip)
         db.commit()
 
+        # terraform apply returning only means libvirt started the domain,
+        # not that the guest finished booting and cloud-init applied the SSH
+        # key — racing straight into ansible-playbook here made every VM-mode
+        # provision fail with "Permission denied (publickey)" or plain
+        # unreachable, indistinguishable from a real misconfiguration.
+        _append_log(job_id, "Waiting for nodes to accept SSH connections...")
+        _wait_for_ssh(job_id, list(node_ips.values()))
+
         _append_log(job_id, "[4/4] ansible-playbook configure")
         key = user_ssh_private_key(uuid.UUID(user_id))
-        _check(ansible_playbook(ws, key, on_line=on_line))
+        # sshd starts long before cloud-init finishes creating the user and
+        # installing the authorized key — and cloud-init itself runs a full
+        # package_upgrade on first boot, which can take most of the ~10
+        # minutes the UI already tells users to expect for VM mode, longer
+        # under host memory pressure. Retry the (idempotent) playbook run
+        # rather than failing the whole provision on a transient "Permission
+        # denied" from a guest that's still finishing first-boot. Budgeted to
+        # stay under the task's own hard time limit (provision_timeout_seconds
+        # + 120s in celery_app.py).
+        attempts = 20
+        retry_delay_seconds = 30
+        for attempt in range(1, attempts + 1):
+            result = ansible_playbook(ws, key, on_line=on_line)
+            if result.exit_code == 0:
+                break
+            if attempt == attempts:
+                _check(result)
+            _append_log(
+                job_id,
+                f"ansible-playbook attempt {attempt}/{attempts} failed "
+                f"(guest likely still finishing cloud-init) — retrying in {retry_delay_seconds}s",
+            )
+            time.sleep(retry_delay_seconds)
 
         _mark_ready(db, project_id)
         _mark_job(db, uuid.UUID(job_id), "succeeded")
@@ -792,10 +823,14 @@ def kubectl_apply(manifest_paths: list[Path], project: Project, on_line=None) ->
     if namespaces.exit_code != 0:
         kubectl(["create", "namespace", project.name], project, on_line=on_line)
     for manifest in manifest_paths:
+        manifest = manifest.resolve()
         result = run_sandbox(
             SandboxRun(
                 command=["kubectl", "apply", "-f", str(manifest)],
-                mounts=kubeconfig_mounts,
+                # `mounts=` alone doesn't cut it — the container needs the
+                # rendered manifest itself; without a workspace/mount for it,
+                # kubectl sees a path that doesn't exist inside the sandbox.
+                mounts=[*kubeconfig_mounts, (manifest, str(manifest), True)],
                 env={"KUBECONFIG": "/kube/config"},
                 network_enabled=True,
                 timeout_seconds=300,
@@ -849,6 +884,27 @@ def _port_open(host: str, port: int, timeout: float = 2) -> bool:
             return True
     except OSError:
         return False
+
+
+def _wait_for_ssh(job_id: str, ips: list[str], timeout_seconds: int = 240, poll_seconds: float = 5) -> None:
+    """Block until every node accepts TCP connections on :22.
+
+    A libvirt domain reporting "running" only means the guest started
+    booting — cloud-init still has to run (create the user, install the SSH
+    key, bring up networking) before anything can SSH in. Raises on timeout
+    rather than letting the caller hit a confusing ansible failure.
+    """
+    deadline = time.monotonic() + timeout_seconds
+    pending = set(ips)
+    while pending and time.monotonic() < deadline:
+        pending = {ip for ip in pending if not _port_open(ip, 22, timeout=3)}
+        if pending:
+            time.sleep(poll_seconds)
+    if pending:
+        raise RuntimeError(
+            f"Timed out after {timeout_seconds}s waiting for SSH on: {', '.join(sorted(pending))} "
+            "— the VM may still be booting, or cloud-init failed."
+        )
 
 
 # ---------------------------------------------------------------------------

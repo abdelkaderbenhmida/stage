@@ -1,14 +1,23 @@
 """§7 item 8 — CSP and security headers must ship on every response.
 
-The SPA is same-origin with the API and buildless (no inline scripts), so
-the Content-Security-Policy needs no 'unsafe-inline' exception. HSTS is
-prod-only: dev traffic runs over plain HTTP on localhost.
+The SPA is same-origin with the API and buildless, and every interactive
+element dispatches through a ``data-act`` attribute table rather than an
+inline handler, so script-src needs no 'unsafe-inline' exception anywhere.
+
+style-src does carry one: both halves of the console render data-driven
+markup that sets ``style="width:NN%"`` and similar on the element, which no
+static stylesheet can express. That is a formatting concern, not a script
+execution one, and script-src staying strict is what the last test guards.
+
+HSTS is prod-only: dev traffic runs over plain HTTP on localhost.
 """
+
+import re
 
 import pytest
 
 CSP = (
-    "default-src 'self'; script-src 'self'; style-src 'self'; "
+    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
     "img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; "
     "base-uri 'self'; form-action 'self'"
 )
@@ -38,5 +47,20 @@ def test_hsts_sent_in_production_like_env(client, settings_override):
 
 def test_csp_never_allows_inline_scripts(client):
     policy = client.get("/").headers["Content-Security-Policy"]
-    assert "unsafe-inline" not in policy
+    script_src = next(d for d in policy.split("; ") if d.startswith("script-src"))
+    assert script_src == "script-src 'self'"
     assert "unsafe-eval" not in policy
+
+
+def test_no_inline_event_handlers_in_shipped_assets():
+    """The strict script-src above is only safe while the assets stay clean:
+    one `onclick="…"` slipping back in would silently no-op in the browser."""
+    from controlplane.web.router import STATIC_DIR
+
+    offenders = [
+        path.relative_to(STATIC_DIR)
+        for path in STATIC_DIR.rglob("*")
+        if path.suffix in {".js", ".html"}
+        and re.search(r"\son(?:click|keydown|change|input|submit)\s*=", path.read_text())
+    ]
+    assert offenders == []

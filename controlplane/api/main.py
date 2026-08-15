@@ -88,21 +88,20 @@ def create_app() -> FastAPI:
     async def security_headers(request, call_next):
         """Baseline hardening for the UI, which is same-origin with the API.
 
-        The CSP allows only self-hosted scripts and styles: the main SPA is
-        deliberately buildless and inlines nothing, so no 'unsafe-inline'
-        exception is needed there. The ported platform-ops console
-        (/platform, /static/platform/*) predates that convention and wires
-        its buttons with inline `onclick="..."` — script-src needs
-        'unsafe-inline' scoped to just that page rather than rewriting
-        ~60 call sites, or every button on it silently no-ops.
+        script-src is 'self' with no exception anywhere: the console is
+        buildless and every button now dispatches through a `data-act`
+        attribute table, so there is no inline handler left for a CSP to
+        have to whitelist.
+
+        style-src keeps 'unsafe-inline' because both halves of the console
+        build markup as template literals carrying `style="..."` attributes
+        in a few hundred places. That is a formatting concern, not a script
+        execution one.
         """
         response = await call_next(request)
-        path = request.url.path
-        is_platform_console = path.startswith("/platform") or path.startswith("/static/platform/")
-        script_src = "'self' 'unsafe-inline'" if is_platform_console else "'self'"
         response.headers.setdefault(
             "Content-Security-Policy",
-            f"default-src 'self'; script-src {script_src}; style-src 'self'; "
+            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
             "img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; "
             "base-uri 'self'; form-action 'self'",
         )

@@ -1,19 +1,18 @@
 """Per-user secret store backed by Vault (docs/PLATFORM_SPEC.md §7.4).
 
 Secrets (SSH keypairs, registry credentials) are keyed by user ID and never
-touch PostgreSQL. In ``ENVIRONMENT=dev`` an ephemeral in-memory store is used
-so the control plane runs without a Vault server.
+touch PostgreSQL. In ``ENVIRONMENT=dev`` a Redis-backed store is used so the
+control plane runs without a Vault server.
 """
 
 import logging
 
 import hvac
+import redis as redis_lib
 
 from controlplane.core.config import settings
 
 logger = logging.getLogger("controlplane.vault")
-
-_DEV_STORE: dict[str, dict[str, str]] = {}
 
 
 class SecretStore:
@@ -28,14 +27,26 @@ class SecretStore:
 
 
 class DevSecretStore(SecretStore):
+    """Backed by Redis rather than an in-process dict: the API process (which
+    mints secrets, e.g. the SSH keypair at registration) and the worker
+    process (which reads them at provision time) are always separate OS
+    processes, even in dev — an in-memory dict is invisible across that
+    boundary, so provisioning could never find the SSH key it needs."""
+
+    def __init__(self) -> None:
+        self._client = redis_lib.Redis.from_url(settings.redis_url, decode_responses=True)
+
+    def _redis_key(self, user_id: str, key: str) -> str:
+        return f"controlplane:dev-secrets:{user_id}:{key}"
+
     def set(self, user_id: str, key: str, value: str) -> None:
-        _DEV_STORE.setdefault(user_id, {})[key] = value
+        self._client.set(self._redis_key(user_id, key), value)
 
     def get(self, user_id: str, key: str) -> str | None:
-        return _DEV_STORE.get(user_id, {}).get(key)
+        return self._client.get(self._redis_key(user_id, key))
 
     def delete(self, user_id: str, key: str) -> None:
-        _DEV_STORE.get(user_id, {}).pop(key, None)
+        self._client.delete(self._redis_key(user_id, key))
 
 
 class VaultSecretStore(SecretStore):

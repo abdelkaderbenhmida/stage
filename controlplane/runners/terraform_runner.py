@@ -33,6 +33,7 @@ def _terraform_run(
         SandboxRun(
             command=["terraform", *subcommand],
             workspace=workspace,
+            workspace_writable=True,
             writable_paths=_writable_workspace_paths(workspace),
             env=env,
             network_enabled=True,

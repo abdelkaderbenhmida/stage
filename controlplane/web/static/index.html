@@ -4,31 +4,94 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>DevOps Central Platform</title>
+  <!-- shell.css owns the palette and the reset; the other two are each scoped
+       to the subtree they style (#cp-root / #platform-root) and must load
+       after it. -->
+  <link rel="stylesheet" href="/static/shell.css">
+  <link rel="stylesheet" href="/static/platform/style.css">
   <link rel="stylesheet" href="/static/style.css">
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚙️</text></svg>">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='22' fill='%234cc2ff'/><text x='50' y='70' font-size='54' text-anchor='middle' fill='white' font-family='monospace' font-weight='bold'>D</text></svg>">
 </head>
 <body>
-  <div id="app">
-    <div class="boot">Loading…</div>
+  <div id="app" class="boot">Loading…</div>
+
+  <div id="platform-root" hidden>
+    <div class="layout">
+      <aside class="sidebar" id="sidebar">
+        <div class="brand">
+          <div class="logo">D</div>
+          <div>
+            <div class="t1">Central Platform</div>
+            <div class="t2">Control Tower</div>
+          </div>
+        </div>
+
+        <div class="nav-group">Control plane</div>
+        <div class="nav-item" data-nav="projects" data-href="#/projects"><span class="ico">▤</span> Projects</div>
+        <div class="nav-item" data-nav="catalogue" data-href="#/catalogue"><span class="ico">☰</span> Catalogue</div>
+        <div class="nav-item" data-nav="security" data-href="#/security"><span class="ico">⛨</span> Security</div>
+        <div class="nav-item" data-nav="teams" data-href="#/teams"><span class="ico">◍</span> Teams</div>
+        <div class="nav-item" data-nav="jobs" data-href="#/jobs"><span class="ico">⧗</span> Jobs</div>
+
+        <div class="nav-group">Platform</div>
+        <div class="nav-item" data-view="topology"><span class="ico">◉</span> Platform Health</div>
+        <div class="nav-item" data-view="apps"><span class="ico">＋</span> Apps &amp; Services
+          <span class="badge" id="nav-apps">0</span>
+        </div>
+        <div class="nav-item" data-view="overview"><span class="ico">▤</span> Overview</div>
+        <div class="nav-item" data-view="services"><span class="ico">◷</span> Services
+          <span class="badge" id="nav-services">0</span>
+        </div>
+        <div class="nav-item" data-view="config"><span class="ico">⚙</span> Operations</div>
+
+        <div class="spacer"></div>
+        <div class="sidebar-footer">
+          <label class="small muted" style="display:flex;gap:6px;align-items:center;cursor:pointer">
+            <input type="checkbox" id="autorefresh" checked> auto-refresh 30s
+          </label>
+          <span class="who" id="whoami"></span>
+          <button id="logout" type="button">Log out</button>
+        </div>
+      </aside>
+
+      <main class="content">
+        <div class="topbar">
+          <span class="status-dot ok pulse" id="top-status"></span>
+          <span class="repo-badge"><span>:</span><span id="top-repo">loading…</span></span>
+          <span class="muted small" id="top-updated"></span>
+        </div>
+
+        <!-- Control-plane half. Its own stylesheet is scoped to #cp-root. -->
+        <section class="view" id="view-cp">
+          <div id="cp-root">
+            <main id="view"></main>
+            <!-- Inside #cp-root so the scoped `.toast` rules reach it; it is
+                 position:fixed, so nesting does not affect where it lands. -->
+            <div id="toast" class="toast" hidden aria-live="polite"></div>
+          </div>
+        </section>
+
+        <!-- Platform-ops half. -->
+        <section class="view active" id="view-topology"></section>
+        <section class="view" id="view-apps"></section>
+        <section class="view" id="view-overview"></section>
+        <section class="view" id="view-services"></section>
+        <section class="view" id="view-config"></section>
+      </main>
+    </div>
+
+    <div class="toast" id="platform-toast"></div>
+    <div class="detail-panel" id="detail-panel">
+      <div class="detail-header">
+        <span id="detail-title"></span>
+        <button class="detail-close" data-act="closeDetail">✕</button>
+      </div>
+      <div class="detail-content" id="detail-content"></div>
+    </div>
+    <div class="detail-overlay" id="detail-overlay" data-act="closeDetail"></div>
   </div>
 
-  <nav id="nav" hidden>
-    <div class="brand">⚙️ Central Platform</div>
-    <a href="#/projects" data-nav="projects">Projects</a>
-    <a href="#/catalogue" data-nav="catalogue">Catalogue</a>
-    <a href="#/security" data-nav="security">Security</a>
-    <a href="#/teams" data-nav="teams">Teams</a>
-    <a href="#/jobs" data-nav="jobs">Jobs</a>
-    <a href="/platform">Platform</a>
-    <span class="spacer"></span>
-    <span id="whoami" class="muted"></span>
-    <button id="logout" class="link">Log out</button>
-  </nav>
-
-  <main id="view"></main>
-
-  <div id="toast" class="toast" hidden aria-live="polite"></div>
-
+  <script src="/static/platform/app.js"></script>
   <script src="/static/app.js"></script>
 </body>
 </html>

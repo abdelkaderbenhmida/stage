@@ -199,12 +199,32 @@ async function tryRefresh() {
 
 /* --------------------------------------------------------------- chrome */
 
+/** Highlight a control-plane entry in the shared sidebar.
+ *
+ * The sidebar lists both halves of the console, so this also clears the
+ * platform entries — the mirror of what PlatformConsole.switchView does when
+ * a platform view takes over. `active === null` means "logged out": the whole
+ * sidebar goes away and the login form owns the page.
+ */
 function setNav(active) {
-  const nav = $("#nav");
-  nav.hidden = !token();
-  nav.querySelectorAll("[data-nav]").forEach((a) => {
-    a.classList.toggle("active", a.dataset.nav === active);
+  const shell = $("#platform-root");
+  // The login form renders into #view, which lives inside the shell, so the
+  // shell itself stays mounted when logged out — only its chrome hides.
+  const signedIn = Boolean(token());
+  $("#sidebar").hidden = !signedIn;
+  $(".topbar", shell).hidden = !signedIn;
+  shell.querySelectorAll(".nav-item").forEach((item) => {
+    item.classList.toggle("active", active != null && item.dataset.nav === active);
   });
+}
+
+/** Show the control-plane pane and stand the platform half down. */
+function showControlPlanePane() {
+  const shell = $("#platform-root");
+  shell.querySelectorAll(".view").forEach((section) => {
+    section.classList.toggle("active", section.id === "view-cp");
+  });
+  window.PlatformConsole.unmount();
 }
 
 function loading(message = "Loading…") {
@@ -298,6 +318,7 @@ function renderAuth() {
         body: { email, password: TEST_PASSWORD },
       });
       setTokens(tokens.access_token, tokens.refresh_token);
+      refreshWhoami();
       location.hash = "#/projects";
     } catch (err) {
       $("#auth-error").textContent = err.message;
@@ -1368,9 +1389,19 @@ function route() {
 
   if (!token()) {
     setNav(null);
+    showControlPlanePane();
     return renderAuth();
   }
 
+  // The platform-ops half owns every #/platform/* route and renders into its
+  // own sections; hand off and stop, so neither half writes over the other.
+  const platform = path.match(/^\/platform(?:\/([\w-]+))?$/);
+  if (platform) {
+    setNav(null);
+    return window.PlatformConsole.mount(platform[1] || "topology");
+  }
+
+  showControlPlanePane();
   for (const [pattern, handler] of ROUTES) {
     const match = path.match(pattern);
     if (match) return handler(match[1]);
@@ -1378,8 +1409,35 @@ function route() {
   location.hash = "#/projects";
 }
 
+/** Fill the sidebar's account line from /auth/me.
+ *
+ * Called at boot and again after a form login: the sidebar is now permanent
+ * chrome rather than a nav bar that reappeared on reload, so signing in has
+ * to fill it there and then or it stays blank for the whole session.
+ */
+async function refreshWhoami({ clearOnFailure = false } = {}) {
+  try {
+    const me = await api("/auth/me");
+    $("#whoami").textContent = me.email;
+    $("#whoami").title = me.email;
+  } catch {
+    if (clearOnFailure) clearTokens();
+  }
+}
+
+/** One click handler for the shared sidebar; both halves are hash routes. */
+function bindSidebar() {
+  $("#sidebar").addEventListener("click", (event) => {
+    const item = event.target.closest(".nav-item");
+    if (!item) return;
+    location.hash = item.dataset.href || `#/platform/${item.dataset.view}`;
+  });
+}
+
 async function boot() {
   $("#app").remove();
+  $("#platform-root").hidden = false;
+  bindSidebar();
 
   $("#logout").onclick = async () => {
     const refresh = localStorage.getItem(REFRESH_KEY);
@@ -1388,18 +1446,12 @@ async function boot() {
       await api("/auth/logout", { method: "POST", body: { refresh_token: refresh } }).catch(() => {});
     }
     clearTokens();
+    $("#whoami").textContent = "";
     location.hash = "#/login";
     route();
   };
 
-  if (token()) {
-    try {
-      const me = await api("/auth/me");
-      $("#whoami").textContent = me.email;
-    } catch {
-      clearTokens();
-    }
-  }
+  if (token()) await refreshWhoami({ clearOnFailure: true });
 
   // SSO popup (docs/TODO.md Task 3.3): the IdP callback page postMessages
   // the tokens back; only accept messages from our own origin.
