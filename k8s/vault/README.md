@@ -92,6 +92,8 @@ After setup, Vault contains (KV v2 at `secret/`):
 | users-service    | `secret/devops-platform/users-service`     | DATABASE_URL, JWT_SECRET_KEY      |
 | products-service | `secret/devops-platform/products-service`  | DATABASE_URL, API_KEY             |
 | orders-service   | `secret/devops-platform/orders-service`    | DATABASE_URL, PAYMENT_GATEWAY_KEY |
+| catalog-items    | `secret/devops-platform/catalog-items`     | DATABASE_URL, JWT_SECRET_KEY      |
+| inventory-service| `secret/devops-platform/inventory-service` | DATABASE_URL, STOCK_SYNC_KEY      |
 
 ## Kubernetes auth method
 
