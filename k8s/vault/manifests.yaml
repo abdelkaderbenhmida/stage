@@ -136,6 +136,7 @@ spec:
               cpu: "500m"
               memory: "512Mi"
           securityContext:
+            privileged: false
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: false  # Vault writes to /vault/data.
             seccompProfile:
@@ -245,19 +246,23 @@ data:
       # Seed the path with real generated values. The app fails closed until
       # BOTH DATABASE_URL and JWT_SECRET_KEY are present and non-empty
       # (SERVICE_TEMPLATE SystemExits if either is falsy under production).
-      # Idempotent per key: read existing values first, generate only the
-      # keys that are missing or empty — a re-run never clobbers a real
-      # secret an operator wrote out-of-band.
+      # Idempotent per key: `vault kv patch` merges these two keys into the
+      # existing secret instead of replacing it wholesale — a re-run (e.g.
+      # triggered by adding a new service to devops-service-list) never wipes
+      # another service's own extra keys (PAYMENT_GATEWAY_KEY, API_KEY, ...).
+      # `vault kv put` is used only the first time a path is created, since
+      # patch requires the path to already exist.
       if vault kv get -format=json secret/devops-platform/${svc} > /tmp/kv.json 2>/dev/null; then
         db=$(sed -n 's/.*"DATABASE_URL"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' /tmp/kv.json)
         jw=$(sed -n 's/.*"JWT_SECRET_KEY"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' /tmp/kv.json)
+        [ -n "$db" ] || db="postgresql://app:$(od -An -N 12 -tx1 /dev/urandom | tr -d ' \n')@postgres-${svc}.devops-platform.svc.cluster.local:5432/${svc}"
+        [ -n "$jw" ] || jw="$(od -An -N 32 -tx1 /dev/urandom | tr -d ' \n')"
+        vault kv patch secret/devops-platform/${svc} DATABASE_URL="$db" JWT_SECRET_KEY="$jw" || true
       else
-        db=""
-        jw=""
+        db="postgresql://app:$(od -An -N 12 -tx1 /dev/urandom | tr -d ' \n')@postgres-${svc}.devops-platform.svc.cluster.local:5432/${svc}"
+        jw="$(od -An -N 32 -tx1 /dev/urandom | tr -d ' \n')"
+        vault kv put secret/devops-platform/${svc} DATABASE_URL="$db" JWT_SECRET_KEY="$jw" || true
       fi
-      [ -n "$db" ] || db="postgresql://app:$(od -An -N 12 -tx1 /dev/urandom | tr -d ' \n')@postgres-${svc}.devops-platform.svc.cluster.local:5432/${svc}"
-      [ -n "$jw" ] || jw="$(od -An -N 32 -tx1 /dev/urandom | tr -d ' \n')"
-      vault kv put secret/devops-platform/${svc} DATABASE_URL="$db" JWT_SECRET_KEY="$jw" || true
     done
 
     echo "Vault setup complete. Sealed: $(vault status | grep Sealed | awk '{print $2}')"

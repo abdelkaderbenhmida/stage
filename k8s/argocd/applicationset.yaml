@@ -27,12 +27,15 @@ spec:
         repoURL: https://github.com/abdelkaderbenhmida/stage.git
         revision: secondary
         files:
-          - path: "app/*/service.yaml"
-    - git:
-        repoURL: https://github.com/abdelkaderbenhmida/stage.git
-        revision: secondary
-        files:
-          - path: "app/*/*/service.yaml"
+          # ONE generator, doublestar `**`, covering both layouts:
+          #   flat    app/<svc>/service.yaml
+          #   grouped app/<app>/<svc>/service.yaml
+          # Must NOT be split into two generators (`app/*/service.yaml` plus
+          # `app/*/*/service.yaml`): ArgoCD's matcher lets `*` cross `/`, so
+          # the flat pattern ALSO matches the nested marker and every grouped
+          # service is generated twice — "contains applications with duplicate
+          # name: <svc>", which aborts generation for the whole set.
+          - path: "app/**/service.yaml"
   template:
     metadata:
       name: '{{ .name }}'

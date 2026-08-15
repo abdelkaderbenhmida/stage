@@ -19,6 +19,16 @@ spec:
       server: https://kubernetes.default.svc
     - namespace: flagger-system
       server: https://kubernetes.default.svc
+    # argocd-install-app and applicationset-app both deploy INTO this
+    # namespace (self-management). Without it they fail spec validation with
+    # "destination ... do not match any of the allowed destinations in
+    # project 'devops-platform'" and never sync — the ApplicationSet then
+    # never regenerates, so no per-service Application is created either.
+    - namespace: argocd
+      server: https://kubernetes.default.svc
+  # Cluster-scoped kinds this project is allowed to manage. Namespace/Service/
+  # ConfigMap alone are not enough: argocd-install-app renders the upstream
+  # ArgoCD manifests, which carry CRDs and cluster-scoped RBAC.
   clusterResourceWhitelist:
     - group: ""
       kind: Namespace
@@ -26,6 +36,12 @@ spec:
       kind: Service
     - group: ""
       kind: ConfigMap
+    - group: apiextensions.k8s.io
+      kind: CustomResourceDefinition
+    - group: rbac.authorization.k8s.io
+      kind: ClusterRole
+    - group: rbac.authorization.k8s.io
+      kind: ClusterRoleBinding
   namespaceResourceWhitelist:
     - group: "*"
       kind: "*"

@@ -12,7 +12,7 @@ spec:
   project: devops-platform
   source:
     repoURL: https://github.com/abdelkaderbenhmida/stage.git
-    targetRevision: main
+    targetRevision: secondary
     path: k8s/apps/base
   destination:
     server: https://kubernetes.default.svc

@@ -6,10 +6,26 @@ metadata:
   annotations:
     config.kubernetes.io/path: kustomization.yaml
 
-# Pin to argo-cd v2.7.16 (stable, certified for k8s 1.28). Updating the tag
-# here is the ONLY place to bump ArgoCD — Applications below auto-consume it.
+# Pin to argo-cd v3.5.1. Updating the tag here is the ONLY place to bump
+# ArgoCD — Applications below auto-consume it.
+#
+# Version floor is set by the CLUSTER, not by preference: ArgoCD diffs live
+# objects against a bundled OpenAPI schema, so a control plane newer than the
+# ArgoCD build fails every diff with
+#   "error building typed value from live resource:
+#    .status.terminatingReplicas: field not declared in schema"
+# and every Application parks at SYNC=Unknown (health still computes, which
+# makes it look deceptively fine). `.status.terminatingReplicas` landed in
+# k8s 1.33; the previous v2.7.16 pin ("certified for k8s 1.28") could not
+# diff anything on a modern cluster. Re-check this pin when bumping the
+# cluster's k8s version.
+#
+# `install` (NOT `core-install`): core-install ships the controller only, with
+# no argocd-server/dex — the anonymous-access patch below targets the
+# argocd-server Deployment and silently no-ops (or errors) without it, and the
+# platform UI's embedded console has no API to talk to.
 resources:
-  - https://github.com/argoproj/argo-cd/manifests/core-install?ref=v2.7.16
+  - https://github.com/argoproj/argo-cd/manifests/install?ref=v3.5.1
 
 patches:
   - path: anonymous-access-patch.yaml
@@ -19,13 +35,17 @@ namespace: argocd
 # Harden install: set explicit namespace override on resources that hardcode
 # `argocd` (the upstream manifests already target argocd, the namespace
 # keyword is a safety net for idempotency).
-commonLabels:
-  app.kubernetes.io/managed-by: kustomize
-  app.kubernetes.io/part-of: argocd
+#
+# `labels` + includeSelectors:false, not the deprecated `commonLabels`:
+# commonLabels also rewrites matchLabels/selectors, which are immutable on an
+# existing Deployment/StatefulSet — every upgrade would fail with
+# "field is immutable" until the workload is deleted by hand.
+labels:
+  - includeSelectors: false
+    pairs:
+      app.kubernetes.io/managed-by: kustomize
+      app.kubernetes.io/part-of: argocd
 
 images:
-  - name: quay.io/argoproj/argocd:v2.7.16
-    newTag: v2.7.16
-  - name: quay.io/argoproj/argocd:latest
-    newName: quay.io/argoproj/argocd
-    newTag: v2.7.16
+  - name: quay.io/argoproj/argocd
+    newTag: v3.5.1

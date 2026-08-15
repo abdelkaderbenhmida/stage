@@ -25,10 +25,12 @@ spec:
       - name: services[0].name
         value: catalog-items
       - name: services[1].name
-        value: orders-service
+        value: inventory-service
       - name: services[2].name
-        value: products-service
+        value: orders-service
       - name: services[3].name
+        value: products-service
+      - name: services[4].name
         value: users-service
   destination:
     server: https://kubernetes.default.svc
