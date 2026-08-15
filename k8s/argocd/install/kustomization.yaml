@@ -20,10 +20,18 @@ metadata:
 # diff anything on a modern cluster. Re-check this pin when bumping the
 # cluster's k8s version.
 #
-# `install` (NOT `core-install`): core-install ships the controller only, with
-# no argocd-server/dex — the anonymous-access patch below targets the
+# `cluster-install` (NOT `core-install`): core-install ships the controller
+# only, with no argocd-server/dex — the anonymous-access patch below targets the
 # argocd-server Deployment and silently no-ops (or errors) without it, and the
-# platform UI's embedded console has no API to talk to.
+# platform UI's embedded console has no API to talk to. cluster-install is
+# namespace-install + cluster-rbac + crds, i.e. the full control plane.
+#
+# It must be a DIRECTORY that contains a kustomization.yaml. `manifests/install`
+# is not one — upstream ships `install.yaml` as a pre-rendered FILE, and the
+# kustomize bases are cluster-install / namespace-install / core-install. Naming
+# a non-existent directory fails late and misleadingly, as a clone that appears
+# to succeed followed by
+#   evalsymlink failure on '/tmp/kustomize-.../manifests/install': no such file
 # `timeout` + `submodules=false` are kustomize remote-fetch options, not
 # decoration: kustomize defaults to a 27s timeout on the `git fetch` behind a
 # remote base and clones submodules it never needs. On a slow or jittery link
@@ -31,7 +39,7 @@ metadata:
 #   "hit 27s timeout running '/usr/bin/git fetch --depth=1 ...'"
 # leaving argocd-install permanently at SYNC=Unknown.
 resources:
-  - https://github.com/argoproj/argo-cd/manifests/install?ref=v3.5.1&timeout=300&submodules=false
+  - https://github.com/argoproj/argo-cd/manifests/cluster-install?ref=v3.5.1&timeout=300&submodules=false
 
 patches:
   - path: anonymous-access-patch.yaml
