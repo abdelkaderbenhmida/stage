@@ -25,6 +25,13 @@ spec:
       interval: 15s
       scrapeTimeout: 10s
       relabelings:
-        - sourceLabels: [__meta_kubernetes_service_label_app_kubernetes_io_part_of]
+        # `action: replace` is the ServiceMonitor CRD's schema default, so the
+        # API server writes it into the stored object. Omitting it here made the
+        # live resource permanently differ from the rendered manifest and pinned
+        # devops-platform-shared at OutOfSync forever — a phantom drift that can
+        # never be synced away, which also masks real drift in the same app.
+        # State the default explicitly so git matches what the cluster stores.
+        - action: replace
+          sourceLabels: [__meta_kubernetes_service_label_app_kubernetes_io_part_of]
           targetLabel: part_of
 {{- end }}
