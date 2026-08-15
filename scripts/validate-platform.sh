@@ -28,6 +28,7 @@
 
 set -euo pipefail
 
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CI_MODE=false
 SKIP_INCIDENT=false
 ONLY=""
@@ -36,6 +37,30 @@ MONITORING_NS="monitoring"
 ARGOCD_NS="argocd"
 APP_NAMESPACE="devops-platform"
 IMAGE_TAG="latest"
+
+# Discover services exactly as CI and the ApplicationSet do: app/<svc>/main.py
+# (flat) and app/<app>/<svc>/main.py (grouped), k8s name = path with / -> -.
+# Keep this discovery-driven — a hardcoded list silently skips every service
+# added after it was written, and reports all-green while doing so.
+discover_services() {
+  local d
+  for d in "$REPO_ROOT"/app/*/; do
+    [ -f "${d}main.py" ] && basename "${d%/}"
+  done
+  for d in "$REPO_ROOT"/app/*/*/; do
+    [ -f "${d}main.py" ] || continue
+    d="${d%/}"
+    printf '%s-%s\n' "$(basename "$(dirname "$d")")" "$(basename "$d")"
+  done
+}
+mapfile -t SERVICES < <(discover_services)
+if [ "${#SERVICES[@]}" -eq 0 ]; then
+  echo "ERROR: discovered 0 services under $REPO_ROOT/app — wrong repo root?" >&2
+  exit 2
+fi
+# First discovered service, used where a single representative pod is needed
+# (self-healing test). Not hardcoded to any particular service name.
+SAMPLE_SVC="${SERVICES[0]}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -154,7 +179,7 @@ check_pods() {
   local id="$1" name="$2"
   echo "$id. $name"
   if ! require_tool kubectl; then SKIPPED=$((SKIPPED+1)); return; fi
-  for svc in users-service products-service orders-service; do
+  for svc in "${SERVICES[@]}"; do
     local desired ready
     desired=$(kubectl_jsonpath 4 2 get deploy -n "$NAMESPACE" "$svc" -o jsonpath='{.spec.replicas}' || echo 0)
     ready=$(kubectl_jsonpath 4 2 get deploy -n "$NAMESPACE" "$svc" -o jsonpath='{.status.readyReplicas}' || echo 0)
@@ -180,7 +205,7 @@ check_trivy() {
     SKIPPED=$((SKIPPED+1)); return
   fi
   local scanned=0
-  for svc in users-service products-service orders-service; do
+  for svc in "${SERVICES[@]}"; do
     local img="$svc:$IMAGE_TAG"
     if ! docker image inspect "$img" >/dev/null 2>&1; then
       echo -e "${YELLOW}  ⚠️  SKIP${NC} — image $img absent; build it first (docker build -t $img -f app/$svc/Dockerfile app/)"
@@ -341,10 +366,10 @@ test_selfheal() {
   fi
   if ! require_tool kubectl; then SKIPPED=$((SKIPPED+1)); return; fi
   local pod ns="$NAMESPACE"
-  pod=$(kubectl get pods -n "$ns" -l app.kubernetes.io/name=users-service \
+  pod=$(kubectl get pods -n "$ns" -l app.kubernetes.io/name="$SAMPLE_SVC" \
         -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
   if [[ -z "$pod" ]]; then
-    record_fail "Aucun Pod users-service à supprimer"
+    record_fail "Aucun Pod $SAMPLE_SVC à supprimer"
     return
   fi
   kubectl delete pod -n "$ns" "$pod" --wait=false >/dev/null 2>&1 || true
@@ -353,12 +378,12 @@ test_selfheal() {
   local newpod=""
   for _ in $(seq 1 30); do
     sleep 1
-    newpod=$(kubectl get pods -n "$ns" -l app.kubernetes.io/name=users-service \
+    newpod=$(kubectl get pods -n "$ns" -l app.kubernetes.io/name="$SAMPLE_SVC" \
              -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || true)
     # Wait until the deleted pod is gone AND a new one is ready.
     if [[ "$newpod" != *"$pod"* && -n "$newpod" ]]; then
       local new_ready
-      new_ready=$(kubectl get pods -n "$ns" -l app.kubernetes.io/name=users-service \
+      new_ready=$(kubectl get pods -n "$ns" -l app.kubernetes.io/name="$SAMPLE_SVC" \
                   -o json 2>/dev/null \
                   | jq -r '.items[0].status.containerStatuses[0].ready // false' 2>/dev/null || echo false)
       if [[ "$new_ready" == "true" ]]; then

@@ -49,13 +49,47 @@ kubectl apply -f k8s/argocd/project.yaml
 kubectl apply -f k8s/argocd/applications/
 ```
 
-## Step 5 — Monitoring (Helm charts)
+## Step 5 — Monitoring (manifests, prometheus-operator model)
+
+Normally NOTHING is run by hand here: Step 4 installs the ArgoCD Applications
+(`prometheus`, `grafana`, `alertmanager`, `slo-rules`, `observability-base`)
+and they reconcile the monitoring stack themselves.
+
+The commands below are the manual fallback for a cluster with no working
+ArgoCD. They are plain `kubectl apply`, **not** `helm install` — the stack is
+the prometheus-operator, because the platform is built on operator CRs
+(`ServiceMonitor` from the apps chart, `PrometheusRule` from slo-rules,
+`Alertmanager` from alertmanager). A community Helm chart Prometheus reads
+none of those.
 
 ```bash
-helm install prometheus prometheus-community/prometheus -f k8s/monitoring/prometheus/values.yaml -n monitoring
-helm install grafana grafana/grafana -f k8s/monitoring/grafana/values.yaml -n monitoring
-helm install elasticsearch elastic/elasticsearch -f k8s/monitoring/elk/elasticsearch-values.yaml -n monitoring
+# CRDs first, server-side: the operator CRDs exceed the 262144-byte
+# last-applied-configuration annotation limit and are rejected by a plain
+# `kubectl apply` with "metadata.annotations: Too long".
+kubectl apply --server-side -f k8s/monitoring/prometheus/crds.yaml
+
+kubectl apply -f k8s/monitoring/prometheus/rbac.yaml -f k8s/monitoring/prometheus/operator.yaml
+kubectl -n monitoring rollout status deploy/prometheus-operator
+
+kubectl apply -f k8s/monitoring/prometheus/prometheus.yaml -f k8s/monitoring/prometheus/service.yaml
+kubectl apply -f k8s/monitoring/alertmanager/
+kubectl apply -f k8s/monitoring/grafana/ -f k8s/monitoring/kube-state-metrics/
 ```
+
+HPAs need metrics-server, which is not part of the monitoring stack. Without
+it every HPA reports `<unknown>` targets and ArgoCD marks the owning
+Application `Degraded`:
+
+```bash
+kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
+# single-node/kind only — kubelet serving certs are self-signed there:
+kubectl -n kube-system patch deployment metrics-server --type=json \
+  -p '[{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--kubelet-insecure-tls"}]'
+```
+
+ELK (`k8s/monitoring/elk/`) requires a node WITHOUT the
+`node-role.kubernetes.io/control-plane` label — its pods stay `Pending` on a
+single-node cluster. Deploy it only on a multi-node cluster.
 
 ## Data restore
 

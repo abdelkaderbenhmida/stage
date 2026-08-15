@@ -13,19 +13,24 @@ metadata:
 spec:
   project: devops-platform
   source:
-    # Phase 5 / cahier des charges §3: monitoring deployed via Helm charts
-    # (paramétrables) instead of raw manifests. This Application points at a
-    # local umbrella chart (k8s/monitoring/prometheus/Chart.yaml) that pulls
-    # prometheus-community/prometheus v25.8.0 as a dependency and applies the
-    # values from values.yaml (scrape interval 15s, serviceMonitors, retention).
-    # The repo also keeps a manifest set under k8s/monitoring/prometheus/*.yaml
-    # as a fallback path; enable ONE of the two (helm OR manifests), not both.
+    # Prometheus is deployed as the prometheus-operator MANIFEST set
+    # (crds.yaml + operator.yaml + prometheus.yaml + rbac.yaml + service.yaml),
+    # NOT as a Helm chart. This is the "enable ONE of the two" choice the old
+    # comment here called for, resolved in favour of the operator.
+    #
+    # Why the operator and not prometheus-community/prometheus: the whole
+    # platform is built on operator CRs — the apps chart ships a ServiceMonitor,
+    # slo-rules ships a PrometheusRule, and alertmanager ships an Alertmanager
+    # CR. A plain community-chart Prometheus reads none of those, so the umbrella
+    # chart produced a second, parallel Prometheus that silently scraped nothing
+    # while the CRs sat unreconciled.
+    #
+    # Do NOT reintroduce a Chart.yaml in this directory: ArgoCD auto-detects any
+    # path containing Chart.yaml as Helm, which makes Helm render templates/ only
+    # and silently ignore every manifest above — the exact failure this replaces.
     repoURL: https://github.com/abdelkaderbenhmida/stage.git
     targetRevision: secondary
     path: k8s/monitoring/prometheus
-    helm:
-      valueFiles:
-        - values.yaml
   destination:
     server: https://kubernetes.default.svc
     namespace: monitoring

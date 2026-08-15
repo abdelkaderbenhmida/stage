@@ -13,17 +13,25 @@ metadata:
 spec:
   project: devops-platform
   source:
-    # Phase 5 / cahier des charges §3: Grafana deployed via official Helm chart
-    # (grafana/grafana v8.0.0) wrapped in a local umbrella chart
-    # (k8s/monitoring/grafana/Chart.yaml). values.yaml configures datasources +
-    # dashboard provider + references the 4 spec'd dashboards (overview/perf/
-    # errors/infra-detail) provisioned from k8s/monitoring/grafana/dashboards/.
+    # Grafana is deployed from the MANIFEST set in this directory
+    # (deployment.yaml + service.yaml + rbac.yaml + secret.yaml + the datasource
+    # and dashboard-provider ConfigMaps), NOT via the grafana/grafana umbrella
+    # chart, matching the operator-model choice made for prometheus-app.
+    #
+    # The umbrella chart and these manifests both lived here and described the
+    # same Deployment with DIFFERENT selectors. Helm only ever renders
+    # templates/, so the manifests were dead to GitOps, and any operator who
+    # applied them by hand (as docs/disaster-recovery.md instructs) created an
+    # object ArgoCD could never reconcile — sync failed permanently with
+    # `Deployment.apps "grafana" is invalid: spec.selector: ... immutable`.
+    #
+    # Do NOT reintroduce a Chart.yaml here: ArgoCD auto-detects Helm from its
+    # presence alone, which silently resurrects that conflict.
+    # The 4 spec'd dashboards are a separate Application (grafana-dashboards)
+    # sourced from k8s/monitoring/grafana/dashboards/.
     repoURL: https://github.com/abdelkaderbenhmida/stage.git
     targetRevision: secondary
     path: k8s/monitoring/grafana
-    helm:
-      valueFiles:
-        - values.yaml
   destination:
     server: https://kubernetes.default.svc
     namespace: monitoring

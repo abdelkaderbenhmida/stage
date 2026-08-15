@@ -17,6 +17,7 @@
 
 set -uo pipefail
 
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 NS="devops-platform"
 MON_NS="monitoring"
 CI=0
@@ -35,6 +36,42 @@ req()  {  # req <port> <path> -> writes status+body to stdout
   curl -sf -o /tmp/smoke_body -w '%{http_code}' "http://127.0.0.1:${port}${path}" 2>/dev/null || echo "ERR"
 }
 
+# Discover services the same way CI and the ApplicationSet do: app/<svc>/main.py
+# (flat) and app/<app>/<svc>/main.py (grouped), k8s name = path with / -> -.
+# This MUST stay discovery-driven. Hardcoding the service list is how this
+# script previously reported "11 passed, 0 failed" while never touching
+# catalog-items or inventory-service at all — a green smoke test that proved
+# nothing about the services most likely to be broken (the newly added ones).
+discover_services() {
+  local d
+  for d in "$REPO_ROOT"/app/*/; do
+    [ -f "${d}main.py" ] && basename "${d%/}"
+  done
+  for d in "$REPO_ROOT"/app/*/*/; do
+    [ -f "${d}main.py" ] || continue
+    d="${d%/}"
+    printf '%s-%s\n' "$(basename "$(dirname "$d")")" "$(basename "$d")"
+  done
+}
+
+# Service-specific data endpoints. Optional by design: /, /livez, /readyz and
+# /metrics are the contract every service must implement (see app/Dockerfile),
+# so they are checked for ALL discovered services. A service missing from this
+# map is still fully contract-tested; it just has no extra payload route.
+declare -A DATA_PATH=(
+  [users-service]="/users"
+  [products-service]="/products"
+  [orders-service]="/orders"
+  [inventory-service]="/inventory"
+)
+
+mapfile -t SVCS < <(discover_services)
+if [ "${#SVCS[@]}" -eq 0 ]; then
+  echo "ERROR: discovered 0 services under $REPO_ROOT/app — wrong repo root?" >&2
+  exit 2
+fi
+say "discovered ${#SVCS[@]} services: ${SVCS[*]}"
+
 # ---- arg parse -------------------------------------------------------
 for a in "$@"; do
   case "$a" in
@@ -45,16 +82,19 @@ for a in "$@"; do
 done
 
 say "== 1/5 pod health =="
-for svc in users-service products-service orders-service; do
+for svc in "${SVCS[@]}"; do
   ready=$(kubectl get pods -n "$NS" -l app.kubernetes.io/name="$svc" \
           --no-headers 2>/dev/null | awk '$2 ~ /^1\/1$/ {c++} END {print c+0}')
   if [ "$ready" -ge 2 ]; then ok "pods $svc: $ready/2 ready"; else bad "pods $svc: only $ready ready (need 2)"; fi
 done
 
 say "== 2) service endpoints (via port-forward) =="
-declare -A PORTS=([users-service]=18080 [products-service]=18081 [orders-service]=18082)
-SVCS=(users-service products-service orders-service)
-declare -A LISTEN=([users-service]="/users" [products-service]="/products" [orders-service]="/orders")
+declare -A PORTS=()
+port=18080
+for svc in "${SVCS[@]}"; do
+  PORTS[$svc]=$port
+  port=$((port+1))
+done
 
 pids=()
 for svc in "${SVCS[@]}"; do
@@ -67,13 +107,19 @@ for svc in "${SVCS[@]}"; do
   port="${PORTS[$svc]}"
   root=$(req "$port" "/")
   live=$(req "$port" "/livez")
-  data=$(req "$port" "${LISTEN[$svc]}")
+  ready_code=$(req "$port" "/readyz")
   body=$(cat /tmp/smoke_body 2>/dev/null)
   name=$(printf '%s' "$body" | jq -r '.service // .id // "?"' 2>/dev/null)
-  if [ "$root" = "200" ] && [ "$live" = "200" ] && [ "$data" = "200" ]; then
-    ok "$svc / /livez /${LISTEN[$svc]} 200 (service=$name)"
+
+  # Optional per-service payload route; contract routes above are mandatory.
+  data_path="${DATA_PATH[$svc]:-}"
+  data="200"
+  if [ -n "$data_path" ]; then data=$(req "$port" "$data_path"); fi
+
+  if [ "$root" = "200" ] && [ "$live" = "200" ] && [ "$ready_code" = "200" ] && [ "$data" = "200" ]; then
+    ok "$svc / /livez /readyz ${data_path} 200 (service=$name)"
   else
-    bad "$svc root=$root livez=$live data=$data"
+    bad "$svc root=$root livez=$live readyz=$ready_code data(${data_path:-none})=$data"
   fi
 done
 
@@ -88,7 +134,7 @@ targets=$(curl -sf "http://127.0.0.1:19090/api/v1/targets" 2>/dev/null | jq '[.d
 up_scrape=$(curl -sf "http://127.0.0.1:19090/api/v1/targets" 2>/dev/null | jq '[.data.activeTargets[] | select(.health=="up")] | length' 2>/dev/null || echo "0")
 if [ "${up_scrape:-0}" -ge 1 ] 2>/dev/null; then ok "prometheus: $up_scrape targets UP"; else bad "prometheus: 0 targets UP"; fi
 
-for svc in users-service products-service orders-service; do
+for svc in "${SVCS[@]}"; do
   h=$(curl -sf "http://127.0.0.1:19090/api/v1/query?query=up%7Bjob%3D~%22.*${svc}.*%22%7D" 2>/dev/null | jq -r '[.data.result[]?.value[1]] | join(",")' 2>/dev/null || echo "")
   if [ "$h" = "1" ] || [ "$h" = "1,1" ]; then ok "scrape ${svc}: up (value=$h)"; else bad "scrape ${svc}: up=$( [ -z "$h" ] && echo missing || echo "$h")"; fi
 done

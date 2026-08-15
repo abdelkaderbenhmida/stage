@@ -1,0 +1,48 @@
+# kube-state-metrics — cluster object metrics (Deployment/Pod/HPA/Node state).
+#
+# k8s/monitoring/kube-state-metrics/ existed in the repo but no Application
+# ever deployed it: the only kube-state-metrics running came from the
+# prometheus umbrella chart as `prometheus-kube-state-metrics`. Dropping that
+# chart in favour of the operator manifests would have removed cluster metrics
+# entirely, so it gets its own Application here — the manifest already ships a
+# ServiceMonitor, i.e. it was written for the operator model all along.
+#
+# sync-wave 16: after prometheus (15), so the ServiceMonitor CRD and the
+# operator that consumes it already exist.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: kube-state-metrics
+  namespace: argocd
+  labels:
+    app.kubernetes.io/name: kube-state-metrics
+    app.kubernetes.io/part-of: devops-platform
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  annotations:
+    argocd.argoproj.io/sync-wave: "16"
+spec:
+  project: devops-platform
+  source:
+    repoURL: https://github.com/abdelkaderbenhmida/stage.git
+    targetRevision: secondary
+    path: k8s/monitoring/kube-state-metrics
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: monitoring
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+      allowEmpty: false
+    syncOptions:
+      - CreateNamespace=true
+      - PrunePropagationPolicy=foreground
+      - PruneLast=true
+      - ServerSideApply=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m
