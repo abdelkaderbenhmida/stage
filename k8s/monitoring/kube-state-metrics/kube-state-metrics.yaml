@@ -92,11 +92,22 @@ spec:
               containerPort: 8080
           args:
             - --telemetry-port=8081
+          # The monitoring namespace enforces PodSecurity "restricted", which
+          # additionally requires capabilities.drop=["ALL"] and an explicit
+          # seccompProfile. Without both, the ReplicaSet is admitted but every
+          # pod creation is rejected — the Deployment sits at 0/1 with the real
+          # reason only visible in ReplicaSet events, never in the Deployment
+          # itself. This manifest had no Application deploying it, so the gap
+          # went unnoticed.
           securityContext:
             runAsNonRoot: true
             runAsUser: 65534
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
           readinessProbe:
             httpGet:
               path: /healthz
