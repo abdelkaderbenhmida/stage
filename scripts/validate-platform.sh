@@ -42,15 +42,21 @@ IMAGE_TAG="latest"
 # (flat) and app/<app>/<svc>/main.py (grouped), k8s name = path with / -> -.
 # Keep this discovery-driven — a hardcoded list silently skips every service
 # added after it was written, and reports all-green while doing so.
+#
+# Only git-TRACKED markers count: the UI test suite scaffolds a throwaway
+# service (app/zz-uitest/probe/) and removes it, so a plain filesystem scan
+# races it and fails on a service that should not exist. A real service is
+# always committed; a fixture never is. Falls back to the filesystem when git
+# is unavailable.
 discover_services() {
-  local d
-  for d in "$REPO_ROOT"/app/*/; do
-    [ -f "${d}main.py" ] && basename "${d%/}"
-  done
-  for d in "$REPO_ROOT"/app/*/*/; do
+  local d rel
+  for d in "$REPO_ROOT"/app/*/ "$REPO_ROOT"/app/*/*/; do
     [ -f "${d}main.py" ] || continue
-    d="${d%/}"
-    printf '%s-%s\n' "$(basename "$(dirname "$d")")" "$(basename "$d")"
+    rel="${d#"$REPO_ROOT"/}"; rel="${rel%/}"
+    if git -C "$REPO_ROOT" rev-parse --git-dir >/dev/null 2>&1; then
+      git -C "$REPO_ROOT" ls-files --error-unmatch "${rel}/main.py" >/dev/null 2>&1 || continue
+    fi
+    printf '%s\n' "${rel#app/}" | tr '/' '-'
   done
 }
 mapfile -t SERVICES < <(discover_services)

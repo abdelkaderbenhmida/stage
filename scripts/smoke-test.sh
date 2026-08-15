@@ -42,15 +42,23 @@ req()  {  # req <port> <path> -> writes status+body to stdout
 # script previously reported "11 passed, 0 failed" while never touching
 # catalog-items or inventory-service at all — a green smoke test that proved
 # nothing about the services most likely to be broken (the newly added ones).
+#
+# Only git-TRACKED markers count. The UI test suite scaffolds a throwaway
+# service (app/zz-uitest/probe/) to exercise the add-service flow and deletes it
+# again, so a purely filesystem-based scan races it and fails on a service that
+# is not supposed to exist — seen here as
+#   ✘ pods zz-uitest-probe: only 0 ready (need 2)
+# A real service is always committed; a fixture never is. Falls back to the
+# filesystem when git is unavailable (e.g. an unpacked source tarball).
 discover_services() {
-  local d
-  for d in "$REPO_ROOT"/app/*/; do
-    [ -f "${d}main.py" ] && basename "${d%/}"
-  done
-  for d in "$REPO_ROOT"/app/*/*/; do
+  local d rel
+  for d in "$REPO_ROOT"/app/*/ "$REPO_ROOT"/app/*/*/; do
     [ -f "${d}main.py" ] || continue
-    d="${d%/}"
-    printf '%s-%s\n' "$(basename "$(dirname "$d")")" "$(basename "$d")"
+    rel="${d#"$REPO_ROOT"/}"; rel="${rel%/}"
+    if git -C "$REPO_ROOT" rev-parse --git-dir >/dev/null 2>&1; then
+      git -C "$REPO_ROOT" ls-files --error-unmatch "${rel}/main.py" >/dev/null 2>&1 || continue
+    fi
+    printf '%s\n' "${rel#app/}" | tr '/' '-'
   done
 }
 
