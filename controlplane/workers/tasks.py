@@ -33,7 +33,7 @@ from controlplane.core.runtime import (
     user_ssh_private_key,
 )
 from controlplane.db import SessionLocal
-from controlplane.models import Deployment, Job, PooledCluster, Project, Scan
+from controlplane.models import Deployment, Job, PooledCluster, Project, Scan, Team
 from controlplane.renderers import render_ansible, render_namespace, render_terraform
 from controlplane.repositories.base import Scope
 from controlplane.repositories.deployments import DeploymentRepository
@@ -662,7 +662,12 @@ def deploy_task(job_id: str, deployment_id: str, project_id: str, user_id: str) 
             return
         repo = DeploymentRepository(db, Scope.from_session(db, uuid.UUID(user_id)))
         on_line = _log_lines(job_id)
-        image_ref = f"{settings.registry}/{project.name}-{deployment.service_name}:commit-{uuid.uuid4().hex[:8]}"
+        # Namespaced by team, not just project name: two teams can each have
+        # a project called "staging" (Phase 1), and an image tag collision
+        # between them would mean one tenant's build silently overwrites —
+        # or gets served — another tenant's image.
+        team = db.get(Team, project.team_id)
+        image_ref = f"{settings.registry}/{team.slug}/{project.name}-{deployment.service_name}:commit-{uuid.uuid4().hex[:8]}"
 
         try:
             _append_log(job_id, "[1/7] cloning repository")
