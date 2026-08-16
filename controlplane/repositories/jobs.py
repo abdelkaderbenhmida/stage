@@ -15,13 +15,17 @@ class JobRepository:
         self.scope = scope
 
     def get(self, job_id: uuid.UUID) -> Job:
+        # An orphan job (project_id is None, or the project it pointed at is
+        # gone) previously fell through both branches below and was returned
+        # to any authenticated caller — including its log, which can contain
+        # provisioning output. A job with no live, accessible project is not
+        # readable by anyone.
         job = self.session.get(Job, job_id)
-        if job is None:
+        if job is None or job.project_id is None:
             raise NotFoundError()
-        if job.project_id is not None:
-            project = self.session.get(Project, job.project_id)
-            if project is not None and not self.scope.can_access(project):
-                raise NotFoundError()
+        project = self.session.get(Project, job.project_id)
+        if project is None or not self.scope.can_access(project):
+            raise NotFoundError()
         return job
 
     def create(self, project_id: uuid.UUID | None, type_: str) -> Job:

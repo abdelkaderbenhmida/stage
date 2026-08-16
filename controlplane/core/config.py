@@ -160,11 +160,20 @@ class Settings:
     max_nodes_per_project: int = field(default_factory=lambda: _env_int("MAX_NODES_PER_PROJECT", 10))
     max_total_vcpu: int = field(default_factory=lambda: _env_int("MAX_TOTAL_VCPU", 24))
     max_total_memory_mb: int = field(default_factory=lambda: _env_int("MAX_TOTAL_MEMORY_MB", 49152))
+    # Dedicated-cluster-per-tenant (multi-tenancy Phase 3): each VM-mode
+    # project is a real 3-node cluster on this host, unlike namespace mode
+    # which just carves up one shared cluster. The host has a hard ceiling
+    # on how many of those it can run concurrently — provisioning must queue
+    # and refuse politely (429) rather than thrash the host once it's hit.
+    max_concurrent_vm_clusters: int = field(
+        default_factory=lambda: _env_int("MAX_CONCURRENT_VM_CLUSTERS", 2)
+    )
 
     # Rate limits (per §7.6)
     login_rate_per_minute: int = field(default_factory=lambda: _env_int("LOGIN_RATE_PER_MINUTE", 5))
     provision_per_hour: int = field(default_factory=lambda: _env_int("PROVISION_PER_HOUR", 10))
     scans_per_hour: int = field(default_factory=lambda: _env_int("SCANS_PER_HOUR", 60))
+    team_invites_per_hour: int = field(default_factory=lambda: _env_int("TEAM_INVITES_PER_HOUR", 20))
 
     # OIDC single sign-on (docs/TODO.md Task 3.3). The whole flow is opt-in:
     # with oidc_enabled false (default) the SSO endpoints answer 404 and local
@@ -192,6 +201,11 @@ class Settings:
 
     # Ephemeral-environment lifecycle (docs/TODO.md Task 2.2)
     default_ttl_hours: int = field(default_factory=lambda: _env_int("DEFAULT_TTL_HOURS", 24))
+    # A dedicated cluster is real host capacity held for one tenant; a bounded
+    # namespace slice on the shared cluster costs almost nothing. Default VM
+    # mode much shorter so an abandoned environment gives its host budget
+    # back quickly instead of sitting "ready" for a full day.
+    default_vm_ttl_hours: int = field(default_factory=lambda: _env_int("DEFAULT_VM_TTL_HOURS", 4))
     # A hard ceiling on total lifetime, so "extend" cannot be used repeatedly
     # to turn an ephemeral environment into a permanent one.
     max_ttl_hours: int = field(default_factory=lambda: _env_int("MAX_TTL_HOURS", 168))

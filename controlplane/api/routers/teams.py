@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from controlplane.api.deps import audit, get_current_user
+from controlplane.api.rate_limit import check_rate_limit
 from controlplane.api.rbac import require_team_role
 from controlplane.api.schemas import (
     CostOut,
@@ -18,6 +19,7 @@ from controlplane.api.schemas import (
     TeamMemberOut,
     TeamOut,
 )
+from controlplane.core.config import settings
 from controlplane.core.costs import summarise
 from controlplane.db import get_db
 from controlplane.models import Project, User
@@ -42,7 +44,7 @@ def create_team(
     repo = TeamRepository(db, user.id)
     team = repo.create_team(body.name, body.description)
     db.commit()
-    audit(db, user.id, "team.create", request, resource_type="team", resource_id=str(team.id))
+    audit(db, user.id, "team.create", request, resource_type="team", resource_id=str(team.id), team_id=team.id)
     db.commit()
     return team
 
@@ -85,6 +87,12 @@ def add_member(
 ):
     require_team_role(team_id, user, db, "team.manage")
 
+    # get_by_email's 404/200 split makes this endpoint an account-enumeration
+    # oracle for anyone in any team (repositories/users.py); bound the abuse
+    # rate rather than change the response shape, which callers rely on.
+    if not check_rate_limit(f"team-invite:{user.id}", settings.team_invites_per_hour, 3600):
+        raise HTTPException(status_code=429, detail="Too many invite attempts. Try again later.")
+
     account = db.scalar(select(User).where(User.email == body.email))
     if account is None:
         raise HTTPException(status_code=404, detail="No user with that email address.")
@@ -94,7 +102,7 @@ def add_member(
     audit(
         db, user.id, "team.member.add", request,
         resource_type="team", resource_id=str(team_id),
-        detail={"member": str(account.id), "role": body.role},
+        detail={"member": str(account.id), "role": body.role}, team_id=team_id,
     )
     db.commit()
     return TeamMemberOut(user_id=account.id, email=account.email, role=membership.role)
@@ -118,7 +126,7 @@ def remove_member(
     db.commit()
     audit(
         db, user.id, "team.member.remove", request,
-        resource_type="team", resource_id=str(team_id), detail={"member": str(user_id)},
+        resource_type="team", resource_id=str(team_id), detail={"member": str(user_id)}, team_id=team_id,
     )
     db.commit()
     return Message(message="Member removed.")

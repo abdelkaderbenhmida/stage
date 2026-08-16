@@ -21,4 +21,12 @@ ACTION_ROLES: dict[str, str] = {
     "project.extend": "owner",
     "project.destroy": "owner",
     "team.manage": "admin",
+    "platform.admin": "admin",
 }
+
+# The /platform operator console (api/routers/platform.py) is gated on
+# User.role, a global column set by OIDC group mapping — not a per-team
+# TeamMember row like every other entry in ACTION_ROLES above. It stays a
+# separate constant so that distinction can't be missed by a future reader
+# skimming this table.
+PLATFORM_ADMIN_ROLE = "admin"

@@ -31,11 +31,13 @@ def console_client():
     from fastapi.testclient import TestClient
 
     from controlplane.api.deps import get_current_user
+    from controlplane.api.rbac import require_platform_admin
     from controlplane.api.routers import platform
 
     app = FastAPI()
     app.include_router(platform.router, prefix="/api/v1")
     app.dependency_overrides[get_current_user] = lambda: None
+    app.dependency_overrides[require_platform_admin] = lambda: None
     return TestClient(app)
 
 

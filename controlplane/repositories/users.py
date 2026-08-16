@@ -12,6 +12,12 @@ class UserRepository:
         self.session = session
 
     def get_by_email(self, email: str) -> User | None:
+        # routers/teams.py's add_member() is the only caller: it looks up an
+        # invitee by email to add them to a team. That endpoint's own
+        # per-user rate limit (settings.team_invites_per_hour) is the control
+        # against using it as an account-enumeration oracle — a full
+        # invite-token redesign would close this more thoroughly but is out
+        # of scope for the immediate hardening pass.
         return self.session.scalar(select(User).where(User.email == email))
 
     def get_by_id(self, user_id: uuid.UUID) -> User | None:
@@ -77,12 +83,14 @@ class AuditLogRepository:
         resource_id: str | None = None,
         ip_address: str | None = None,
         detail: dict | None = None,
+        team_id: uuid.UUID | None = None,
     ) -> None:
         from controlplane.models import AuditLog
 
         self.session.add(
             AuditLog(
                 user_id=user_id,
+                team_id=team_id,
                 action=action,
                 resource_type=resource_type,
                 resource_id=resource_id,

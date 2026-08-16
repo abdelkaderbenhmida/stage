@@ -5,6 +5,11 @@ introspection and live-ops actions are reachable from the control plane's
 UI, behind its existing JWT auth. The underlying logic in
 ``controlplane.platform_ops`` is unchanged from ``ui/introspect.py``; only
 the HTTP wiring (auth, routing) differs.
+
+Every route here acts on the control-plane host itself (repo checkouts, the
+shared cluster's kubectl/terraform, ArgoCD, Vault) — there is no per-tenant
+data to scope, so this is gated on platform-admin, not team membership
+(multi-tenancy plan Phase 0).
 """
 
 from __future__ import annotations
@@ -16,9 +21,9 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from controlplane import platform_ops
-from controlplane.api.deps import get_current_user
+from controlplane.api.rbac import require_platform_admin
 
-router = APIRouter(prefix="/platform", tags=["platform"], dependencies=[Depends(get_current_user)])
+router = APIRouter(prefix="/platform", tags=["platform"], dependencies=[Depends(require_platform_admin)])
 
 START_TIME = time.time()
 

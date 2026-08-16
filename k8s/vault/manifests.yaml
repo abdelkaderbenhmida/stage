@@ -425,3 +425,23 @@ roleRef:
   kind: Role
   name: vault-token-reader
   apiGroup: rbac.authorization.k8s.io
+---
+# auth/kubernetes/login calls the Kubernetes TokenReview API to validate the
+# SA token a pod presents. TokenReview is cluster-scoped, so no namespaced
+# Role can grant it — without this binding every per-service vault-login
+# init container fails closed with Forbidden and no pod ever gets a token.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: vault-auth-delegator
+  labels:
+    app.kubernetes.io/name: vault-auth-delegator
+    app.kubernetes.io/part-of: devops-platform
+subjects:
+  - kind: ServiceAccount
+    name: vault-sa
+    namespace: vault
+roleRef:
+  kind: ClusterRole
+  name: system:auth-delegator
+  apiGroup: rbac.authorization.k8s.io

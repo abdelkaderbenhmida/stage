@@ -27,7 +27,7 @@ from controlplane.api.deps import get_current_user
 
 # Re-exported so callers keep a single import point. The mapping itself lives
 # in core/ so the repository layer can enforce the same table.
-from controlplane.core.roles import ACTION_ROLES  # noqa: F401
+from controlplane.core.roles import ACTION_ROLES, PLATFORM_ADMIN_ROLE  # noqa: F401
 from controlplane.db import get_db
 from controlplane.models import Deployment, Project, User
 from controlplane.repositories.base import ForbiddenError, NotFoundError, Scope
@@ -64,6 +64,19 @@ def require_team_role(team_id: uuid.UUID, user: User, db: Session, action: str) 
             status_code=status.HTTP_403_FORBIDDEN,
             detail=f"This action requires the '{required}' role; you have '{role}'.",
         )
+
+
+def require_platform_admin(user: User = Depends(get_current_user)) -> User:
+    """Gate the entire ``/platform`` operator console.
+
+    Unlike every other check in this module, this is not a per-team role —
+    it's ``User.role``, a global column OIDC already populates. A caller who
+    fails this is not a member of anything special; they're just not an
+    operator, so 404 (not 403) to avoid confirming the console exists.
+    """
+    if user.role != PLATFORM_ADMIN_ROLE:
+        raise HTTPException(status_code=404, detail="Not found.")
+    return user
 
 
 def require_project_action(action: str) -> Callable:

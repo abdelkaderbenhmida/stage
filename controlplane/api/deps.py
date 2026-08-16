@@ -155,6 +155,7 @@ def audit(
     resource_type: str | None = None,
     resource_id: str | None = None,
     detail: dict | None = None,
+    team_id: uuid.UUID | None = None,
 ) -> None:
     from controlplane.repositories.users import AuditLogRepository
 
@@ -165,4 +166,5 @@ def audit(
         resource_id=resource_id,
         ip_address=client_ip(request),
         detail=detail,
+        team_id=team_id,
     )

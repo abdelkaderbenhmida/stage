@@ -32,6 +32,10 @@ spec:
         prometheus.io/path: "/metrics"
     spec:
       serviceAccountName: {{ $svc.name }}-sa
+      # kubernetes-auth needs the SA token to present at auth/kubernetes/login;
+      # automountServiceAccountToken stays false so the *application*
+      # container never sees the k8s API token, only the vault-login init
+      # container does, via the projected volume below.
       automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
@@ -56,6 +60,36 @@ spec:
                   matchLabels:
                     app.kubernetes.io/name: {{ $svc.name }}
                 topologyKey: kubernetes.io/hostname
+      initContainers:
+        - name: vault-login
+          image: hashicorp/vault:1.15.2
+          # Per-service Vault k8s-auth role (k8s/vault/manifests.yaml), not
+          # the operator's root token: this pod can only ever read the KV
+          # paths that service's role grants, so a compromised pod leaks one
+          # service's secrets, not every secret in Vault.
+          command:
+            - sh
+            - -c
+            - |
+              set -eu
+              VAULT_TOKEN=$(vault write -field=token auth/kubernetes/login \
+                role="{{ $svc.name }}" \
+                jwt="$(cat /var/run/secrets/vault/token)")
+              echo "$VAULT_TOKEN" > /vault/secrets/token
+          env:
+            - name: VAULT_ADDR
+              value: {{ $.Values.vault.addr | quote }}
+          volumeMounts:
+            - name: vault-sa-token
+              mountPath: /var/run/secrets/vault
+              readOnly: true
+            - name: vault-secrets
+              mountPath: /vault/secrets
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
       containers:
         - name: {{ $svc.name }}
           image: {{ template "apps-common.image" (dict "Values" $.Values "name" $svc.name "image" $svc.image "tag" $svc.tag) }}
@@ -82,12 +116,8 @@ spec:
               value: {{ $.Values.environment | quote }}
             - name: VAULT_ADDR
               value: {{ $.Values.vault.addr | quote }}
-            - name: VAULT_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: {{ $.Values.vault.tokenSecret }}
-                  key: root-token
-                  optional: false
+            - name: VAULT_TOKEN_FILE
+              value: /vault/secrets/token
             - name: LOG_FORMAT
               value: "json"
           resources:
@@ -122,8 +152,23 @@ spec:
           volumeMounts:
             - name: tmp
               mountPath: /tmp
+            - name: vault-secrets
+              mountPath: /vault/secrets
+              readOnly: true
       volumes:
         - name: tmp
           emptyDir: {}
+        - name: vault-secrets
+          emptyDir:
+            medium: Memory
+        - name: vault-sa-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  # Short-lived and scoped to Vault's own audience — this
+                  # token is useless anywhere else if it leaks.
+                  audience: vault
+                  expirationSeconds: 600
 {{- end }}
 {{- end }}

@@ -37,7 +37,9 @@ resources:
 
 vault:
   addr: "http://vault-service.vault.svc.cluster.local:8200"
-  tokenSecret: vault-root-token
+  # No root token here: each pod's vault-login init container authenticates
+  # via its own ServiceAccount against auth/kubernetes/login and gets back a
+  # token scoped to that one service's KV role (multi-tenancy plan Phase 0).
 
 # Namespace where the shared ServiceMonitor lives (Prometheus Operator).
 smNamespace: monitoring
