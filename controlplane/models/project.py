@@ -23,7 +23,7 @@ from controlplane.models.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
 class Project(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "projects"
     __table_args__ = (
-        UniqueConstraint("owner_id", "name", name="uq_projects_owner_name"),
+        UniqueConstraint("team_id", "name", name="uq_projects_team_name"),
         Index("ix_projects_owner_id", "owner_id"),
     )
 
@@ -32,7 +32,7 @@ class Project(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     owner_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("users.id"), nullable=False
     )
-    team_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("teams.id"))
+    team_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("teams.id"), nullable=False)
     name: Mapped[str] = mapped_column(String(30), nullable=False)
     description: Mapped[str | None] = mapped_column(Text)
     status: Mapped[str] = mapped_column(

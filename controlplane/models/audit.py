@@ -26,10 +26,16 @@ class AuditLog(Base, UUIDPrimaryKeyMixin):
     __table_args__ = (
         Index("ix_audit_log_user_id", "user_id"),
         Index("ix_audit_log_created_at", "created_at"),
+        Index("ix_audit_log_team_id", "team_id"),
     )
 
     user_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL")
+    )
+    # Nullable: not every action is scoped to a team (e.g. login attempts),
+    # and a team can be deleted without invalidating its history.
+    team_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("teams.id", ondelete="SET NULL")
     )
     action: Mapped[str] = mapped_column(String(60), nullable=False)
     resource_type: Mapped[str | None] = mapped_column(String(60))

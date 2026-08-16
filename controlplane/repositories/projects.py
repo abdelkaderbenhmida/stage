@@ -53,12 +53,14 @@ class ProjectRepository:
         self,
         name: str,
         infra_spec: dict,
+        team_id: uuid.UUID,
         description: str | None = None,
     ) -> Project:
         if self.scope.is_system:
             raise RuntimeError("Cannot create a project with a system scope.")
         project = Project(
             owner_id=self.scope.user_id,
+            team_id=team_id,
             name=name,
             description=description,
             infra_spec=infra_spec,

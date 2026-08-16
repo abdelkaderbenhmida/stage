@@ -108,15 +108,17 @@ def create_project(
         # setup before their first project.
         team_id = ensure_personal_team(db, user).id
 
-    project = repo.create(body.name, spec.model_dump(mode="json"), body.description)
-    project.team_id = team_id
+    project = repo.create(body.name, spec.model_dump(mode="json"), team_id, body.description)
     project.auto_destroy = body.auto_destroy
-    project.ttl_hours = (
-        body.ttl_hours if body.ttl_hours is not None else settings.default_ttl_hours
-    )
+    if body.ttl_hours is not None:
+        project.ttl_hours = body.ttl_hours
+    elif spec.mode == "namespace":
+        project.ttl_hours = settings.default_ttl_hours
+    else:
+        project.ttl_hours = settings.default_vm_ttl_hours
     repo.create_nodes(project.id, [node.model_dump() for node in spec.nodes])
     db.commit()
-    audit(db, user.id, "project.create", request, resource_type="project", resource_id=str(project.id))
+    audit(db, user.id, "project.create", request, resource_type="project", resource_id=str(project.id), team_id=project.team_id)
     return _to_out(db, project, scope)
 
 
@@ -162,6 +164,7 @@ def extend_project(
     audit(
         db, user.id, "project.extend", request,
         resource_type="project", resource_id=str(project.id), detail={"hours": body.hours},
+        team_id=project.team_id,
     )
     db.commit()
     return _to_out(db, project, scope)
@@ -202,7 +205,7 @@ def patch_project(
     elif body.description is not None:
         project = repo.update_spec(project, project.infra_spec, body.description)
     db.commit()
-    audit(db, user.id, "project.update", request, resource_type="project", resource_id=str(project.id))
+    audit(db, user.id, "project.update", request, resource_type="project", resource_id=str(project.id), team_id=project.team_id)
     return _to_out(db, project, scope)
 
 
@@ -219,11 +222,14 @@ def delete_project(
     if body.confirm_name != project.name:
         raise HTTPException(status_code=422, detail="confirmation name does not match the project.") from None
 
-    workspace = project.workspace_path
+    # Captured before delete+commit: the ORM expires every attribute on a
+    # deleted, committed instance, so reading project.id/team_id afterward
+    # for the audit call below would re-query a row that no longer exists.
+    project_id, team_id, workspace = project.id, project.team_id, project.workspace_path
     from controlplane.workers.tasks import queue_destroy
 
-    queue_destroy(project.id, workspace, project.name, user.id)
+    queue_destroy(project_id, workspace, project.name, user.id)
     db.delete(project)
     db.commit()
-    audit(db, user.id, "project.delete", request, resource_type="project", resource_id=str(project.id))
+    audit(db, user.id, "project.delete", request, resource_type="project", resource_id=str(project_id), team_id=team_id)
     return {"message": "Destroy queued."}

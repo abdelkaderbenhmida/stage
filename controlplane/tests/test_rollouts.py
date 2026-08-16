@@ -11,6 +11,7 @@ import uuid
 import pytest
 import yaml
 from controlplane.core.runtime import deployment_manifests_dir
+from controlplane.core.validation import k8s_namespace
 from controlplane.workers import tasks
 
 TRIVY_OK = json.dumps({"Results": []})
@@ -57,11 +58,11 @@ def _render(tmp_path, strategy: str, mode: str = "vm", settings_override=None):
         )()
         manifests = tasks._render_manifests(project, deployment, "registry/img:commit-abc123")
         out_dir = deployment_manifests_dir(pid, mode)
-    return manifests, out_dir
+    return manifests, out_dir, k8s_namespace(pid)
 
 
 def test_canary_strategy_renders_rollout_with_slo_analysis(tmp_path, settings_override):
-    manifests, ws = _render(tmp_path, "canary", settings_override=settings_override)
+    manifests, ws, ns = _render(tmp_path, "canary", settings_override=settings_override)
     names = {p.name for p in manifests}
     assert names == {"rollout.yaml", "analysis.yaml", "service.yaml", "ingress.yaml"}
     assert "deployment.yaml" not in names
@@ -89,13 +90,13 @@ def test_canary_strategy_renders_rollout_with_slo_analysis(tmp_path, settings_ov
     error_rate = next(m for m in metrics if m["name"] == "error-rate")
     provider = error_rate["provider"]["prometheus"]
     assert provider["address"].startswith("http://prometheus.")
-    assert 'namespace="tenant-a"' in provider["query"]
+    assert f'namespace="{ns}"' in provider["query"]
     assert 'code=~"5.."' in provider["query"]
     assert "clamp_min" in provider["query"]
 
 
 def test_bluegreen_strategy_renders_bluegreen_rollout(tmp_path, settings_override):
-    manifests, ws = _render(tmp_path, "bluegreen", settings_override=settings_override)
+    manifests, ws, ns = _render(tmp_path, "bluegreen", settings_override=settings_override)
     names = {p.name for p in manifests}
     assert "rollout.yaml" in names and "analysis.yaml" in names
     rollout = _split_docs(ws / "rollout.yaml")[0]
@@ -105,7 +106,7 @@ def test_bluegreen_strategy_renders_bluegreen_rollout(tmp_path, settings_overrid
 
 
 def test_default_strategy_renders_plain_deployment(tmp_path, settings_override):
-    manifests, ws = _render(tmp_path, "deployment", settings_override=settings_override)
+    manifests, ws, ns = _render(tmp_path, "deployment", settings_override=settings_override)
     names = {p.name for p in manifests}
     assert names == {"deployment.yaml", "service.yaml", "ingress.yaml"}
     doc = _split_docs(ws / "deployment.yaml")[0]
@@ -116,7 +117,7 @@ def test_namespace_mode_renders_outside_project_workspace(tmp_path, settings_ove
     """Namespace-mode projects have no Terraform workspace; their manifests
     must land under the namespace root, not pretend one exists (docs/TODO.md
     §8 item 1)."""
-    manifests, out = _render(tmp_path, "canary", mode="namespace", settings_override=settings_override)
+    manifests, out, ns = _render(tmp_path, "canary", mode="namespace", settings_override=settings_override)
     assert {p.name for p in manifests} == {"rollout.yaml", "analysis.yaml", "service.yaml", "ingress.yaml"}
     assert out.parts[-3:] == ("namespaces", out.parts[-2], "manifests")
     assert all(p.exists() for p in manifests)
@@ -128,11 +129,13 @@ def test_canary_deploy_awaits_rollout_resource(session, monkeypatch, tmp_path):
     and never issue `rollout status deployment/...` (Task 5.2)."""
     from controlplane.core.security import hash_password
     from controlplane.models import Deployment, Job, Project, User
+    from controlplane.repositories.teams import ensure_personal_team
 
     user = User(email="rollout@example.com", password_hash=hash_password("pw"), role="admin")
     session.add(user)
     session.commit()
-    project = Project(owner_id=user.id, name="tenant-a", status="draft", infra_spec=SPEC)
+    team = ensure_personal_team(session, user)
+    project = Project(owner_id=user.id, team_id=team.id, name="tenant-a", status="draft", infra_spec=SPEC)
     session.add(project)
     session.commit()
     deployment = Deployment(

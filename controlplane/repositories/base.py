@@ -115,23 +115,20 @@ class Scope:
     def can_access(self, project: Project) -> bool:
         """True when the caller may see this project.
 
-        Team membership is the boundary; direct ownership also grants access so
-        pre-team projects (``team_id`` NULL) and a creator auditing their own
-        history stay visible.
+        Team membership is the sole boundary — every project has a non-null
+        team_id (models/project.py), so ownership is no longer a fallback
+        path. A user who leaves a team loses access to its projects even if
+        they created one, which is the point.
         """
         if self.is_system:
             return True
-        if project.owner_id == self.user_id:
-            return True
-        return project.team_id is not None and project.team_id in self.team_ids
+        return project.team_id in self.team_ids
 
     def project_filter(self):
         """SQLAlchemy condition selecting exactly the visible projects."""
         from controlplane.models import Project
 
-        return (Project.owner_id == self.user_id) | (
-            Project.team_id.in_(self.team_ids)
-        )
+        return Project.team_id.in_(self.team_ids)
 
     # ------------------------------------------------------------- write gating
 
@@ -146,9 +143,6 @@ class Scope:
         if self.is_system:
             return
         required = ACTION_ROLES[action]
-        if project.team_id is None:
-            # Legacy project: ownership was already verified by can_access.
-            return
         actual = self.role_in(project.team_id)
         if actual is None or not role_at_least(actual, required):
             raise ForbiddenError(action, required, actual)

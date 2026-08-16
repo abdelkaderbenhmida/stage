@@ -57,7 +57,7 @@ def create_scans(
         tasks.queue_scan(scan, project.id)
     db.commit()
     audit(db, user.id, "scans.create", request, resource_type="project", resource_id=str(project.id),
-          detail={"tools": tools, "target": body.target})
+          detail={"tools": tools, "target": body.target}, team_id=project.team_id)
     return created
 
 

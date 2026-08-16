@@ -43,8 +43,15 @@ def user(session):
 
 
 @pytest.fixture()
-def project(session, user):
-    project = Project(owner_id=user.id, name="my-cluster", infra_spec=SPEC, status="draft")
+def team(session, user):
+    from controlplane.repositories.teams import ensure_personal_team
+
+    return ensure_personal_team(session, user)
+
+
+@pytest.fixture()
+def project(session, user, team):
+    project = Project(owner_id=user.id, team_id=team.id, name="my-cluster", infra_spec=SPEC, status="draft")
     session.add(project)
     session.flush()
     # Nodes are normally created alongside the project by POST /projects;
@@ -245,14 +252,15 @@ def test_undeploy_task_deletes_manifests(session, project, user, stub_runners, m
 
     monkeypatch.setattr(tasks, "kubectl", _fake_kubectl)
     job = _new_job(session, project, "deploy")
-    stub_runners.undeploy_task(str(job.id), "users-service", "my-cluster", str(user.id))
+    stub_runners.undeploy_task(str(job.id), "users-service", str(project.id), str(user.id))
 
     session.refresh(job)
     assert job.status == "succeeded"
     # kubectl is called as ["delete", <kind>, <name>, "--namespace=<ns>", ...]
     kinds = [call[1] for call in calls]
     assert kinds == ["deployment", "service", "ingress"]
-    assert all("--namespace=my-cluster" in call for call in calls)
+    ns = tasks.k8s_namespace(project.id)
+    assert all(f"--namespace={ns}" in call for call in calls)
 
 
 def test_cancelled_job_is_noop(session, project, user, stub_runners):
@@ -309,3 +317,53 @@ def test_append_log_truncates_keeping_tail(session, project, user):
     assert job.log.rstrip().endswith("y" * 5000)
     assert not job.log.lstrip().startswith("x")
     assert job.log.count("truncated") == 1
+
+
+def test_destroy_task_never_touches_a_differently_owned_same_named_namespace(
+    session, user, team, monkeypatch
+):
+    """The bug Phase 2 (multi-tenancy plan) closes: two teams each naming a
+    project "staging" must not share a namespace, and destroying one must
+    never issue a `kubectl delete namespace` that could reach the other's —
+    project names are unique only per team (models/project.py), not
+    globally."""
+    from controlplane.core.security import hash_password
+    from controlplane.core.validation import k8s_namespace
+    from controlplane.models import User
+    from controlplane.repositories.teams import ensure_personal_team
+
+    ns_spec = {"version": 1, "project": "staging", "mode": "namespace", "network": {}, "nodes": []}
+
+    project_a = Project(owner_id=user.id, team_id=team.id, name="staging", status="ready", infra_spec=ns_spec)
+    session.add(project_a)
+    session.flush()
+
+    other_user = User(email="other-team@example.com", password_hash=hash_password("Sup3rSecret!"))
+    session.add(other_user)
+    session.flush()
+    other_team = ensure_personal_team(session, other_user)
+    project_b = Project(owner_id=other_user.id, team_id=other_team.id, name="staging", status="ready", infra_spec=ns_spec)
+    session.add(project_b)
+    session.commit()
+
+    ns_a = k8s_namespace(project_a.id)
+    ns_b = k8s_namespace(project_b.id)
+    assert ns_a != ns_b
+
+    deleted = []
+
+    def _fake_kubectl(args, *a, **k):
+        if args[:2] == ["delete", "namespace"]:
+            deleted.append(args[2])
+        return _StubResult(exit_code=0, output="ok")
+
+    monkeypatch.setattr(tasks, "kubectl", _fake_kubectl)
+
+    job = Job(project_id=project_a.id, type="destroy", status="queued")
+    session.add(job)
+    session.commit()
+
+    tasks.destroy_task(str(job.id), str(project_a.id), "", "staging", str(user.id))
+
+    assert deleted == [ns_a]
+    assert ns_b not in deleted

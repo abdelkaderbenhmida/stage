@@ -75,7 +75,7 @@ def create_deployment(
     db.commit()
     tasks.queue_deploy(deployment, project, user.id)
     db.commit()
-    audit(db, user.id, "deployment.create", request, resource_type="deployment", resource_id=str(deployment.id))
+    audit(db, user.id, "deployment.create", request, resource_type="deployment", resource_id=str(deployment.id), team_id=project.team_id)
     return deployment
 
 
@@ -103,7 +103,7 @@ def delete_deployment(
     tasks.queue_undeploy(deployment, project, user.id)
     DeploymentRepository(db, scope).delete(deployment.id)
     db.commit()
-    audit(db, user.id, "deployment.delete", request, resource_type="deployment", resource_id=str(deployment.id))
+    audit(db, user.id, "deployment.delete", request, resource_type="deployment", resource_id=str(deployment.id), team_id=project.team_id)
     return Message(message="Removed from cluster.")
 
 
@@ -187,5 +187,5 @@ def redeploy(
     db.commit()
     tasks.queue_deploy(deployment, project, user.id)
     db.commit()
-    audit(db, user.id, "deployment.redeploy", request, resource_type="deployment", resource_id=str(deployment.id))
+    audit(db, user.id, "deployment.redeploy", request, resource_type="deployment", resource_id=str(deployment.id), team_id=project.team_id)
     return Message(message="Redeploy queued.")

@@ -45,10 +45,29 @@ def provision(
     if repo.get_active_provision_job(project.id):
         raise HTTPException(status_code=409, detail="A provisioning/destroy job is already running.") from None
 
+    # Host capacity, not a per-tenant limit: a dedicated cluster costs real
+    # RAM/CPU regardless of which team owns it, so this counts across every
+    # tenant, not just the caller's scope.
+    mode = (project.infra_spec or {}).get("mode", "vm")
+    if mode != "namespace":
+        active = (
+            db.query(Project.infra_spec)
+            .filter(Project.status.in_(("ready", "provisioning")))
+            .all()
+        )
+        active_vm_clusters = sum(
+            1 for (spec,) in active if (spec or {}).get("mode", "vm") != "namespace"
+        )
+        if active_vm_clusters >= settings.max_concurrent_vm_clusters:
+            raise HTTPException(
+                status_code=429,
+                detail="Dedicated-cluster capacity reached; try again once another environment is destroyed.",
+            ) from None
+
     job = tasks.queue_provision(project, user.id)
     repo.set_status(project, "provisioning")
     db.commit()
-    audit(db, user.id, "project.provision", request, resource_type="project", resource_id=str(project.id))
+    audit(db, user.id, "project.provision", request, resource_type="project", resource_id=str(project.id), team_id=project.team_id)
     return {"job_id": str(job.id)}
 
 
@@ -70,7 +89,7 @@ def destroy(
     job = tasks.queue_destroy(project.id, project.workspace_path, project.name, user.id)
     repo.set_status(project, "destroying")
     db.commit()
-    audit(db, user.id, "project.destroy", request, resource_type="project", resource_id=str(project.id))
+    audit(db, user.id, "project.destroy", request, resource_type="project", resource_id=str(project.id), team_id=project.team_id)
     return {"job_id": str(job.id)}
 
 

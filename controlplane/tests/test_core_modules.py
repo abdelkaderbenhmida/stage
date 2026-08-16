@@ -296,10 +296,13 @@ def test_claim_cluster_claims_oldest_available(session):
     from controlplane.models.user import User
     from controlplane.schemas.spec import InfraSpec
 
+    from controlplane.repositories.teams import ensure_personal_team
+
     user = User(email="pool-owner@example.com", password_hash="x")
     session.add(user)
     session.flush()
-    project = Project(owner_id=user.id, name="claim-me", status="ready", infra_spec={})
+    team = ensure_personal_team(session, user)
+    project = Project(owner_id=user.id, team_id=team.id, name="claim-me", status="ready", infra_spec={})
     session.add(project)
     session.commit()
 

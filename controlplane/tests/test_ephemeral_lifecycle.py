@@ -54,8 +54,15 @@ def user(session):
 
 
 @pytest.fixture()
-def project(session, user):
-    project = Project(owner_id=user.id, name="my-cluster", infra_spec=VM_SPEC, status="ready")
+def team(session, user):
+    from controlplane.repositories.teams import ensure_personal_team
+
+    return ensure_personal_team(session, user)
+
+
+@pytest.fixture()
+def project(session, user, team):
+    project = Project(owner_id=user.id, team_id=team.id, name="my-cluster", infra_spec=VM_SPEC, status="ready")
     session.add(project)
     session.flush()
     for node in VM_SPEC["nodes"]:
@@ -138,8 +145,8 @@ def test_create_project_unknown_preset_rejected(client, auth):
 # ---------------------------------------------------------------------------
 
 
-def test_provision_namespace_mode_skips_terraform(session, user, stub_runners):
-    project = Project(owner_id=user.id, name="fast-path", infra_spec=NS_SPEC, status="draft")
+def test_provision_namespace_mode_skips_terraform(session, user, team, stub_runners):
+    project = Project(owner_id=user.id, team_id=team.id, name="fast-path", infra_spec=NS_SPEC, status="draft")
     session.add(project)
     session.flush()
     for node in NS_SPEC["nodes"]:
@@ -189,7 +196,9 @@ def test_extend_pushes_deadline(client, auth):
     pid = created.json()["id"]
     resp = client.post(f"/api/v1/projects/{pid}/extend", json={"hours": 5}, headers=auth)
     assert resp.status_code == 200, resp.text
-    assert resp.json()["ttl_hours"] == 29  # default 24 + 5
+    # VM mode defaults to settings.default_vm_ttl_hours (4), not the
+    # namespace-mode default of 24 (multi-tenancy Phase 3).
+    assert resp.json()["ttl_hours"] == 9  # default 4 + 5
 
     from controlplane.db import SessionLocal
 
@@ -214,20 +223,20 @@ def test_extend_respects_max_ttl_ceiling(client, auth):
     assert "capped" in resp.json()["detail"]
 
 
-def test_reap_warns_then_destroys_expired(session, user, monkeypatch):
+def test_reap_warns_then_destroys_expired(session, user, team, monkeypatch):
     project = Project(
-        owner_id=user.id, name="expiring", infra_spec=VM_SPEC, status="ready",
+        owner_id=user.id, team_id=team.id, name="expiring", infra_spec=VM_SPEC, status="ready",
         auto_destroy=True, ttl_hours=24,
         expires_at=datetime.now(UTC) - timedelta(minutes=1),
         workspace_path="/tmp/ws-expiring",
     )
     warned = Project(
-        owner_id=user.id, name="warned", infra_spec=VM_SPEC, status="ready",
+        owner_id=user.id, team_id=team.id, name="warned", infra_spec=VM_SPEC, status="ready",
         auto_destroy=True, ttl_hours=24,
         expires_at=datetime.now(UTC) + timedelta(minutes=30),
     )
     sticky = Project(
-        owner_id=user.id, name="sticky", infra_spec=VM_SPEC, status="ready",
+        owner_id=user.id, team_id=team.id, name="sticky", infra_spec=VM_SPEC, status="ready",
         auto_destroy=False, ttl_hours=24,
         expires_at=datetime.now(UTC) - timedelta(hours=1),
     )
@@ -272,9 +281,9 @@ def test_reap_warns_then_destroys_expired(session, user, monkeypatch):
     assert tasks.reap_expired_projects() == {"warned": 0, "reaped": 0}
 
 
-def test_reap_skips_project_with_active_destroy_job(session, user):
+def test_reap_skips_project_with_active_destroy_job(session, user, team):
     project = Project(
-        owner_id=user.id, name="busy", infra_spec=VM_SPEC, status="ready",
+        owner_id=user.id, team_id=team.id, name="busy", infra_spec=VM_SPEC, status="ready",
         auto_destroy=True, ttl_hours=24,
         expires_at=datetime.now(UTC) - timedelta(minutes=5),
         workspace_path="/tmp/ws-busy",
@@ -292,7 +301,7 @@ def test_reap_skips_project_with_active_destroy_job(session, user):
     assert session.query(Job).filter(Job.project_id == project.id).count() == 1
 
 
-def test_reaper_two_workers_never_double_destroy(session, user, monkeypatch):
+def test_reaper_two_workers_never_double_destroy(session, user, team, monkeypatch):
     """Two reapers racing on the same beat schedule must destroy each
     expired project at most once (§7 item 7). On PostgreSQL the scan uses
     FOR UPDATE SKIP LOCKED, so worker B's scan skips the row worker A is
@@ -300,7 +309,7 @@ def test_reaper_two_workers_never_double_destroy(session, user, monkeypatch):
     import threading
 
     project = Project(
-        owner_id=user.id, name="race", infra_spec=VM_SPEC, status="ready",
+        owner_id=user.id, team_id=team.id, name="race", infra_spec=VM_SPEC, status="ready",
         auto_destroy=True, ttl_hours=24,
         expires_at=datetime.now(UTC) - timedelta(minutes=5),
         workspace_path="/tmp/ws-race",
@@ -561,8 +570,8 @@ def test_webhook_rate_limited(client, deployment, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_provision_adopts_warm_cluster(session, user, stub_runners):
-    project = Project(owner_id=user.id, name="pooled-app", infra_spec=VM_SPEC, status="draft")
+def test_provision_adopts_warm_cluster(session, user, team, stub_runners):
+    project = Project(owner_id=user.id, team_id=team.id, name="pooled-app", infra_spec=VM_SPEC, status="draft")
     session.add(project)
     session.flush()
     for node in VM_SPEC["nodes"]:
@@ -613,8 +622,8 @@ def test_provision_adopts_warm_cluster(session, user, stub_runners):
     assert job.status == "succeeded"
 
 
-def test_provision_warm_pool_mismatch_falls_back_to_terraform(session, user, stub_runners):
-    project = Project(owner_id=user.id, name="cold-app", infra_spec=VM_SPEC, status="draft")
+def test_provision_warm_pool_mismatch_falls_back_to_terraform(session, user, team, stub_runners):
+    project = Project(owner_id=user.id, team_id=team.id, name="cold-app", infra_spec=VM_SPEC, status="draft")
     session.add(project)
     session.flush()
     for node in VM_SPEC["nodes"]:
