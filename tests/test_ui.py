@@ -232,7 +232,9 @@ def test_ci_tag_backfill_writes_commit_tag_into_markers():
     assert "GITHUB_SHA" in wf
     assert "service.yaml" in wf
     assert "paths-ignore" in wf
-    assert "needs: build" in wf
+    # tag-backfill depends on discover (for the path-filtered changed_services
+    # list) as well as build — needs: [discover, build], not needs: build.
+    assert "needs: [discover, build]" in wf
 
 
 def test_no_partial_manifests_outside_patch_files():
