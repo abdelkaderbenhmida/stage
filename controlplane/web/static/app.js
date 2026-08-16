@@ -764,18 +764,46 @@ async function renderProject(id) {
       } catch (err) { toast(err.message, true); }
     };
 
+    // The three tools do not take the same kind of target: Trivy scans a
+    // built image, while Gitleaks and pip-audit scan a source repository.
+    // Asking once for "image reference or https repository URL" and sending
+    // that one string to all three guaranteed that two of them failed
+    // whichever the user typed, so ask for what each tool actually needs.
+    const SCAN_TARGETS = {
+      trivy: { label: "Image reference to scan:", placeholder: "users-service:1.0.0" },
+      repo: { label: "Repository URL to scan (https only):", placeholder: "https://github.com/org/service.git" },
+    };
+    const TOOL_KIND = { trivy: "trivy", gitleaks: "repo", pip_audit: "repo" };
+
     $("#scan-btn").onclick = async () => {
-      const target = await modalPrompt(
-        "New scan",
-        "Scan target (image reference or https repository URL):",
-        { placeholder: "users-service:1.0.0" },
-      );
-      if (!target) return;
-      try {
-        await api(`/projects/${id}/scans`, {
-          method: "POST", body: { tool: $("#scan-tool").value, target },
+      const choice = $("#scan-tool").value;
+      // tool -> target, so each request carries the target that tool accepts.
+      const requests = [];
+
+      if (choice === "all") {
+        const image = await modalPrompt("New scan", SCAN_TARGETS.trivy.label, {
+          placeholder: SCAN_TARGETS.trivy.placeholder,
         });
-        toast("Scan queued.");
+        if (!image) return;
+        const repo = await modalPrompt("New scan", SCAN_TARGETS.repo.label, {
+          placeholder: SCAN_TARGETS.repo.placeholder,
+        });
+        if (!repo) return;
+        requests.push({ tool: "trivy", target: image });
+        requests.push({ tool: "gitleaks", target: repo });
+        requests.push({ tool: "pip_audit", target: repo });
+      } else {
+        const kind = SCAN_TARGETS[TOOL_KIND[choice]];
+        const target = await modalPrompt("New scan", kind.label, { placeholder: kind.placeholder });
+        if (!target) return;
+        requests.push({ tool: choice, target });
+      }
+
+      try {
+        for (const body of requests) {
+          await api(`/projects/${id}/scans`, { method: "POST", body });
+        }
+        toast(requests.length > 1 ? `${requests.length} scans queued.` : "Scan queued.");
         renderProject(id);
       } catch (err) { toast(err.message, true); }
     };
