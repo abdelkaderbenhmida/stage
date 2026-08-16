@@ -17,6 +17,7 @@ from controlplane.api.routers import (
     infrastructure,
     jobs,
     logs,
+    monitoring,
     platform,
     projects,
     scans,
@@ -154,6 +155,7 @@ def create_app() -> FastAPI:
         catalogue.router,
         webhooks.router,
         logs.router,
+        monitoring.router,
         platform.router,
     ):
         app.include_router(router, prefix="/api/v1")

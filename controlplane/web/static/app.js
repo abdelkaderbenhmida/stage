@@ -679,6 +679,19 @@ async function renderProject(id) {
               </tbody></table>`}
       </div>
 
+      <div class="between"><h2>Monitoring</h2>
+        <div class="row">
+          <select id="metrics-window">
+            <option value="60">last hour</option>
+            <option value="360">last 6 hours</option>
+            <option value="1440">last 24 hours</option>
+          </select>
+          <button class="small" id="metrics-btn">Refresh</button>
+        </div></div>
+      <div class="panel" id="project-metrics">
+        <div class="empty">Loading metrics for this environment…</div>
+      </div>
+
       <div class="between"><h2>Logs</h2>
         <div class="row">
           <input id="logs-search" placeholder="search term (e.g. error)" style="width:16rem">
@@ -687,6 +700,34 @@ async function renderProject(id) {
       <div class="panel" id="project-logs">
         <div class="empty">Fetch recent log lines from Loki for this project's namespace.</div>
       </div>`;
+
+    /* ---------------------------------------------------- monitoring panel */
+
+    const loadMetrics = async () => {
+      const box = $("#project-metrics");
+      if (!box) return;
+      const minutes = $("#metrics-window").value;
+      box.innerHTML = `<div class="empty">Loading metrics…</div>`;
+      try {
+        const data = await api(`/projects/${id}/metrics?since_minutes=${minutes}`);
+        if (!data.backend_available) {
+          box.innerHTML = `<div class="empty">Metrics backend unavailable.</div>`;
+          return;
+        }
+        const anyData = data.panels.some((p) => p.series.length);
+        if (!anyData) {
+          box.innerHTML = `<div class="empty">No metrics yet for <span class="mono">${esc(data.namespace)}</span> — deploy something to see usage.</div>`;
+          return;
+        }
+        box.innerHTML = `<div class="metric-grid">${data.panels.map(metricCard).join("")}</div>
+          <div class="muted small" style="margin-top:.6rem">namespace <span class="mono">${esc(data.namespace)}</span> · ${data.window_minutes}m window</div>`;
+      } catch (err) {
+        box.innerHTML = `<div class="empty">${esc(err.message)}</div>`;
+      }
+    };
+    $("#metrics-btn").onclick = loadMetrics;
+    $("#metrics-window").onchange = loadMetrics;
+    loadMetrics();
 
     $("#provision-btn").onclick = async () => {
       try {
@@ -1258,6 +1299,100 @@ async function renderJobs() {
 
 let activeStream;
 
+/* ---------------------------------------------------------- metric cards */
+
+function fmtMetric(value, unit) {
+  if (value === null || value === undefined) return "—";
+  if (unit === "bytes") {
+    const units = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let v = value, i = 0;
+    while (v >= 1024 && i < units.length - 1) { v /= 1024; i += 1; }
+    return `${v.toFixed(v < 10 ? 2 : 0)} ${units[i]}`;
+  }
+  if (unit === "cores") return value.toFixed(value < 1 ? 3 : 2);
+  return String(Math.round(value));
+}
+
+/** Inline sparkline — no chart library, just a scaled SVG polyline. */
+function metricSpark(series) {
+  if (series.length < 2) return "";
+  const values = series.map((p) => p.v);
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const span = max - min || 1;
+  const w = 220, h = 40;
+  const pts = series.map((p, i) => {
+    const x = (i / (series.length - 1)) * w;
+    const y = h - ((p.v - min) / span) * h;
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(" ");
+  return `<svg class="spark" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" aria-hidden="true">
+    <polyline points="${pts}" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>`;
+}
+
+function metricCard(panel) {
+  return `<div class="metric">
+      <div class="metric-title">${esc(panel.title)}</div>
+      <div class="metric-value">${esc(fmtMetric(panel.latest, panel.unit))}</div>
+      ${metricSpark(panel.series)}
+    </div>`;
+}
+
+/* ------------------------------------------------------ pipeline stages */
+
+/**
+ * Every long-running task logs its steps as "[n/N] label" (workers/tasks.py:
+ * provision 2 or 4 steps, deploy 7, scan its own). Parsing those markers is
+ * enough to show real progress without the worker having to publish a second,
+ * separate progress channel that could drift from the log.
+ */
+function parseStages(log) {
+  const stages = [];
+  let total = 0;
+  const re = /^\[(\d+)\/(\d+)\]\s*(.+)$/gm;
+  let m;
+  while ((m = re.exec(log || "")) !== null) {
+    const index = Number(m[1]);
+    total = Number(m[2]);
+    if (!stages.some((s) => s.index === index)) {
+      stages.push({ index, label: m[3].trim() });
+    }
+  }
+  stages.sort((a, b) => a.index - b.index);
+  return { stages, total };
+}
+
+/** Render the step list: everything before the newest marker is done. */
+function stageTracker(log, jobStatus) {
+  const { stages, total } = parseStages(log);
+  if (!stages.length) return "";
+
+  const current = stages[stages.length - 1].index;
+  const failed = jobStatus === "failed";
+  const finished = jobStatus === "succeeded";
+
+  const rows = stages.map((s) => {
+    let state = "done";
+    if (s.index === current && !finished) state = failed ? "failed" : "running";
+    const mark = state === "done" ? "✓" : state === "failed" ? "✗" : "●";
+    return `<li class="stage ${state}"><span class="stage-mark">${mark}</span>
+      <span class="stage-n">${s.index}/${total}</span>
+      <span class="stage-label">${esc(s.label)}</span></li>`;
+  }).join("");
+
+  const doneCount = finished ? total : current - (failed ? 1 : 0);
+  const pct = total ? Math.round((Math.max(doneCount, 0) / total) * 100) : 0;
+
+  return `<div class="panel" id="stages">
+      <div class="between" style="margin-bottom:.6rem">
+        <b>Pipeline</b>
+        <span class="muted">${finished ? total : current} of ${total} steps</span>
+      </div>
+      <div class="progress"><div class="progress-bar ${failed ? "failed" : ""}" style="width:${pct}%"></div></div>
+      <ul class="stages">${rows}</ul>
+    </div>`;
+}
+
 async function renderJob(jobId) {
   setNav("jobs");
   loading();
@@ -1274,6 +1409,7 @@ async function renderJob(jobId) {
         <button class="danger" id="cancel-job">Cancel job</button>
       </div>
       ${job.error_message ? `<div class="panel"><p class="error">${esc(job.error_message)}</p></div>` : ""}
+      ${stageTracker(job.log, job.status)}
       <div class="panel">
         <div class="between" style="margin-bottom:.6rem">
           <span class="muted">Started ${fmtDate(job.started_at)}${job.finished_at ? ` · finished ${fmtDate(job.finished_at)}` : ""}</span>
@@ -1326,6 +1462,13 @@ function streamJobLog(jobId) {
         if (logEl.textContent === "Waiting for output…") logEl.textContent = "";
         logEl.textContent += delta;
         logEl.scrollTop = logEl.scrollHeight;
+        // Keep the step tracker in step with the log it is derived from.
+        const stagesEl = $("#stages");
+        const markup = stageTracker(logEl.textContent, "running");
+        if (markup) {
+          if (stagesEl) stagesEl.outerHTML = markup;
+          else logEl.closest(".panel").insertAdjacentHTML("beforebegin", markup);
+        }
       });
 
       stream.addEventListener("done", () => {

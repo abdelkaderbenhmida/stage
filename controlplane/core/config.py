@@ -96,6 +96,13 @@ class Settings:
     loki_url: str = field(
         default_factory=lambda: _env("LOKI_URL", "http://loki.monitoring.svc.cluster.local:3100")
     )
+    # The project monitoring panel proxies the central Prometheus the same way
+    # the logs view proxies Loki: server-side PromQL, forced to the caller's
+    # own namespace. Tenants never reach Prometheus (or Grafana) directly —
+    # it is one shared TSDB with no per-tenant access control of its own.
+    prometheus_url: str = field(
+        default_factory=lambda: _env("PROMETHEUS_URL", "http://prometheus.monitoring.svc.cluster.local:9090")
+    )
 
     # Security
     jwt_secret: str = field(default_factory=lambda: _env("JWT_SECRET", ""))
