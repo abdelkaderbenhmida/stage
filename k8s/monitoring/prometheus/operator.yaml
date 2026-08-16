@@ -1,6 +1,12 @@
 # Source: prometheus-operator v0.74.0 bundle.yaml
-# Adapted: namespace default -> monitoring, dropped --kubelet-service arg
-# (no kube-system RBAC grant in this repo's AppProject).
+# Adapted: namespace default -> monitoring.
+#
+# --kubelet-service is enabled: the operator then maintains a `kubelet`
+# Service + Endpoints in kube-system with one address per node, discovered
+# from the API server. k8s/monitoring/kubelet/kubelet-scrape.yaml scrapes
+# that. The ClusterRole below already grants services/endpoints and nodes
+# cluster-wide, so no extra RBAC is needed (an older comment here claimed
+# otherwise and hardcoded node IPs instead — see that file).
 # CRDs are in crds.yaml (this directory).
 ---
 apiVersion: v1
@@ -131,6 +137,9 @@ spec:
           image: quay.io/prometheus-operator/prometheus-operator:v0.74.0
           args:
             - --prometheus-config-reloader=quay.io/prometheus-operator/prometheus-config-reloader:v0.74.0
+            # Keeps kube-system/kubelet Endpoints in sync with the real nodes
+            # on any cluster, instead of a hand-maintained IP list.
+            - --kubelet-service=kube-system/kubelet
           env:
             - name: GOGC
               value: "30"

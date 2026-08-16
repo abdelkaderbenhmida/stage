@@ -9,7 +9,6 @@ import uuid
 
 import httpx
 import pytest
-
 from controlplane.core.validation import k8s_namespace
 
 NS_SPEC = {

@@ -294,9 +294,8 @@ def test_claim_cluster_claims_oldest_available(session):
     from controlplane.models.pool import PooledCluster
     from controlplane.models.project import Project
     from controlplane.models.user import User
-    from controlplane.schemas.spec import InfraSpec
-
     from controlplane.repositories.teams import ensure_personal_team
+    from controlplane.schemas.spec import InfraSpec
 
     user = User(email="pool-owner@example.com", password_hash="x")
     session.add(user)

@@ -10,7 +10,6 @@ import re
 import uuid
 
 import pytest
-
 from controlplane.api.routers.platform import router as platform_router
 
 _PATH_PARAM_VALUES = {

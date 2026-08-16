@@ -1,42 +1,19 @@
-# Scrape kubelet /metrics/cadvisor on each node.
-# K3s runs kubelet as a systemd process (not a pod), so there is no kubelet
-# Service/Pod to select. We pin it with a headless Service + explicit Endpoints
-# (one address per node, port 10250 HTTPS) and scrape with the Prometheus SA token.
-# Kubelet metrics feed cAdvisor panels (container_*) in infra dashboards.
-# RBAC for /metrics & /metrics/cadvisor already granted in prometheus/rbac.yaml.
----
-apiVersion: v1
-kind: Endpoints
-metadata:
-  name: kubelet
-  namespace: monitoring
-  labels:
-    kube-type: kubelet
-    app.kubernetes.io/part-of: devops-platform
-subsets:
-  - addresses:
-      - ip: 192.168.56.10
-      - ip: 192.168.56.11
-      - ip: 192.168.56.12
-    ports:
-      - name: https-metrics
-        port: 10250
-        protocol: TCP
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: kubelet
-  namespace: monitoring
-  labels:
-    kube-type: kubelet
-    app.kubernetes.io/part-of: monitoring
-spec:
-  clusterIP: None
-  ports:
-    - name: https-metrics
-      port: 10250
-      protocol: TCP
+# Scrape each node's kubelet: /metrics/cadvisor feeds the container_* series
+# behind the per-project CPU and memory panels
+# (controlplane/api/routers/monitoring.py), /metrics feeds node-level views.
+#
+# The target Service and its Endpoints are maintained by the Prometheus
+# operator itself, via --kubelet-service=kube-system/kubelet (see
+# ../prometheus/operator.yaml). It watches Nodes and writes one endpoint
+# address per node, so this works unchanged on kind, k3s, kubeadm VMs or a
+# managed cluster.
+#
+# This file previously carried a hand-written Endpoints object pinned to
+# 192.168.56.10/.11/.12 — the VM-mode addresses. On any cluster that did not
+# happen to use those exact IPs (kind, or a resized VM set) nothing was
+# scraped at all and every container_* panel silently read empty.
+#
+# RBAC for /metrics and /metrics/cadvisor is granted in prometheus/rbac.yaml.
 ---
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
@@ -47,15 +24,32 @@ metadata:
     app.kubernetes.io/name: kubelet
     app.kubernetes.io/part-of: monitoring
 spec:
+  # The operator-managed Service lives in kube-system and carries this label.
+  namespaceSelector:
+    matchNames: [kube-system]
   selector:
     matchLabels:
-      kube-type: kubelet
+      k8s-app: kubelet
   endpoints:
+    # cAdvisor: container CPU / memory / network, per pod.
     - port: https-metrics
       path: /metrics/cadvisor
       scheme: https
+      # Keep the pod's own namespace/pod labels rather than the scrape
+      # target's — without this every series would be attributed to
+      # kube-system/kubelet and per-project filtering would be impossible.
       honorLabels: true
       interval: 15s
+      scrapeTimeout: 10s
+      bearerTokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token
+      tlsConfig:
+        insecureSkipVerify: true
+    # Kubelet's own metrics (pod counts, volume stats, runtime operations).
+    - port: https-metrics
+      path: /metrics
+      scheme: https
+      honorLabels: true
+      interval: 30s
       scrapeTimeout: 10s
       bearerTokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token
       tlsConfig:

@@ -15,7 +15,8 @@ data to scope, so this is gated on platform-admin, not team membership
 from __future__ import annotations
 
 import time
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel

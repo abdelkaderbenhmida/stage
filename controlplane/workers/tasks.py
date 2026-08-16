@@ -23,7 +23,6 @@ from controlplane.core.logging import request_id_var
 from controlplane.core.pool import claim_cluster
 from controlplane.core.redaction import scrub_line
 from controlplane.core.repo_url import validate_repo_url
-from controlplane.core.validation import k8s_namespace
 from controlplane.core.runtime import (
     ansible_runtime,
     deployment_manifests_dir,
@@ -32,6 +31,7 @@ from controlplane.core.runtime import (
     terraform_runtime,
     user_ssh_private_key,
 )
+from controlplane.core.validation import k8s_namespace
 from controlplane.db import SessionLocal
 from controlplane.models import Deployment, Job, PooledCluster, Project, Scan, Team
 from controlplane.renderers import render_ansible, render_namespace, render_terraform
