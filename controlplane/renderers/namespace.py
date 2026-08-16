@@ -30,14 +30,19 @@ def _totals(spec: InfraSpec) -> tuple[int, int, int]:
     return vcpu, memory_mb, disk_gb
 
 
-def build_manifests(spec: InfraSpec) -> list[dict]:
-    """Return the manifest documents defining an isolated tenant namespace."""
-    namespace = spec.project
+def build_manifests(spec: InfraSpec, namespace: str) -> list[dict]:
+    """Return the manifest documents defining an isolated tenant namespace.
+
+    ``namespace`` is the collision-proof cluster identity (see
+    ``core.validation.k8s_namespace``) — never ``spec.project``, which is
+    only the human-chosen display name and is unique per *team*, not
+    globally: two teams can each name a project "staging".
+    """
     vcpu, memory_mb, disk_gb = _totals(spec)
 
     labels = {
         "app.kubernetes.io/managed-by": "devops-central-platform",
-        "platform.devops/project": namespace,
+        "platform.devops/project": spec.project,
         "platform.devops/mode": "namespace",
     }
 
@@ -184,16 +189,15 @@ def build_manifests(spec: InfraSpec) -> list[dict]:
         },
     ]
     if spec.observability == "full":
-        manifests.extend(_full_tier_manifests(spec, labels))
+        manifests.extend(_full_tier_manifests(namespace, labels))
     return manifests
 
 
-def _full_tier_manifests(spec: InfraSpec, labels: dict) -> list[dict]:
+def _full_tier_manifests(namespace: str, labels: dict) -> list[dict]:
     """The "full" tier keeps the ELK stack honest (§4.2 step 3): a
     namespace-scoped Filebeat DaemonSet ships this environment's logs to the
     central Elasticsearch in the monitoring namespace. ES, Kibana and
     Logstash stay central — they are expensive and one copy serves everyone."""
-    namespace = spec.project
     labels = {**labels, "platform.devops/tier": "full"}
     return [
         {
@@ -277,11 +281,13 @@ def _full_tier_manifests(spec: InfraSpec, labels: dict) -> list[dict]:
     ]
 
 
-def render_namespace(spec: InfraSpec, workspace: Path) -> Path:
+def render_namespace(spec: InfraSpec, namespace: str, workspace: Path) -> Path:
     """Write the namespace manifests into the workspace and return the path."""
     workspace.mkdir(parents=True, exist_ok=True)
     path = workspace / "namespace.yaml"
     path.write_text(
-        yaml.safe_dump_all(build_manifests(spec), sort_keys=False, default_flow_style=False)
+        yaml.safe_dump_all(
+            build_manifests(spec, namespace), sort_keys=False, default_flow_style=False
+        )
     )
     return path

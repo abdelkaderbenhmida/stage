@@ -5,8 +5,11 @@ through the sandbox (docs/PLATFORM_SPEC.md §7.2). Job logs are scrubbed
 before they are written to the database (§7.4).
 """
 
+import contextlib
 import json
+import os
 import socket
+import tempfile
 import time
 import uuid
 from datetime import UTC
@@ -15,10 +18,12 @@ from pathlib import Path
 from sqlalchemy.orm import Session
 
 from controlplane.core.config import settings
+from controlplane.core.kubeconfigs import get_kubeconfig, store_kubeconfig, transfer_kubeconfig
 from controlplane.core.logging import request_id_var
 from controlplane.core.pool import claim_cluster
 from controlplane.core.redaction import scrub_line
 from controlplane.core.repo_url import validate_repo_url
+from controlplane.core.validation import k8s_namespace
 from controlplane.core.runtime import (
     ansible_runtime,
     deployment_manifests_dir,
@@ -236,6 +241,16 @@ def provision_task(
             )
             time.sleep(retry_delay_seconds)
 
+        # Dedicated-cluster-per-tenant (multi-tenancy Phase 3): the master
+        # role fetches this cluster's own admin kubeconfig back into the
+        # workspace. Move it into Vault and scrub the plaintext copy —
+        # workspace_path is not a secret store.
+        kubeconfig_path = ws / "kubeconfig.yaml"
+        if kubeconfig_path.exists() and kubeconfig_path.stat().st_size > 0:
+            store_kubeconfig(uuid.UUID(project_id), kubeconfig_path.read_text())
+            kubeconfig_path.write_text("")
+            _append_log(job_id, "Stored dedicated cluster credential.")
+
         _mark_ready(db, project_id)
         _mark_job(db, uuid.UUID(job_id), "succeeded")
         _append_log(job_id, "Provisioning complete.")
@@ -272,11 +287,12 @@ def _provision_namespace(
     db: Session, job_id: str, project_id: str, spec, ws: Path, on_line
 ) -> None:
     """Provision by carving a quota-bounded namespace out of a shared cluster."""
+    project = db.get(Project, uuid.UUID(project_id))
+    ns = k8s_namespace(project.id)
     _append_log(job_id, "[1/2] rendering namespace, quota, limits and network policy")
-    manifest = render_namespace(spec, ws)
+    manifest = render_namespace(spec, ns, ws)
 
     _append_log(job_id, "[2/2] applying to the shared cluster")
-    project = db.get(Project, uuid.UUID(project_id))
     kubectl_apply([manifest], project, on_line)
 
     # There are no VMs in this mode; the recorded nodes describe the quota
@@ -289,7 +305,7 @@ def _provision_namespace(
 
     _mark_ready(db, project_id)
     _mark_job(db, uuid.UUID(job_id), "succeeded")
-    _append_log(job_id, f"Namespace {spec.project} ready.")
+    _append_log(job_id, f"Namespace {ns} ({spec.project}) ready.")
 
 
 def _adopt_pooled_cluster(
@@ -302,6 +318,11 @@ def _adopt_pooled_cluster(
     if project is not None:
         project.workspace_path = pooled.workspace_path
         db.commit()
+
+    # The pool warms clusters under their own PooledCluster id (no project
+    # exists yet at warm time); re-key the credential to the claiming
+    # project now that one does.
+    transfer_kubeconfig(pooled.id, uuid.UUID(project_id))
 
     if pooled.node_ips:
         scope = Scope.from_session(db, uuid.UUID(user_id))
@@ -367,9 +388,16 @@ def destroy_task(
         # Namespace mode has no Terraform state — deleting the namespace
         # cascades to everything inside it.
         if mode == "namespace":
-            _append_log(job_id, f"deleting namespace {project_name}")
+            # Computed from project_id, never taken from the caller-supplied
+            # project_name: that string is only unique per team (Phase 1 of
+            # the multi-tenancy plan), so trusting it here would let deleting
+            # project A also delete a same-named project B's namespace. It
+            # also works even when the Project row is already gone (the
+            # full-delete path removes it before this task runs).
+            ns = k8s_namespace(uuid.UUID(project_id))
+            _append_log(job_id, f"deleting namespace {ns} ({project_name})")
             result = kubectl(
-                ["delete", "namespace", project_name, "--ignore-not-found", "--wait=true"],
+                ["delete", "namespace", ns, "--ignore-not-found", "--wait=true"],
                 project,
                 on_line=on_line,
             )
@@ -382,7 +410,7 @@ def destroy_task(
             shutil.rmtree(ws, ignore_errors=True)
             _set_project_status(db, project_id, "destroyed")
             _mark_job(db, uuid.UUID(job_id), "succeeded")
-            _append_log(job_id, f"Namespace {project_name} removed.")
+            _append_log(job_id, f"Namespace {ns} ({project_name}) removed.")
             return
 
         if ws.exists():
@@ -399,6 +427,13 @@ def destroy_task(
             _append_log(job_id, "Workspace removed.")
         else:
             _append_log(job_id, "No workspace found — nothing to destroy.")
+
+        # The cluster this credential pointed at no longer exists; leaving
+        # it in Vault would be a stale admin credential with nothing left to
+        # scope it once the project id is reused for anything else.
+        from controlplane.core.kubeconfigs import delete_kubeconfig
+
+        delete_kubeconfig(uuid.UUID(project_id))
 
         # Without this the project sits in `destroying` forever: the job
         # reports success but the project it acted on is never updated, and it
@@ -594,7 +629,7 @@ def queue_undeploy(deployment: Deployment, project: Project, user_id: uuid.UUID)
         db.flush()
         db.commit()
         result = undeploy_task.apply_async(
-            args=[str(job.id), _deployment_name(deployment), project.name, str(user_id)]
+            args=[str(job.id), _deployment_name(deployment), str(project.id), str(user_id)]
         )
         job.celery_task_id = result.id
         db.commit()
@@ -686,17 +721,18 @@ def deploy_task(job_id: str, deployment_id: str, project_id: str, user_id: str) 
 
             _append_log(job_id, "[6/7] waiting for rollout")
             resource = "rollout" if deployment.strategy != "deployment" else "deployment"
+            ns = k8s_namespace(project.id)
             rollout = kubectl(
-                ["rollout", "status", f"{resource}/{_deployment_name(deployment)}", f"--namespace={project.name}", "--timeout=180s"],
+                ["rollout", "status", f"{resource}/{_deployment_name(deployment)}", f"--namespace={ns}", "--timeout=180s"],
                 project, on_line=on_line,
             )
             if rollout.exit_code != 0:
                 _append_log(job_id, "rollout failed — rolling back")
-                kubectl(["rollout", "undo", f"{resource}/{_deployment_name(deployment)}", f"--namespace={project.name}"], project, on_line=on_line)
+                kubectl(["rollout", "undo", f"{resource}/{_deployment_name(deployment)}", f"--namespace={ns}"], project, on_line=on_line)
                 raise RuntimeError(f"rollout failed: {rollout.output[-500:]}")
 
             _append_log(job_id, "[7/7] capturing live URL")
-            live_url = f"http://{_deployment_name(deployment)}.{project.name}.{_cluster_domain()}"
+            live_url = f"http://{_deployment_name(deployment)}.{ns}.{_cluster_domain()}"
             repo.set_status(deployment, "live", image_ref=image_ref, live_url=live_url)
             db.commit()
             _mark_job(db, uuid.UUID(job_id), "succeeded")
@@ -711,7 +747,7 @@ def deploy_task(job_id: str, deployment_id: str, project_id: str, user_id: str) 
 
 
 @celery_app.task(name="controlplane.workers.tasks.undeploy_task")
-def undeploy_task(job_id: str, deployment_name: str, namespace: str, user_id: str) -> None:
+def undeploy_task(job_id: str, deployment_name: str, project_id: str, user_id: str) -> None:
     db = SessionLocal()
     try:
         job = db.get(Job, uuid.UUID(job_id))
@@ -723,9 +759,14 @@ def undeploy_task(job_id: str, deployment_name: str, namespace: str, user_id: st
 
         job.started_at = datetime.now(UTC)
         db.commit()
+        project = db.get(Project, uuid.UUID(project_id))
+        if project is None:
+            _mark_job(db, uuid.UUID(job_id), "failed", "project record missing")
+            return
+        namespace = k8s_namespace(project.id)
         on_line = _log_lines(job_id)
         for kind in ("deployment", "service", "ingress"):
-            kubectl(["delete", kind, deployment_name, f"--namespace={namespace}", "--ignore-not-found"], None, on_line=on_line)
+            kubectl(["delete", kind, deployment_name, f"--namespace={namespace}", "--ignore-not-found"], project, on_line=on_line)
         _mark_job(db, uuid.UUID(job_id), "succeeded")
     except Exception as exc:  # noqa: BLE001
         _fail(db, uuid.UUID(job_id), str(exc))
@@ -754,7 +795,7 @@ def _render_manifests(project: Project, deployment: Deployment, image_ref: str) 
         keep_trailing_newline=True,
     )
     name = _deployment_name(deployment)
-    namespace = project.name
+    namespace = k8s_namespace(project.id)
     context = {
         "name": name,
         "namespace": namespace,
@@ -789,55 +830,80 @@ def _render_manifests(project: Project, deployment: Deployment, image_ref: str) 
     return written
 
 
-def kubectl(args: list[str], project: Project, on_line=None) -> SandboxResult:
-    kubeconfig = Path(settings.kubeconfig_path)
-    mounts = []
-    if kubeconfig.exists():
-        mounts.append((kubeconfig, "/kube/config", True))
-    return run_sandbox(
-        SandboxRun(
-            command=["kubectl", *args],
-            mounts=mounts,
-            env={"KUBECONFIG": "/kube/config"},
-            network_enabled=True,
-            timeout_seconds=300,
-            on_line=on_line,
-        )
-    )
+@contextlib.contextmanager
+def _kubeconfig_path(project: Project | None):
+    """Resolve the kubeconfig to mount for ``project``.
+
+    Dedicated-cluster-per-tenant (multi-tenancy Phase 3): a VM-mode project
+    has its own admin credential in Vault, written there by ``provision_task``
+    once its cluster exists. Namespace-mode projects share one cluster and
+    have no such secret, so they — and any call made without project context
+    (e.g. warm-pool bookkeeping) — fall back to the operator's static
+    ``settings.kubeconfig_path``.
+    """
+    content = get_kubeconfig(project.id) if project is not None else None
+    if content:
+        fd, name = tempfile.mkstemp(suffix=".yaml", prefix="ctl-kubeconfig-")
+        try:
+            with os.fdopen(fd, "w") as f:
+                f.write(content)
+            os.chmod(name, 0o600)
+            yield Path(name)
+        finally:
+            os.unlink(name)
+        return
+    yield Path(settings.kubeconfig_path)
 
 
-def kubectl_apply(manifest_paths: list[Path], project: Project, on_line=None) -> None:
-    kubeconfig_mounts = []
-    if Path(settings.kubeconfig_path).exists():
-        kubeconfig_mounts = [(Path(settings.kubeconfig_path), "/kube/config", True)]
-
-    namespaces = run_sandbox(
-        SandboxRun(
-            command=["kubectl", "get", "namespace", project.name, "-o", "name"],
-            mounts=kubeconfig_mounts,
-            env={"KUBECONFIG": "/kube/config"},
-            network_enabled=True,
-            timeout_seconds=120,
-        )
-    )
-    if namespaces.exit_code != 0:
-        kubectl(["create", "namespace", project.name], project, on_line=on_line)
-    for manifest in manifest_paths:
-        manifest = manifest.resolve()
-        result = run_sandbox(
+def kubectl(args: list[str], project: Project | None, on_line=None) -> SandboxResult:
+    with _kubeconfig_path(project) as kubeconfig:
+        mounts = []
+        if kubeconfig.exists():
+            mounts.append((kubeconfig, "/kube/config", True))
+        return run_sandbox(
             SandboxRun(
-                command=["kubectl", "apply", "-f", str(manifest)],
-                # `mounts=` alone doesn't cut it — the container needs the
-                # rendered manifest itself; without a workspace/mount for it,
-                # kubectl sees a path that doesn't exist inside the sandbox.
-                mounts=[*kubeconfig_mounts, (manifest, str(manifest), True)],
+                command=["kubectl", *args],
+                mounts=mounts,
                 env={"KUBECONFIG": "/kube/config"},
                 network_enabled=True,
                 timeout_seconds=300,
                 on_line=on_line,
             )
         )
-        _check(result)
+
+
+def kubectl_apply(manifest_paths: list[Path], project: Project, on_line=None) -> None:
+    ns = k8s_namespace(project.id)
+    with _kubeconfig_path(project) as kubeconfig:
+        kubeconfig_mounts = [(kubeconfig, "/kube/config", True)] if kubeconfig.exists() else []
+
+        namespaces = run_sandbox(
+            SandboxRun(
+                command=["kubectl", "get", "namespace", ns, "-o", "name"],
+                mounts=kubeconfig_mounts,
+                env={"KUBECONFIG": "/kube/config"},
+                network_enabled=True,
+                timeout_seconds=120,
+            )
+        )
+        if namespaces.exit_code != 0:
+            kubectl(["create", "namespace", ns], project, on_line=on_line)
+        for manifest in manifest_paths:
+            manifest = manifest.resolve()
+            result = run_sandbox(
+                SandboxRun(
+                    command=["kubectl", "apply", "-f", str(manifest)],
+                    # `mounts=` alone doesn't cut it — the container needs the
+                    # rendered manifest itself; without a workspace/mount for it,
+                    # kubectl sees a path that doesn't exist inside the sandbox.
+                    mounts=[*kubeconfig_mounts, (manifest, str(manifest), True)],
+                    env={"KUBECONFIG": "/kube/config"},
+                    network_enabled=True,
+                    timeout_seconds=300,
+                    on_line=on_line,
+                )
+            )
+            _check(result)
 
 
 # ---------------------------------------------------------------------------

@@ -16,6 +16,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from controlplane.api.deps import audit, get_current_user, get_db, get_scope
 from controlplane.core.config import settings
+from controlplane.core.validation import k8s_namespace
 from controlplane.models import User
 from controlplane.repositories.base import NotFoundError, Scope
 from controlplane.repositories.projects import ProjectRepository
@@ -63,7 +64,10 @@ def project_logs(
     except NotFoundError:
         raise HTTPException(status_code=404, detail="Project not found.") from None
 
-    query = build_query(project, search)
+    # Never the raw project name: since Phase 1 that string is unique only
+    # per team, not globally, so two teams' "staging" would collide onto the
+    # same LogQL selector and blend — or leak — each other's log lines.
+    query = build_query(k8s_namespace(project_row.id), search)
     end = time.time()
     start = end - since_hours * 3600
 
@@ -85,6 +89,6 @@ def project_logs(
             lines.append({"timestamp": ts, "line": line, "labels": labels})
 
     lines.sort(key=lambda entry: entry["timestamp"])
-    audit(db, user.id, "project.view_logs", request, "project", str(project_row.id))
+    audit(db, user.id, "project.view_logs", request, "project", str(project_row.id), team_id=project_row.team_id)
     db.commit()
     return {"project": project, "query": query, "lines": lines[-limit:]}

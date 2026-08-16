@@ -386,7 +386,7 @@ def _namespace_spec():
 def test_build_manifests_emits_isolation_documents():
     from controlplane.renderers.namespace import build_manifests
 
-    docs = build_manifests(_namespace_spec())
+    docs = build_manifests(_namespace_spec(), "p-deadbeefdeadbeefdead")
     kinds = [d["kind"] for d in docs]
     # §4.1/4.2: every environment also gets a ServiceMonitor for the central
     # Prometheus, on top of the isolation documents.
@@ -394,13 +394,16 @@ def test_build_manifests_emits_isolation_documents():
         "Namespace", "ResourceQuota", "LimitRange", "NetworkPolicy", "ServiceAccount", "ServiceMonitor",
     ]
 
+    ns = docs[0]
+    assert ns["metadata"]["name"] == "p-deadbeefdeadbeefdead"
+
     quota = docs[1]
     assert quota["spec"]["hard"]["limits.cpu"] == "2"
     assert quota["spec"]["hard"]["services.nodeports"] == "0"
     assert quota["spec"]["hard"]["services.loadbalancers"] == "0"
 
     netpol = docs[3]
-    assert netpol["metadata"]["name"] == "tenant-app-default-deny"
+    assert netpol["metadata"]["name"] == "p-deadbeefdeadbeefdead-default-deny"
     assert netpol["spec"]["policyTypes"] == ["Ingress", "Egress"]
     egress_cidrs = [
         rule["to"][0]["ipBlock"]["cidr"]
@@ -417,7 +420,7 @@ def test_build_manifests_emits_isolation_documents():
 def test_render_namespace_writes_single_yaml_file(tmp_path):
     from controlplane.renderers.namespace import render_namespace
 
-    path = render_namespace(_namespace_spec(), tmp_path / "ns")
+    path = render_namespace(_namespace_spec(), "p-deadbeefdeadbeefdead", tmp_path / "ns")
     assert path.name == "namespace.yaml"
     assert "ResourceQuota" in path.read_text()
 

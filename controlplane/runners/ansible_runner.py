@@ -38,6 +38,10 @@ def ansible_playbook(
 ) -> SandboxResult:
     cfg = workspace / "ansible.cfg"
     cfg.write_text(_ANSIBLE_CFG)
+    # Bind-mounting a path that doesn't exist yet makes Docker create it as a
+    # directory, which would shadow the file the k8s_master role later tries
+    # to fetch into — pre-create it empty so the mount is a plain file.
+    (workspace / "kubeconfig.yaml").touch(exist_ok=True)
 
     env: dict[str, str] = {
         "ANSIBLE_CONFIG": str(workspace / "ansible.cfg"),
@@ -66,7 +70,10 @@ def ansible_playbook(
                 "/opt/ansible/playbook.yml",
             ],
             workspace=workspace,
-            writable_paths=["ansible.cfg"],
+            # kubeconfig.yaml: the k8s_master role fetches this project's own
+            # admin credential back here (multi-tenancy Phase 3) so the
+            # control plane can store it in Vault after the run.
+            writable_paths=["ansible.cfg", "kubeconfig.yaml"],
             mounts=mounts,
             env=env,
             network_enabled=True,

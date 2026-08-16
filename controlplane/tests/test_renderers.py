@@ -238,24 +238,66 @@ def _ns_spec(**overrides) -> InfraSpec:
 def test_namespace_light_tier_manifests():
     from controlplane.renderers.namespace import build_manifests
 
-    manifests = build_manifests(_ns_spec())
+    manifests = build_manifests(_ns_spec(), "p-aaaaaaaaaaaaaaaaaaaa")
     kinds = [m["kind"] for m in manifests]
     assert kinds == [
         "Namespace", "ResourceQuota", "LimitRange", "NetworkPolicy", "ServiceAccount", "ServiceMonitor",
     ]
+    ns = next(m for m in manifests if m["kind"] == "Namespace")
+    assert ns["metadata"]["name"] == "p-aaaaaaaaaaaaaaaaaaaa"
     sm = next(m for m in manifests if m["kind"] == "ServiceMonitor")
     assert sm["metadata"]["namespace"] == "monitoring"
-    assert sm["metadata"]["labels"]["platform.devops/project"] == "my-cluster"
+    assert sm["spec"]["namespaceSelector"]["matchNames"] == ["p-aaaaaaaaaaaaaaaaaaaa"]
+    assert sm["metadata"]["labels"]["platform.devops/project"] == "p-aaaaaaaaaaaaaaaaaaaa"
     assert "platform.devops/tier" not in sm["metadata"]["labels"]
 
 
 def test_namespace_full_tier_adds_elk_and_tier_label():
     from controlplane.renderers.namespace import build_manifests
 
-    manifests = build_manifests(_ns_spec(observability="full"))
+    manifests = build_manifests(_ns_spec(observability="full"), "p-aaaaaaaaaaaaaaaaaaaa")
     kinds = [m["kind"] for m in manifests]
     assert "DaemonSet" in kinds and "ConfigMap" in kinds
     sm = next(m for m in manifests if m["kind"] == "ServiceMonitor")
     assert sm["metadata"]["labels"]["platform.devops/tier"] == "full"
     ds = next(m for m in manifests if m["kind"] == "DaemonSet")
     assert ds["metadata"]["labels"]["platform.devops/tier"] == "full"
+    assert ds["metadata"]["namespace"] == "p-aaaaaaaaaaaaaaaaaaaa"
+
+
+def test_two_teams_naming_a_project_identically_get_distinct_namespaces():
+    """The bug Phase 2 (multi-tenancy plan) closes: team A and team B each
+    creating a project named "staging" must never produce the same
+    Kubernetes namespace — the old code derived it from spec.project, which
+    is unique only per team (models/project.py), not globally."""
+    import uuid
+
+    from controlplane.core.validation import k8s_namespace
+    from controlplane.renderers.namespace import build_manifests
+
+    project_a, project_b = uuid.uuid4(), uuid.uuid4()
+    ns_a, ns_b = k8s_namespace(project_a), k8s_namespace(project_b)
+    assert ns_a != ns_b
+
+    spec = _ns_spec(project="staging")
+    docs_a = build_manifests(spec, ns_a)
+    docs_b = build_manifests(spec, ns_b)
+
+    name_a = next(d for d in docs_a if d["kind"] == "Namespace")["metadata"]["name"]
+    name_b = next(d for d in docs_b if d["kind"] == "Namespace")["metadata"]["name"]
+    assert name_a != name_b
+    assert docs_a[0]["metadata"]["labels"]["platform.devops/project"] == "staging"
+    assert docs_b[0]["metadata"]["labels"]["platform.devops/project"] == "staging"
+
+
+def test_k8s_namespace_is_deterministic_and_dns_safe():
+    import re
+    import uuid
+
+    from controlplane.core.validation import k8s_namespace
+
+    project_id = uuid.uuid4()
+    assert k8s_namespace(project_id) == k8s_namespace(project_id)
+    ns = k8s_namespace(project_id)
+    assert re.match(r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$", ns)
+    assert len(ns) <= 63

@@ -168,3 +168,43 @@
     mode: "0600"   # P2: was 0644 — plaintext-readable by any local user.
   no_log: true  # inherit no_log from upstream token command.
   tags: master
+
+# Multi-tenancy plan Phase 3: this cluster belongs to one project only, so
+# the control plane needs its own admin credential back — the shared
+# settings.kubeconfig_path is retired for VM mode once this exists.
+- name: Read admin kubeconfig for control-plane retrieval
+  ansible.builtin.slurp:
+    src: /etc/kubernetes/admin.conf
+  register: admin_kubeconfig_raw
+  no_log: true
+  tags: master
+
+- name: Rewrite kubeconfig server to this master's advertised address
+  ansible.builtin.set_fact:
+    project_kubeconfig: >-
+      {{ (admin_kubeconfig_raw.content | b64decode)
+         | regex_replace('server: https://[^\s]+', 'server: https://' + ansible_host + ':6443') }}
+  no_log: true
+  tags: master
+
+- name: Write project kubeconfig on the master (staging for fetch)
+  ansible.builtin.copy:
+    content: "{{ project_kubeconfig }}"
+    dest: /tmp/project-kubeconfig.yaml
+    mode: "0600"
+  no_log: true
+  tags: master
+
+- name: Fetch project kubeconfig back to the control-plane workspace
+  ansible.builtin.fetch:
+    src: /tmp/project-kubeconfig.yaml
+    dest: "{{ project_kubeconfig_dest | default('./kubeconfig.yaml') }}"
+    flat: true
+  no_log: true
+  tags: master
+
+- name: Remove staged kubeconfig from the master
+  ansible.builtin.file:
+    path: /tmp/project-kubeconfig.yaml
+    state: absent
+  tags: master
