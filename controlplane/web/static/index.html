@@ -26,23 +26,25 @@
           </div>
         </div>
 
-        <div class="nav-group">Control plane</div>
+        <div class="nav-group">Workspace</div>
         <div class="nav-item" data-nav="projects" data-href="#/projects"><span class="ico">▤</span> Projects</div>
         <div class="nav-item" data-nav="catalogue" data-href="#/catalogue"><span class="ico">☰</span> Catalogue</div>
         <div class="nav-item" data-nav="security" data-href="#/security"><span class="ico">⛨</span> Security</div>
         <div class="nav-item" data-nav="teams" data-href="#/teams"><span class="ico">◍</span> Teams</div>
         <div class="nav-item" data-nav="jobs" data-href="#/jobs"><span class="ico">⧗</span> Jobs</div>
 
-        <div class="nav-group">Platform</div>
-        <div class="nav-item" data-view="topology"><span class="ico">◉</span> Platform Health</div>
-        <div class="nav-item" data-view="apps"><span class="ico">＋</span> Apps &amp; Services
+        <!-- Operator console: hidden unless the signed-in user is a platform
+             admin. Every route behind it is gated server-side regardless. -->
+        <div class="nav-group" data-operator hidden>Operations <span class="nav-tag">admin</span></div>
+        <div class="nav-item" data-operator hidden data-view="topology"><span class="ico">◉</span> Platform Health</div>
+        <div class="nav-item" data-operator hidden data-view="apps"><span class="ico">＋</span> Apps &amp; Services
           <span class="badge" id="nav-apps">0</span>
         </div>
-        <div class="nav-item" data-view="overview"><span class="ico">▤</span> Overview</div>
-        <div class="nav-item" data-view="services"><span class="ico">◷</span> Services
+        <div class="nav-item" data-operator hidden data-view="overview"><span class="ico">▤</span> Overview</div>
+        <div class="nav-item" data-operator hidden data-view="services"><span class="ico">◷</span> Services
           <span class="badge" id="nav-services">0</span>
         </div>
-        <div class="nav-item" data-view="config"><span class="ico">⚙</span> Operations</div>
+        <div class="nav-item" data-operator hidden data-view="config"><span class="ico">⚙</span> Operations</div>
 
         <div class="spacer"></div>
         <div class="sidebar-footer">

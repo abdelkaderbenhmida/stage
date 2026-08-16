@@ -59,6 +59,17 @@ function toast(message, isError = false) {
 
 function token() { return localStorage.getItem(TOKEN_KEY); }
 
+/** Role claim off the access token. Display only — every /platform route is
+ *  gated server-side by require_platform_admin (api/rbac.py), so hiding the
+ *  nav is a UX fix, never the access control itself. */
+function currentRole() {
+  const raw = token();
+  if (!raw) return null;
+  try { return JSON.parse(atob(raw.split(".")[1])).role || null; } catch { return null; }
+}
+
+function isPlatformAdmin() { return currentRole() === "admin"; }
+
 /* -------------------------------------------------------------- modals
  * Task 6.2: real dialogs instead of prompt()/confirm(). Close on Escape,
  * focus the first field, return focus to the trigger. */
@@ -213,6 +224,13 @@ function setNav(active) {
   const signedIn = Boolean(token());
   $("#sidebar").hidden = !signedIn;
   $(".topbar", shell).hidden = !signedIn;
+
+  // The operator console is admin-only (Phase 0). It used to be listed for
+  // everyone and simply 404 on click, which read as a broken platform rather
+  // than one the user has no business in — hide it instead.
+  const admin = isPlatformAdmin();
+  shell.querySelectorAll("[data-operator]").forEach((el) => { el.hidden = !admin; });
+
   shell.querySelectorAll(".nav-item").forEach((item) => {
     item.classList.toggle("active", active != null && item.dataset.nav === active);
   });
@@ -1568,6 +1586,12 @@ function route() {
   // own sections; hand off and stop, so neither half writes over the other.
   const platform = path.match(/^\/platform(?:\/([\w-]+))?$/);
   if (platform) {
+    // Typing the URL by hand must not strand a tenant on a console whose
+    // every request will 404. Server-side gating is unchanged either way.
+    if (!isPlatformAdmin()) {
+      location.hash = "#/projects";
+      return;
+    }
     setNav(null);
     return window.PlatformConsole.mount(platform[1] || "topology");
   }
