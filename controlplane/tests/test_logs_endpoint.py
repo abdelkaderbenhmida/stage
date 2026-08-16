@@ -6,10 +6,13 @@ cannot escape their own namespace. Loki itself is mocked via
 httpx.MockTransport.
 """
 
+import uuid
+
 import httpx
 import pytest
 from controlplane.api.routers.logs import _escape_logql_string, build_query
 from controlplane.core.config import settings
+from controlplane.core.validation import k8s_namespace
 
 NS_SPEC = {
     "version": 1,
@@ -29,6 +32,7 @@ def _create_project(client, auth):
         headers=auth,
     )
     assert resp.status_code == 201, resp.text
+    return resp.json()["id"]
 
 
 def test_build_query_scopes_to_namespace():
@@ -79,12 +83,15 @@ def _fake_loki(monkeypatch, payload=None, status=200):
 def test_logs_endpoint_returns_lines(auth_headers, client, monkeypatch):
     captured = _fake_loki(monkeypatch)
     auth = auth_headers()
-    _create_project(client, auth)
+    project_id = _create_project(client, auth)
     resp = client.get("/api/v1/logs?project=demo&search=panic", headers=auth)
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["project"] == "demo"
-    assert body["query"] == '{namespace="demo"} |= "panic"'
+    # The namespace is derived from the project's UUID, not its name — Phase
+    # 2 of the multi-tenancy plan (two teams can each name a project "demo").
+    ns = k8s_namespace(uuid.UUID(project_id))
+    assert body["query"] == f'{{namespace="{ns}"}} |= "panic"'
     assert body["lines"][0]["line"] == "line one"
     assert body["lines"][1]["line"] == "line two"
     assert "loki/api/v1/query_range" in captured["url"]
