@@ -46,15 +46,29 @@ _PANELS: dict[str, dict[str, str]] = {
         "unit": "bytes",
         "query": 'sum(container_memory_working_set_bytes{{namespace="{ns}",container!=""}})',
     },
+    # kube-state-metrics carries the *subject* pod's namespace. Whether that
+    # arrives as `namespace` or `exported_namespace` depends on the scrape
+    # config: with honor_labels off (common), the scraping target's own
+    # namespace wins and the real one is preserved as `exported_namespace`.
+    # `a or b` yields a when it has samples and b otherwise, so this matches
+    # either convention without double counting.
     "pods": {
         "title": "Running pods",
         "unit": "pods",
-        "query": 'count(kube_pod_status_phase{{namespace="{ns}",phase="Running"}} == 1) or vector(0)',
+        "query": (
+            'count(kube_pod_status_phase{{namespace="{ns}",phase="Running"}} == 1)'
+            ' or count(kube_pod_status_phase{{exported_namespace="{ns}",phase="Running"}} == 1)'
+            " or vector(0)"
+        ),
     },
     "restarts": {
         "title": "Container restarts",
         "unit": "restarts",
-        "query": 'sum(kube_pod_container_status_restarts_total{{namespace="{ns}"}}) or vector(0)',
+        "query": (
+            'sum(kube_pod_container_status_restarts_total{{namespace="{ns}"}})'
+            ' or sum(kube_pod_container_status_restarts_total{{exported_namespace="{ns}"}})'
+            " or vector(0)"
+        ),
     },
 }
 

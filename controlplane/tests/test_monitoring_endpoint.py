@@ -74,6 +74,13 @@ def test_metrics_are_scoped_to_the_callers_own_namespace(auth_headers, client, m
     assert captured["queries"], "no queries issued"
     for query in captured["queries"]:
         assert f'namespace="{ns}"' in query
+        # Nothing may select a namespace other than this project's own —
+        # that is the whole isolation guarantee, so assert it structurally
+        # rather than trusting the query strings to stay unchanged.
+        import re as _re
+
+        for selected in _re.findall(r'(?:exported_)?namespace="([^"]+)"', query):
+            assert selected == ns, f"query escapes the tenant namespace: {query}"
 
     assert {p["key"] for p in body["panels"]} == {"cpu", "memory", "pods", "restarts"}
     assert body["panels"][0]["latest"] == 2.5
