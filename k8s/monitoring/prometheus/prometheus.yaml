@@ -3,6 +3,17 @@
 # ruleSelector:       {} => picks up ALL PrometheusRules.
 # retention 15d, PVC 10Gi.
 # Service named `prometheus` on port 9090.
+#
+# Multi-tenancy plan Phase 5: this is a single shared TSDB — vanilla
+# Prometheus has no per-tenant access control, so a query is never
+# restricted to one team's metrics by anything at this layer. That's
+# acceptable today because nothing tenant-facing queries it: every
+# metrics/Grafana route lives under /platform, gated to platform admins
+# since Phase 0 (api/routers/platform.py). If a tenant-facing metrics
+# view is ever added, it must enforce a `platform.devops/project` (or
+# team) label filter server-side — the same fix logs.py needed for Loki
+# in Phase 2 — because label-scoped Grafana datasources alone are soft
+# isolation, not a hard boundary.
 ---
 apiVersion: monitoring.coreos.com/v1
 kind: Prometheus
