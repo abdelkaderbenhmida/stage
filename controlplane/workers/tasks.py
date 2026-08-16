@@ -449,10 +449,21 @@ def destroy_task(
 
 
 def _set_project_status(db: Session, project_id: str, status: str) -> None:
+    """Update a project's status, tolerating the row having been deleted.
+
+    ``DELETE /projects/{id}`` queues the destroy job *and* deletes the row,
+    so this worker races the API: the Project this session loaded at the top
+    of ``destroy_task`` can be gone by the time we get here. Without the
+    expire, ``db.get`` returns the stale identity-map copy, the UPDATE
+    matches 0 rows, and SQLAlchemy poisons the session — leaving the job
+    stuck in "running" forever even though the teardown itself succeeded.
+    """
+    db.expire_all()
     project = db.get(Project, uuid.UUID(project_id))
-    if project is not None:
-        project.status = status
-        db.commit()
+    if project is None:
+        return
+    project.status = status
+    db.commit()
 
 
 # ---------------------------------------------------------------------------

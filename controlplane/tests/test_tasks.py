@@ -367,3 +367,40 @@ def test_destroy_task_never_touches_a_differently_owned_same_named_namespace(
 
     assert deleted == [ns_a]
     assert ns_b not in deleted
+
+
+def test_destroy_task_completes_when_project_row_already_deleted(
+    session, user, team, monkeypatch
+):
+    """DELETE /projects/{id} queues the destroy job *and* deletes the row, so
+    the worker races the API. Found end-to-end: the teardown succeeded but
+    the final status update matched 0 rows, poisoning the session and leaving
+    the job stuck in "running" forever."""
+    ns_spec = {"version": 1, "project": "doomed", "mode": "namespace", "network": {}, "nodes": []}
+    project = Project(owner_id=user.id, team_id=team.id, name="doomed", status="destroying", infra_spec=ns_spec)
+    session.add(project)
+    session.commit()
+    project_id = project.id
+
+    job = Job(project_id=project_id, type="destroy", status="queued")
+    session.add(job)
+    session.commit()
+    job_id = job.id
+
+    def _fake_kubectl(args, *a, **k):
+        # Simulate the API deleting the row while the teardown is in flight.
+        from controlplane.db import SessionLocal
+
+        with SessionLocal() as other:
+            other.query(Job).filter(Job.id == job_id).update({"project_id": None})
+            other.query(Project).filter(Project.id == project_id).delete()
+            other.commit()
+        return _StubResult(exit_code=0, output="ok")
+
+    monkeypatch.setattr(tasks, "kubectl", _fake_kubectl)
+
+    # Must not raise, and must mark the job finished rather than hanging.
+    tasks.destroy_task(str(job_id), str(project_id), "", "doomed", str(user.id))
+
+    session.expire_all()
+    assert session.get(Job, job_id).status == "succeeded"
