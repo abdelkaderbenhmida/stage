@@ -165,6 +165,7 @@ def test_backup_retains_only_keep_units(tmp_path, fake_pg_bin):
     units = list((tmp_path / "backups").glob("cp-*.tar.gz"))
     assert len(units) == 2
 
+@pytest.mark.integration
 @pytest.mark.skipif(
     shutil.which("pg_dump") is None or shutil.which("pg_restore") is None,
     reason="real pg_dump/pg_restore needed",

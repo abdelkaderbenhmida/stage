@@ -306,12 +306,56 @@ jobs:
           retention-days: 7
 
   # ──────────────────────────────────────────────
+  # Step 3b: Control-plane test suite.
+  #
+  # Its own job, and therefore its own virtualenv, on purpose. The control
+  # plane and the app services are separate deployables with deliberately
+  # different pins (controlplane wants prometheus-fastapi-instrumentator
+  # 8.1.0 and hvac 2.3.0; app/shared pins 6.1.0 and 2.1.0), and 6.1.0 crashes
+  # on this FastAPI with "'_IncludedRouter' object has no attribute 'path'".
+  # Installing both into one env means whichever lands last wins and the other
+  # deployable is tested against dependencies it never ships.
+  #
+  # Until this job existed, controlplane/tests/ — every tenant-isolation test
+  # for the multi-tenancy work, ~220 tests — was never executed by CI at all:
+  # the `test` job only runs `pytest tests/`. Reverting the /platform admin
+  # gate would have kept the pipeline green.
+  # ──────────────────────────────────────────────
+  controlplane-tests:
+    name: Control-plane tests
+    runs-on: ubuntu-latest
+    needs: [lint, gitleaks]
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: controlplane/requirements.txt
+
+      - name: Install control-plane dependencies only
+        run: |
+          pip install -r controlplane/requirements.txt
+          # conftest.py imports testcontainers at module scope, so collection
+          # fails without it even though the integration tests are deselected.
+          pip install pytest pytest-asyncio testcontainers
+
+      - name: Run control-plane suite
+        # Integration tests spin up PostgreSQL via testcontainers and shell out
+        # to docker/kubectl/terraform; they are excluded here and covered by
+        # the end-to-end environment instead.
+        run: |
+          ENVIRONMENT=dev LOG_FORMAT=plain VAULT_ADDR="" \
+            pytest -q controlplane/tests -m "not integration"
+
+  # ──────────────────────────────────────────────
   # Step 4: Build & Push Docker images (dynamic matrix)
   # ──────────────────────────────────────────────
   build:
     name: Build & Push Images
     runs-on: ubuntu-latest
-    needs: [discover, test]
+    needs: [discover, test, controlplane-tests]
     if: needs.discover.outputs.changed_services != '[]'
     permissions:
       contents: read

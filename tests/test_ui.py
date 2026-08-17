@@ -310,11 +310,26 @@ def test_tfvars_conformance():
 
 
 def test_preflight_refuses_without_space():
-    """WS-B: node-add must be refused when the host lacks enough free disk —
-    this is the exact state of the machine right now (1.8G free < 20G)."""
-    r = introspect.node_preflight(20, 4096)
+    """WS-B: node-add must be refused when the host lacks enough free disk.
+
+    The request is sized past any real disk rather than relying on how full
+    the machine happens to be — this test used to assert the free space of
+    the laptop it was written on ("1.8G free < 20G") and started failing the
+    moment it ran anywhere roomier, without node_preflight changing at all.
+    """
+    huge_disk_gb = 10 ** 9  # ~1 EB: no host satisfies this.
+    r = introspect.node_preflight(huge_disk_gb, 4096)
     assert r["ok"] is False
     assert any("disk" in p.lower() for p in r["problems"])
+
+
+def test_preflight_accepts_a_request_the_host_can_satisfy():
+    """The mirror of the refusal: a trivially small request must not be
+    rejected *for disk reasons*, so the check is discriminating rather than
+    always-refusing. Other problems (terraform state, memory) may still be
+    reported, so only the disk complaint is asserted against."""
+    r = introspect.node_preflight(1, 1)
+    assert not any("free disk" in p.lower() for p in r["problems"])
 
 
 def test_command_allowlist_blocks_path_traversal():
