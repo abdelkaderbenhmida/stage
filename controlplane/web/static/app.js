@@ -605,6 +605,46 @@ function renderNewProject() {
   };
 }
 
+/* ------------------------------------------------- namespace quota panel */
+
+/**
+ * What namespace mode actually provisions: a namespace bounded by a
+ * ResourceQuota, a LimitRange and a default-deny NetworkPolicy. The numbers
+ * mirror renderers/namespace.py — the spec's per-node sizing is reinterpreted
+ * as the total budget for the namespace, with requests at half the ceiling.
+ *
+ * The namespace's own name is deliberately not derived here: it comes from
+ * k8s_namespace() server-side and is shown by the monitoring panel below, so
+ * there is exactly one source of truth for it.
+ */
+function namespaceQuotaPanel(project) {
+  const nodes = project.nodes || [];
+  const vcpu = nodes.reduce((a, n) => a + n.vcpu, 0);
+  const memMb = nodes.reduce((a, n) => a + n.memory_mb, 0);
+  const diskGb = nodes.reduce((a, n) => a + n.disk_gb, 0);
+  const row = (k, v) => `<tr><td>${esc(k)}</td><td class="mono">${esc(v)}</td></tr>`;
+
+  return `
+      <h2>Namespace quota</h2>
+      <div class="panel table-wrap">
+        <p class="subtitle" style="margin:.2rem 0 .8rem">
+          A quota-bounded slice of the shared cluster — no virtual machines, so
+          no node addresses. Pods are capped by this quota and isolated by a
+          default-deny NetworkPolicy.
+        </p>
+        <table>
+          <thead><tr><th>Resource</th><th>Limit</th></tr></thead>
+          <tbody>
+            ${row("CPU", `${vcpu} cores (requests ${Math.floor(vcpu / 2) || 1})`)}
+            ${row("Memory", `${(memMb / 1024).toFixed(1)} GB (requests ${(memMb / 2 / 1024).toFixed(1)} GB)`)}
+            ${row("Storage", `${diskGb} GB`)}
+            ${row("Pods", "40")}
+            ${row("Services", "20 (no NodePort or LoadBalancer)")}
+          </tbody>
+        </table>
+      </div>`;
+}
+
 /* -------------------------------------------------------- project detail */
 
 async function renderProject(id) {
@@ -617,6 +657,13 @@ async function renderProject(id) {
       api(`/projects/${id}/scans`).catch(() => []),
     ]);
 
+    // Namespace mode carves a quota-bounded slice out of a shared cluster:
+    // there are no VMs, no IPs and no Terraform state. Showing a node table
+    // and a "terraform plan" button for it describes infrastructure that
+    // does not exist — the plan call even fails, because there is no
+    // workspace to plan (see renderers/namespace.py vs render_terraform).
+    const isNamespace = (project.infra_spec || {}).mode === "namespace";
+
     view().innerHTML = `
       <div class="between">
         <div>
@@ -625,7 +672,7 @@ async function renderProject(id) {
         </div>
         <div class="row">
           ${project.expires_at ? `<button id="extend-btn">Extend</button>` : ""}
-          <button id="plan-btn">Preview plan</button>
+          ${isNamespace ? "" : `<button id="plan-btn">Preview plan</button>`}
           <button class="primary" id="provision-btn">Provision</button>
           <button class="danger" id="destroy-btn">Destroy</button>
         </div>
@@ -634,6 +681,7 @@ async function renderProject(id) {
         ? `<div class="panel"><p class="error">This environment expires soon and will be destroyed automatically. Extend it if you still need it.</p></div>`
         : ""}
 
+      ${isNamespace ? namespaceQuotaPanel(project) : `
       <h2>Infrastructure</h2>
       <div class="panel table-wrap">
         <table>
@@ -650,7 +698,7 @@ async function renderProject(id) {
             </tr>`).join("")}
           </tbody>
         </table>
-      </div>
+      </div>`}
 
       <div class="between"><h2>Deployments</h2>
         <button class="small primary" id="deploy-btn">Deploy an app</button></div>
@@ -755,7 +803,8 @@ async function renderProject(id) {
       } catch (err) { toast(err.message, true); }
     };
 
-    $("#plan-btn").onclick = async () => {
+    // Absent in namespace mode, where there is no Terraform workspace.
+    if ($("#plan-btn")) $("#plan-btn").onclick = async () => {
       toast("Running terraform plan…");
       try {
         const result = await api(`/projects/${id}/plan`);
