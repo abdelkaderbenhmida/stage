@@ -635,6 +635,23 @@ def _clone_repo(repo_url: str, job_id: str, on_line, branch: str | None = None) 
     return target
 
 
+def _is_usable_trivy_report(raw: str) -> bool:
+    """True only when the output is a report Trivy actually produced.
+
+    Distinguishes "scanned, nothing found" from "never scanned". The former
+    is a real report carrying a Results key; the latter is empty output or a
+    plain error string, which json.loads either rejects or turns into
+    something without Results.
+    """
+    import json as _json
+
+    try:
+        data = _json.loads(raw or "")
+    except (ValueError, TypeError):
+        return False
+    return isinstance(data, dict) and "Results" in data
+
+
 def _clone_hint(result, repo_url: str, branch: str | None) -> str | None:
     """Translate git's failure into something the person who typed the URL can act on."""
     output = (result.output or "").lower()
@@ -777,8 +794,47 @@ def deploy_task(job_id: str, deployment_id: str, project_id: str, user_id: str) 
             _append_log(job_id, "[4/7] trivy scan + gate")
             repo.set_status(deployment, "scanning")
             db.commit()
-            trivy = run_trivy(image_ref, on_line=on_line)
+            # Scan the image that was just pushed, addressed the way a
+            # sandbox can reach it: the control plane pushes to
+            # settings.registry (published on the host), which resolves to the
+            # sandbox container itself from inside one.
+            scan_ref = image_ref
+            if settings.registry_internal and image_ref.startswith(f"{settings.registry}/"):
+                scan_ref = image_ref.replace(settings.registry, settings.registry_internal, 1)
+            trivy = run_trivy(
+                scan_ref,
+                on_line=on_line,
+                from_registry=True,
+                network=settings.registry_network,
+                insecure=settings.registry_insecure,
+            )
             from controlplane.parsers.trivy_parser import parse_trivy
+
+            # The gate must fail closed. `parse_trivy` returns an empty result
+            # for output it cannot read, which is indistinguishable from a
+            # clean image, so a scanner that never ran produced gate == 0 and
+            # the image shipped as if it had passed. That is exactly what
+            # happened here: trivy could not reach the Docker socket, logged
+            # "failed to connect to the docker API", and the deployment went
+            # live unscanned while the UI promised the opposite.
+            #
+            # An image whose vulnerabilities are unknown is not an image known
+            # to be safe, so treat an unusable scan as a block.
+            if trivy.timed_out or trivy.exit_code != 0:
+                repo.set_status(deployment, "blocked", image_ref=image_ref)
+                db.commit()
+                raise RuntimeError(
+                    "Image could not be scanned, so it was not deployed. "
+                    f"Trivy exited {trivy.exit_code}: {(trivy.output or '')[-400:]}"
+                )
+
+            if not _is_usable_trivy_report(trivy.stdout):
+                repo.set_status(deployment, "blocked", image_ref=image_ref)
+                db.commit()
+                raise RuntimeError(
+                    "Image could not be scanned, so it was not deployed: "
+                    "Trivy produced no readable report."
+                )
 
             parsed = parse_trivy(trivy.stdout)
             gate = parsed.summary.get("critical", 0) + parsed.summary.get("high", 0)

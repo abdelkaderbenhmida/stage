@@ -10,6 +10,11 @@ def parse_trivy(raw_output: str) -> ParsedFindings:
         data = json.loads(raw_output or "{}")
     except json.JSONDecodeError:
         return ParsedFindings()
+    # Valid JSON is not necessarily a report. Trivy emits "null" when a scan
+    # produces nothing at all, and `null.get("Results")` raised AttributeError
+    # rather than returning an empty result.
+    if not isinstance(data, dict):
+        return ParsedFindings()
     summary = empty_summary()
     findings = []
     for result in data.get("Results", []):

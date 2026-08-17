@@ -156,6 +156,13 @@ class Settings:
 
     # Registry used by the deployment pipeline
     registry: str = field(default_factory=lambda: _env("REGISTRY", "localhost:5000"))
+    # How the registry is addressed from *inside* a sandbox container, and the
+    # docker network that name resolves on. The control plane pushes to
+    # `registry` (published on the host); a sandbox cannot reach that address,
+    # so the scanner needs the registry's name on its own network.
+    registry_internal: str = field(default_factory=lambda: _env("REGISTRY_INTERNAL", "kind-registry:5000"))
+    registry_network: str = field(default_factory=lambda: _env("REGISTRY_NETWORK", "kind"))
+    registry_insecure: bool = field(default_factory=lambda: _env("REGISTRY_INSECURE", "true").lower() == "true")
     registry_user: str = field(default_factory=lambda: _env("REGISTRY_USER", ""))
     registry_password: str = field(default_factory=lambda: _env("REGISTRY_PASSWORD", ""))
 

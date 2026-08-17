@@ -51,6 +51,11 @@ class SandboxRun:
     mounts: list[tuple[Path, str, bool]] = field(default_factory=list)
     env: dict[str, str] = field(default_factory=dict)
     network_enabled: bool = True
+    # Join a named docker network. Needed to reach a service that is not
+    # published on the host — the image registry is bound to 127.0.0.1 and is
+    # otherwise invisible from inside a sandbox container. This grants no
+    # privilege the sandbox did not already have with network_enabled.
+    network: str = ""
     cpus: float = settings.sandbox_cpus
     memory_mb: int = settings.sandbox_memory_mb
     timeout_seconds: int = 300
@@ -91,6 +96,8 @@ def run_sandbox(run: SandboxRun) -> SandboxResult:
         args += _mount_flag(host_path.resolve(), container_path, readonly)
     if not run.network_enabled:
         args += ["--network", "none"]
+    elif run.network:
+        args += ["--network", run.network]
     args += ["--cpus", str(run.cpus), "--memory", f"{run.memory_mb}m"]
     if run.requires_docker_daemon:
         args += ["-v", "/var/run/docker.sock:/var/run/docker.sock"]
