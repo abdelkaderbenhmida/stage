@@ -123,6 +123,16 @@ jobs:
             fi
           fi
 
+          # A commit that touches no service at all (control plane, docs,
+          # tests) used to leave this empty, which skipped build, the tag
+          # write-back and the container scan entirely — the run reported
+          # green having produced and scanned nothing. Every run must exercise
+          # the whole pipeline, so an empty set means "all services".
+          if [ -z "$(printf '%s' $CHANGED_SERVICES)" ]; then
+            echo "No service directory changed — building every service so no job is skipped."
+            CHANGED_SERVICES="$SERVICES"
+          fi
+
           echo "changed_services=$(printf '%s\n' $CHANGED_SERVICES | jq -cnR '[inputs | select(length > 0) | {name: gsub("/"; "-"), path: .}]')" >> "$GITHUB_OUTPUT"
           echo "Affected this run: $(printf '%s\n' $CHANGED_SERVICES | jq -cR '[inputs | select(length > 0)]')"
 
@@ -664,12 +674,12 @@ jobs:
           echo "url=https://devops-platform.local" >> "$GITHUB_OUTPUT"
 
   # ──────────────────────────────────────────────
-  # Step 8: Nightly load test (k6) — triggered by schedule only.
+  # Step 8: Load test (k6) — runs on every trigger, not only the nightly
+  # schedule: a job that only ever runs at 03:00 is a job nobody sees fail.
   # ──────────────────────────────────────────────
   load-test:
     name: Load test (k6)
     runs-on: ubuntu-latest
-    if: github.event_name == 'schedule'
     steps:
       - uses: actions/checkout@v5
 
@@ -689,6 +699,10 @@ jobs:
           BASE_URL: ${{ vars.K6_BASE_URL }}
 
       - name: Upload k6 results
+        # Without K6_BASE_URL the run above is skipped and there is no results
+        # file, which would fail the upload and paint the job red for a
+        # missing configuration rather than a real regression.
+        if: vars.K6_BASE_URL != ''
         uses: actions/upload-artifact@v4
         with:
           name: k6-results
