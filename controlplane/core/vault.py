@@ -91,10 +91,15 @@ _secret_store: SecretStore | None = None
 def get_secret_store() -> SecretStore:
     global _secret_store
     if _secret_store is None:
-        if settings.is_dev or not settings.vault_addr:
-            _secret_store = DevSecretStore()
-        else:
+        # Configuring Vault is an explicit act, so honour it whichever
+        # environment this is. The condition used to be "dev OR no Vault",
+        # which meant a developer who had deliberately pointed the platform at
+        # a real Vault still got the plaintext Redis store and no indication
+        # that their secrets were not going where they had configured.
+        if settings.vault_addr:
             _secret_store = VaultSecretStore()
+        else:
+            _secret_store = DevSecretStore()
     return _secret_store
 
 

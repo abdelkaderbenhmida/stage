@@ -137,9 +137,17 @@ def test_development_is_exempt(monkeypatch):
     assert gc.has_team_token("team-a")
 
 
-def test_the_status_reports_plaintext_storage_honestly():
-    """Nobody may be told their token is protected while it sits in Redis."""
-    assert gc.store_is_encrypted() is False, (
-        "this test instance uses the dev store; the flag must say so rather than "
-        "defaulting to a reassuring value"
-    )
+def test_the_status_reports_the_store_in_use_rather_than_a_default(monkeypatch):
+    """Nobody may be told their token is protected while it sits in Redis.
+
+    Asserted against each store explicitly rather than whatever the ambient
+    environment happens to provide, so the result does not change depending on
+    whether the developer running the suite has Vault configured.
+    """
+    from controlplane.core.vault import DevSecretStore
+
+    monkeypatch.setattr(gc, "get_secret_store", lambda: DevSecretStore())
+    assert gc.store_is_encrypted() is False
+
+    monkeypatch.setattr(gc, "get_secret_store", lambda: object())
+    assert gc.store_is_encrypted() is True
