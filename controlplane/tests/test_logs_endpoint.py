@@ -142,8 +142,25 @@ def test_logs_limit_capped(auth_headers, client, monkeypatch):
     assert captured["params"]["limit"] == 500
 
 
-def test_loki_url_setting_default():
-    assert settings.loki_url.endswith("loki.monitoring.svc.cluster.local:3100")
+def test_loki_url_falls_back_to_the_in_cluster_service(monkeypatch):
+    """With nothing configured, Loki is addressed by its Service name.
+
+    Asserted against a freshly built Settings with LOKI_URL removed, rather
+    than against the ambient value: a local install has to point this at a
+    port-forward, and the previous version of this test failed the moment
+    anyone did.
+    """
+    from controlplane.core.config import Settings
+
+    monkeypatch.delenv("LOKI_URL", raising=False)
+    assert Settings().loki_url.endswith("loki.monitoring.svc.cluster.local:3100")
+
+
+def test_loki_url_is_taken_from_the_environment_when_set(monkeypatch):
+    from controlplane.core.config import Settings
+
+    monkeypatch.setenv("LOKI_URL", "http://127.0.0.1:3100")
+    assert Settings().loki_url == "http://127.0.0.1:3100"
 
 
 def test_escape_helpers():
