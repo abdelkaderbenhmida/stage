@@ -54,7 +54,12 @@
 
 #platform-root .sidebar .spacer { flex: 1; }
 /* ─────────── Content ─────────── */
-#platform-root .content { flex: 1; padding: 26px 32px 80px; max-width: 1360px; }
+/* min-width:0 is load-bearing: a flex item's automatic minimum size is its
+   content size, so without it .content refuses to shrink below its widest
+   child — one long repository URL in a scan table was enough to push the
+   whole page past the viewport and scroll it sideways under the fixed
+   sidebar. With it, the inner .table-wrap overflow-x:auto can do its job. */
+#platform-root .content { flex: 1; min-width: 0; padding: 26px 32px 80px; max-width: 1360px; }
 
 #platform-root .topbar {
   display: flex; align-items: center; gap: 12px; margin-bottom: 20px; flex-wrap: wrap;
