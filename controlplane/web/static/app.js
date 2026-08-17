@@ -223,7 +223,9 @@ function setNav(active) {
   // shell itself stays mounted when logged out — only its chrome hides.
   const signedIn = Boolean(token());
   $("#sidebar").hidden = !signedIn;
-  $(".topbar", shell).hidden = !signedIn;
+  // Not un-hidden here: the topbar is operator data, revealed by
+  // platform/app.js once it actually has a revision to show.
+  if (!signedIn) $(".topbar", shell).hidden = true;
 
   // The operator console is admin-only (Phase 0). It used to be listed for
   // everyone and simply 404 on click, which read as a broken platform rather
@@ -271,15 +273,22 @@ function renderAuth() {
   // Test build: no real password storage on a lab machine, so the form is
   // username-only and the API receives a fixed development password.
   const TEST_PASSWORD = "Test!Passw0rd123";
+  // Bare usernames are a convenience for the lab, not a rule about which
+  // accounts exist: the platform stores real addresses and accounts on other
+  // domains are perfectly valid. Appending this unconditionally turned
+  // "ana@scale.example.com" into "ana@scale.example.com@example.com", which
+  // the API then rejected with "the part after the @-sign contains invalid
+  // characters: '@'" — an error that blamed the address rather than the form.
+  const DEFAULT_DOMAIN = "example.com";
   view().innerHTML = `
     <div class="auth-wrap">
       <div class="panel">
         <h1>Central Platform</h1>
-        <p class="subtitle">Self-service infrastructure, deployments and security scanning.<br><span class="muted small">Test mode — sign in with a username, no password.</span></p>
+        <p class="subtitle">Self-service infrastructure, deployments and security scanning.<br><span class="muted small">Test mode — a bare username is completed to @${DEFAULT_DOMAIN}; a full email is used as typed.</span></p>
         <form id="auth-form">
           <div class="field">
-            <label for="email">Username</label>
-            <input id="email" type="text" autocomplete="username" placeholder="alice" required>
+            <label for="email">Username or email</label>
+            <input id="email" type="text" autocomplete="username" placeholder="alice or alice@example.com" required>
           </div>
           <div class="row">
             <button class="primary" type="submit" id="submit-btn">Log in</button>
@@ -319,7 +328,8 @@ function renderAuth() {
 
   $("#auth-form").onsubmit = async (e) => {
     e.preventDefault();
-    const email = `${$("#email").value.trim()}@example.com`;
+    const typed = $("#email").value.trim();
+    const email = typed.includes("@") ? typed : `${typed}@${DEFAULT_DOMAIN}`;
     $("#auth-error").textContent = "";
     $("#submit-btn").disabled = true;
     try {

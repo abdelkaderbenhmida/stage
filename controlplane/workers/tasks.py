@@ -519,6 +519,12 @@ def scan_task(job_id: str, scan_id: str, project_id: str, tool: str, target: str
         db.commit()
 
         on_line = _log_lines(job_id)
+        # Tenant source lands on the shared control-plane host only for as long
+        # as the scan needs it. Cleanup used to sit inline after each scanner
+        # call, so any failure between clone and cleanup — a scanner crash, a
+        # parse error, a revoked token mid-run — left the checkout behind for
+        # good. Tracked here and removed in `finally` instead.
+        cloned: Path | None = None
         try:
             if tool == "trivy":
                 result = run_trivy(target, on_line=on_line)
@@ -533,9 +539,6 @@ def scan_task(job_id: str, scan_id: str, project_id: str, tool: str, target: str
                 from controlplane.parsers.gitleaks_parser import parse_gitleaks
 
                 parsed = parse_gitleaks(text)
-                import shutil
-
-                shutil.rmtree(cloned.parent, ignore_errors=True)
             else:  # pip_audit
                 cloned = _clone_repo(target, job_id, on_line)
                 requirements = _find_requirements(cloned)
@@ -543,9 +546,6 @@ def scan_task(job_id: str, scan_id: str, project_id: str, tool: str, target: str
                 from controlplane.parsers.pip_audit_parser import parse_pip_audit
 
                 parsed = parse_pip_audit(result.stdout)
-                import shutil
-
-                shutil.rmtree(cloned.parent, ignore_errors=True)
 
             scan = db.get(Scan, uuid.UUID(scan_id))
             # The scan was authorized at queue time by the router's role check.
@@ -567,6 +567,11 @@ def scan_task(job_id: str, scan_id: str, project_id: str, tool: str, target: str
             if scan:
                 ScanRepository(db, Scope.system()).set_result(scan, "failed")
             _fail(db, uuid.UUID(job_id), str(exc))
+        finally:
+            if cloned is not None:
+                import shutil
+
+                shutil.rmtree(cloned.parent, ignore_errors=True)
     finally:
         db.close()
 
@@ -684,6 +689,9 @@ def deploy_task(job_id: str, deployment_id: str, project_id: str, user_id: str) 
         team = db.get(Team, project.team_id)
         image_ref = f"{settings.registry}/{team.slug}/{project.name}-{deployment.service_name}:commit-{uuid.uuid4().hex[:8]}"
 
+        # Same rule as scan_task: the tenant's checkout is transient, so its
+        # removal must not depend on the build, scan and push all succeeding.
+        cloned: Path | None = None
         try:
             _append_log(job_id, "[1/7] cloning repository")
             cloned = _clone_repo(deployment.repo_url, job_id, on_line)
@@ -701,9 +709,6 @@ def deploy_task(job_id: str, deployment_id: str, project_id: str, user_id: str) 
                 )
             )
             _check(build)
-            import shutil
-
-            shutil.rmtree(cloned.parent, ignore_errors=True)
 
             _append_log(job_id, "[3/7] pushing image to registry")
             push = run_sandbox(
@@ -762,6 +767,11 @@ def deploy_task(job_id: str, deployment_id: str, project_id: str, user_id: str) 
                 repo.set_status(deployment, "failed")
             db.commit()
             _fail(db, uuid.UUID(job_id), str(exc))
+        finally:
+            if cloned is not None:
+                import shutil
+
+                shutil.rmtree(cloned.parent, ignore_errors=True)
     finally:
         db.close()
 

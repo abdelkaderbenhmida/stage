@@ -143,6 +143,8 @@ function renderTopbar() {
   const d = state.data;
   const ov = d.overview;
   const ready = ov.status === "healthy";
+  // Data has arrived, so the badge has something to say.
+  document.querySelector("#platform-root .topbar").hidden = false;
   const dot = $("top-status");
   dot.className = `status-dot ${ready ? "ok" : "bad"} pulse`;
   $("top-repo").textContent = `${ov.revision.branch} @ ${ov.revision.commit} — ${ov.revision.message} (${ov.revision.author}, ${ov.revision.date})`;

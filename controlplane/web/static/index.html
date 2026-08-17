@@ -57,7 +57,12 @@
       </aside>
 
       <main class="content">
-        <div class="topbar">
+        <!-- Operator chrome: the platform's own git revision and uptime.
+             Only platform/app.js can fill it, and only an admin may load
+             that data, so it starts hidden and renderTopbar() reveals it.
+             Rendering it unconditionally left every non-admin staring at a
+             permanent ": loading…" badge for data they can never receive. -->
+        <div class="topbar" hidden>
           <span class="status-dot ok pulse" id="top-status"></span>
           <span class="repo-badge"><span>:</span><span id="top-repo">loading…</span></span>
           <span class="muted small" id="top-updated"></span>
