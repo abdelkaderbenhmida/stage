@@ -56,3 +56,36 @@ def test_a_real_report_with_findings_is_accepted_and_counted():
     parsed = parse_trivy(raw)
     assert parsed.summary["critical"] == 1
     assert parsed.summary["high"] == 1
+
+
+# --- the sandbox merges stderr into stdout -----------------------------------
+
+from controlplane.runners.scanners.trivy import _json_document  # noqa: E402
+
+
+def test_report_is_recovered_from_a_stream_that_also_carries_log_lines():
+    """Trivy logs to stderr and the sandbox folds stderr into stdout.
+
+    The merged text does not parse as JSON, and an unparseable report used to
+    mean "no findings", so the gate passed any image whose scan happened to
+    log a warning. That is the same fail-open as a crashed scanner, reached by
+    a much more ordinary route.
+    """
+    noisy = (
+        "2026-08-17T13:00:00Z\tINFO\tVulnerability scanning is enabled\n"
+        "2026-08-17T13:00:01Z\tWARN\tThis OS version is no longer supported\n"
+        '{"SchemaVersion": 2, "Results": [{"Target": "img", "Vulnerabilities": '
+        '[{"VulnerabilityID": "CVE-9", "Severity": "CRITICAL", "PkgName": "p"}]}]}\n'
+    )
+    recovered = _json_document(noisy)
+    assert _is_usable_trivy_report(recovered)
+
+    parsed = parse_trivy(recovered)
+    assert parsed.summary["critical"] == 1, "a critical finding must survive extraction"
+
+
+def test_output_with_no_report_is_left_alone():
+    """A genuine failure must still look like a failure, not an empty report."""
+    failure = "FATAL\tunable to inspect the image: no such image"
+    assert _json_document(failure) == failure
+    assert _is_usable_trivy_report(_json_document(failure)) is False

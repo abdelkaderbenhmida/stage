@@ -54,8 +54,37 @@ def run_trivy(
     return RawResult(
         tool="trivy",
         target=image_ref,
-        stdout=result.output,
+        stdout=_json_document(result.output),
         exit_code=result.exit_code,
         timed_out=result.timed_out,
         duration_seconds=result.duration_seconds,
     )
+
+
+def _json_document(output: str) -> str:
+    """Pull Trivy's JSON report out of the sandbox's merged output stream.
+
+    The sandbox runs commands with stderr folded into stdout, and Trivy logs
+    to stderr, so the captured text is typically log lines followed by the
+    report. `json.loads` on the whole thing fails, and because the parser
+    treats unreadable output as "no findings" that failure used to read as a
+    clean image — the vulnerability gate passed anything whose scan logged a
+    warning. Returning just the JSON keeps the gate honest.
+
+    Returns the original text unchanged when no JSON object is present, so a
+    genuine scanner failure still looks like one to the caller.
+    """
+    if not output:
+        return output
+    start = output.find("{")
+    end = output.rfind("}")
+    if start == -1 or end == -1 or end < start:
+        return output
+    candidate = output[start : end + 1]
+    import json
+
+    try:
+        json.loads(candidate)
+    except ValueError:
+        return output
+    return candidate
