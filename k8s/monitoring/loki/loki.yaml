@@ -1,0 +1,170 @@
+# Loki — the log store the per-project log view reads from.
+#
+# Until now only promtail-config.yaml was committed; the rest of the
+# Loki/promtail stack existed as live objects with no manifest, and once the
+# cluster was recreated it simply vanished. The control plane's LOKI_URL then
+# pointed at a Service that did not exist, so every tenant's Logs panel showed
+# "Log backend unavailable" with nothing explaining why.
+#
+# Single-binary, filesystem storage, no replication: right for a lab and for
+# the volumes a demo produces. A real deployment wants object storage and the
+# read/write/backend split, which is a different manifest, not a tuning of
+# this one.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: loki-config
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: loki
+    app.kubernetes.io/part-of: devops-platform
+data:
+  loki.yaml: |
+    auth_enabled: false
+
+    server:
+      http_listen_port: 3100
+      grpc_listen_port: 9096
+      log_level: info
+
+    common:
+      instance_addr: 127.0.0.1
+      path_prefix: /loki
+      storage:
+        filesystem:
+          chunks_directory: /loki/chunks
+          rules_directory: /loki/rules
+      replication_factor: 1
+      ring:
+        kvstore:
+          store: inmemory
+
+    schema_config:
+      configs:
+        - from: 2024-01-01
+          store: tsdb
+          object_store: filesystem
+          schema: v13
+          index:
+            prefix: index_
+            period: 24h
+
+    limits_config:
+      # A tenant that logs in a tight loop must not be able to push every
+      # other tenant's lines out of the store.
+      ingestion_rate_mb: 8
+      ingestion_burst_size_mb: 16
+      reject_old_samples: true
+      reject_old_samples_max_age: 168h
+      max_query_series: 5000
+      allow_structured_metadata: true
+
+    compactor:
+      working_directory: /loki/compactor
+      retention_enabled: true
+      delete_request_store: filesystem
+
+    table_manager:
+      retention_deletes_enabled: true
+      retention_period: 168h
+
+    ruler:
+      storage:
+        type: local
+        local:
+          directory: /loki/rules
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: loki
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: loki
+    app.kubernetes.io/part-of: devops-platform
+spec:
+  selector:
+    app.kubernetes.io/name: loki
+  ports:
+    - name: http
+      port: 3100
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: loki
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: loki
+    app.kubernetes.io/part-of: devops-platform
+spec:
+  replicas: 1
+  # Filesystem storage on a single volume: two writers would corrupt the
+  # index, so never roll a second pod alongside the first.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: loki
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: loki
+        app.kubernetes.io/part-of: devops-platform
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: loki
+          image: grafana/loki:3.3.2
+          args: ["-config.file=/etc/loki/loki.yaml"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - name: http
+              containerPort: 3100
+            - name: grpc
+              containerPort: 9096
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /ready
+              port: http
+            initialDelaySeconds: 60
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 1Gi
+          volumeMounts:
+            - name: config
+              mountPath: /etc/loki
+            - name: storage
+              mountPath: /loki
+      volumes:
+        - name: config
+          configMap:
+            name: loki-config
+        # emptyDir, so logs do not survive a pod restart. Acceptable for a lab
+        # and stated plainly rather than implied: a real deployment gives this
+        # a PersistentVolumeClaim.
+        - name: storage
+          emptyDir: {}

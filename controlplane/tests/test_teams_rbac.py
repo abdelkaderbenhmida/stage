@@ -17,6 +17,18 @@ pytestmark = pytest.mark.integration
 PROJECT_URL = "/api/v1/projects"
 
 
+def _finish_deploy(deployment_id: str, status: str = "succeeded") -> None:
+    """Terminate the deploy job in flight for a deployment."""
+    from controlplane.db import SessionLocal
+    from controlplane.workers import tasks
+
+    with SessionLocal() as db:
+        job = tasks.active_deploy_job(db, uuid.UUID(deployment_id))
+        assert job is not None
+        job.status = status
+        db.commit()
+
+
 def _register(client, email):
     password = "Str0ng!Passw0rd"
     resp = client.post(
@@ -207,6 +219,11 @@ def test_developer_can_deploy_and_scan_but_not_provision(client, auth_headers):
 
     scan = client.post(f"{PROJECT_URL}/{pid}/scans", json={"tool": "trivy", "target": "https://github.com/example/repo.git"}, headers=scene["carol"])
     assert scan.status_code == 202, scan.text
+
+    # Creating the deployment already queued a deploy, and a deployment may
+    # only have one in flight. This test is about carol's role, not about
+    # concurrency, so let the first run finish as a worker would.
+    _finish_deploy(deploy.json()["id"])
 
     redeploy = client.post(f"/api/v1/deployments/{deploy.json()['id']}/redeploy", headers=scene["carol"])
     assert redeploy.status_code == 202, redeploy.text

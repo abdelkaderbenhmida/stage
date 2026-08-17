@@ -238,6 +238,19 @@ class DeploymentCreate(BaseModel):
     # replaces the plain Deployment rollout and gates on the SLO analysis.
     strategy: Literal["deployment", "canary", "bluegreen"] = "deployment"
 
+    # Non-secret configuration, handed to the container as environment
+    # variables. Without it the platform can only run applications that need
+    # no configuration at all.
+    env: dict[str, str] = Field(default_factory=dict)
+    # Secret configuration. The values are stored in the secret store and
+    # never persisted on the deployment row, so they cannot be read back out
+    # through this API.
+    secrets: dict[str, str] = Field(default_factory=dict)
+    # The path the readiness and liveness probes call. It was hardcoded to
+    # /livez, which quietly required every application to implement that
+    # exact endpoint.
+    health_path: str = Field(default="/livez", pattern=r"^/[A-Za-z0-9\-._~/]{0,190}$")
+
 
 class DeploymentOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -251,6 +264,11 @@ class DeploymentOut(BaseModel):
     image_ref: str | None
     status: str
     live_url: str | None
+    env_vars: dict = Field(default_factory=dict)
+    # Names only — the values are in the secret store and no endpoint returns
+    # them.
+    secret_keys: list = Field(default_factory=list)
+    health_path: str = "/livez"
     replicas: int
     strategy: str = "deployment"
     created_at: datetime

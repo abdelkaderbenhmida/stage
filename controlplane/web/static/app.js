@@ -960,6 +960,23 @@ async function renderProject(id) {
   }
 }
 
+/** Parse a NAME=value block into an object.
+ *
+ * Splits on the first "=" only, so a value may contain them — a connection
+ * string or a base64 blob otherwise loses everything after its first "=".
+ */
+function parseEnvLines(text) {
+  const out = {};
+  (text || "").split("\n").forEach((line) => {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) return;
+    const at = trimmed.indexOf("=");
+    if (at <= 0) return;
+    out[trimmed.slice(0, at).trim()] = trimmed.slice(at + 1).trim();
+  });
+  return out;
+}
+
 function renderDeployForm(project) {
   const html = `
     <h2>Deploy an application</h2>
@@ -979,6 +996,17 @@ function renderDeployForm(project) {
           <div class="field"><label for="d-replicas">Replicas</label>
             <input id="d-replicas" type="number" min="1" max="10" value="2" required></div>
         </div>
+        <div class="grid">
+          <div class="field"><label for="d-health">Health check path</label>
+            <input id="d-health" value="/livez" pattern="/[A-Za-z0-9\-._~/]*" required>
+            <p class="muted small" style="margin:.3rem 0 0">The readiness and liveness probes call this path.</p></div>
+        </div>
+        <div class="field"><label for="d-env">Environment variables</label>
+          <textarea id="d-env" rows="3" placeholder="LOG_LEVEL=debug&#10;FEATURE_X=1"></textarea>
+          <p class="muted small" style="margin:.3rem 0 0">One NAME=value per line. Visible to anyone who can see this deployment.</p></div>
+        <div class="field"><label for="d-secrets">Secrets</label>
+          <textarea id="d-secrets" rows="3" placeholder="DATABASE_URL=postgres://..."></textarea>
+          <p class="muted small" style="margin:.3rem 0 0">One NAME=value per line. Stored in the secret store and never shown again — not even here.</p></div>
         <div class="row"><button class="primary" type="submit">Build, scan and deploy</button></div>
         <p class="muted" style="margin-bottom:0">The image is scanned before it reaches the cluster; a CRITICAL or HIGH finding blocks the deployment.</p>
         <p class="error" id="deploy-error"></p>
@@ -999,6 +1027,9 @@ function renderDeployForm(project) {
           branch: $("#d-branch").value.trim(),
           port: Number($("#d-port").value),
           replicas: Number($("#d-replicas").value),
+          health_path: $("#d-health").value.trim() || "/livez",
+          env: parseEnvLines($("#d-env").value),
+          secrets: parseEnvLines($("#d-secrets").value),
         },
       });
       toast("Deployment queued.");

@@ -1,0 +1,155 @@
+# promtail — ships container logs from every node into Loki.
+#
+# It lives in its own `logging` namespace, not in `monitoring`, because
+# `monitoring` enforces the PodSecurity "restricted" profile and a log
+# collector cannot satisfy it: reading the kubelet's log files means hostPath
+# mounts and running as root. The DaemonSet was rejected outright there —
+# desired 1, current 0, with FailedCreate events and no pod.
+#
+# Relaxing `monitoring` would have weakened Prometheus, Grafana, Loki and
+# everything else in it to accommodate one workload. A dedicated namespace
+# confines the exemption to the pod that genuinely needs it, and makes that
+# exemption visible in the manifest rather than implied by a label someone
+# changed once.
+#
+# Everything the profile asks for that promtail *can* honour is applied
+# anyway: no privilege escalation, all capabilities dropped, a read-only root
+# filesystem, a seccomp profile, and read-only mounts.
+#
+# The ConfigMap it reads lives in promtail-config.yaml. It pushes to
+# loki.monitoring.svc.cluster.local:3100, across namespaces, which is why the
+# Service name is fully qualified there.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: promtail
+  namespace: logging
+  labels:
+    app.kubernetes.io/name: promtail
+    app.kubernetes.io/part-of: devops-platform
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: promtail
+  labels:
+    app.kubernetes.io/name: promtail
+    app.kubernetes.io/part-of: devops-platform
+rules:
+  # Read-only, and only the objects needed to label a log stream. promtail
+  # never writes to the API server.
+  - apiGroups: [""]
+    resources: ["nodes", "nodes/proxy", "services", "endpoints", "pods"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: promtail
+  labels:
+    app.kubernetes.io/name: promtail
+    app.kubernetes.io/part-of: devops-platform
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: promtail
+subjects:
+  - kind: ServiceAccount
+    name: promtail
+    namespace: logging
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: promtail
+  namespace: logging
+  labels:
+    app.kubernetes.io/name: promtail
+    app.kubernetes.io/part-of: devops-platform
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: promtail
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: promtail
+        app.kubernetes.io/part-of: devops-platform
+    spec:
+      serviceAccountName: promtail
+      # Log files on the host are root-owned, and this pod exists to read
+      # them. It gets no write access and no extra capabilities.
+      securityContext:
+        # Reading root-owned log files is the entire job, so this cannot run
+        # as non-root. Everything else the "restricted" policy asks for is
+        # applied below: no privilege escalation, no capabilities, and a
+        # seccomp profile.
+        runAsUser: 0
+        seccompProfile:
+          type: RuntimeDefault
+      tolerations:
+        # Control-plane nodes run workloads too on a single-node cluster, and
+        # their logs matter as much as any other node's.
+        - operator: Exists
+      containers:
+        - name: promtail
+          image: grafana/promtail:3.3.2
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          args:
+            - -config.file=/etc/promtail/promtail.yaml
+          ports:
+            - name: http
+              containerPort: 9080
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+          env:
+            # Used by the config to label streams with the node they came from.
+            - name: HOSTNAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          volumeMounts:
+            - name: config
+              mountPath: /etc/promtail
+            - name: pods
+              mountPath: /var/log/pods
+              readOnly: true
+            - name: containers
+              mountPath: /var/lib/docker/containers
+              readOnly: true
+            - name: positions
+              mountPath: /run/promtail
+      volumes:
+        - name: config
+          configMap:
+            name: promtail-config
+        # Where the kubelet writes container logs; the config globs these by
+        # pod UID.
+        - name: pods
+          hostPath:
+            path: /var/log/pods
+        - name: containers
+          hostPath:
+            path: /var/lib/docker/containers
+        # Remembers how far each file has been read, so a restart does not
+        # re-ship every line already in Loki.
+        - name: positions
+          hostPath:
+            path: /run/promtail
+            type: DirectoryOrCreate

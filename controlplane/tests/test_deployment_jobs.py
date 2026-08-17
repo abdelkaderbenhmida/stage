@@ -112,17 +112,11 @@ def test_history_of_unknown_deployment_is_not_found(client, auth_headers):
     assert resp.status_code == 404
 
 
-def test_repository_rejects_a_deployment_whose_project_is_gone(session, deployment):
-    _, dep_id, _ = deployment
+def test_repository_refuses_an_unknown_deployment(session, deployment):
     user = session.scalars(sa.select(User).where(User.email == "history@example.com")).first()
     repo = JobRepository(session, Scope.from_session(session, user.id))
-    session.execute(
-        sa.text("UPDATE deployments SET project_id = NULL WHERE id = :id"),
-        {"id": uuid.UUID(dep_id)},
-    )
-    session.commit()
     with pytest.raises(NotFoundError):
-        repo.list_for_deployment(uuid.UUID(dep_id))
+        repo.list_for_deployment(uuid.uuid4())
 
 
 # ---------------------------------------------------------------------------

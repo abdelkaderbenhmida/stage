@@ -21,6 +21,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from controlplane.core.config import settings
+from controlplane.core.app_config import load_secrets
 from controlplane.core.git_credentials import ASKPASS_SCRIPT, credential_for_repo
 from controlplane.core.kubeconfigs import get_kubeconfig, store_kubeconfig, transfer_kubeconfig
 from controlplane.core.logging import request_id_var
@@ -929,7 +930,10 @@ def queue_deploy(deployment: Deployment, project: Project, user_id: uuid.UUID) -
 def queue_undeploy(deployment: Deployment, project: Project, user_id: uuid.UUID) -> Job:
     db = SessionLocal()
     try:
-        job = Job(project_id=project.id, deployment_id=deployment.id, type="deploy", status="queued")
+        # Not "deploy": this run removes the service. Labelling it as a deploy
+        # made the job history read as a rollout that never rolled anything
+        # out, and made a removal count against the one-deploy-at-a-time rule.
+        job = Job(project_id=project.id, deployment_id=deployment.id, type="undeploy", status="queued")
         _stamp_request_id(job)
         db.add(job)
         db.flush()
@@ -1102,7 +1106,14 @@ def deploy_task(job_id: str, deployment_id: str, project_id: str, user_id: str) 
             repo.set_status(deployment, "deploying", image_ref=image_ref)
             db.commit()
             manifests = _render_manifests(project, deployment, image_ref)
-            kubectl_apply(manifests, project, on_line)
+            try:
+                kubectl_apply(manifests, project, on_line)
+            finally:
+                # The rendered secret carries the tenant's values in the
+                # clear; it exists only long enough for kubectl to read it.
+                for path in manifests:
+                    if path.name == "secret.yaml":
+                        path.unlink(missing_ok=True)
 
             _append_log(job_id, "[6/7] waiting for rollout")
             resource = "rollout" if deployment.strategy != "deployment" else "deployment"
@@ -1184,6 +1195,8 @@ def _render_manifests(project: Project, deployment: Deployment, image_ref: str) 
     )
     name = _deployment_name(deployment)
     namespace = k8s_namespace(project.id)
+    # Secret values are fetched here and never stored on the deployment row.
+    secrets = load_secrets(project.team_id, deployment.id) if deployment.secret_keys else {}
     context = {
         "name": name,
         "namespace": namespace,
@@ -1192,6 +1205,10 @@ def _render_manifests(project: Project, deployment: Deployment, image_ref: str) 
         "replicas": deployment.replicas,
         "strategy": deployment.strategy,
         "domain": _cluster_domain(),
+        "env_vars": deployment.env_vars or {},
+        "secret_keys": list(deployment.secret_keys or []),
+        "secrets": secrets,
+        "health_path": deployment.health_path or "/livez",
     }
     # Namespace-mode projects have no Terraform workspace; their manifests
     # must not be dumped into one (docs/TODO.md §8 item 1). A missing spec
@@ -1211,9 +1228,18 @@ def _render_manifests(project: Project, deployment: Deployment, image_ref: str) 
         templates = ["deployment.yaml.j2", *base]
     else:
         templates = ["rollout.yaml.j2", "analysis.yaml.j2", *base]
+    if secrets:
+        templates = ["secret.yaml.j2", *templates]
+
     for template in templates:
         path = out_dir / template.replace(".j2", "")
         path.write_text(env.get_template(template).render(**context))
+        # The secret manifest holds the values in the clear. It has to reach
+        # kubectl as a file, but it does not have to be readable by anyone
+        # else on the host while it waits, and the caller deletes it as soon
+        # as it has been applied.
+        if template == "secret.yaml.j2":
+            path.chmod(0o600)
         written.append(path)
     return written
 

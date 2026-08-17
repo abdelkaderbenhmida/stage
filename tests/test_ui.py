@@ -462,13 +462,20 @@ def test_script_allowlist_paths_all_exist_and_are_executable():
         assert os.access(path, os.X_OK), f"{key}: {cfg['path']} is not executable"
 
 
-def test_repo_declares_elk_but_not_loki():
-    """Loki + promtail have been running in the cluster for weeks with zero
-    manifests in git — this is the drift this feature exists to catch."""
+def test_repo_declares_the_whole_logging_stack():
+    """Loki and promtail must be in git, not only in the cluster.
+
+    This test used to assert the opposite — that they were absent — because
+    they had been running for weeks with no manifests anywhere, and it pinned
+    that drift as the expected state. When the cluster was next rebuilt they
+    simply did not come back, and every tenant's Logs panel reported "Log
+    backend unavailable" with nothing explaining why. The manifests now exist,
+    so the assertion is that they stay.
+    """
     decl = introspect.repo_declared_objects()
     assert ("Deployment", "kibana") in decl
-    assert ("StatefulSet", "loki") not in decl
-    assert ("DaemonSet", "promtail") not in decl
+    assert ("Deployment", "loki") in decl, "Loki is deployed but undeclared — it will not survive a rebuild"
+    assert ("DaemonSet", "promtail") in decl, "promtail is deployed but undeclared"
 
 
 def test_rollout_undo_rejects_invalid_deployment_names():

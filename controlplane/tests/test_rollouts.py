@@ -40,6 +40,7 @@ def _render(tmp_path, strategy: str, mode: str = "vm", settings_override=None):
             {
                 "id": pid,
                 "name": "tenant-a",
+                "team_id": uuid.uuid4(),
                 "infra_spec": {"version": 1, "project": "tenant-a", "network": {}, "nodes": [], "mode": mode},
             },
         )()
@@ -54,6 +55,11 @@ def _render(tmp_path, strategy: str, mode: str = "vm", settings_override=None):
                 "port": 8000,
                 "replicas": 2,
                 "strategy": strategy,
+                # A real Deployment always carries these; the stub has to as
+                # well, or it stops describing the thing under test.
+                "env_vars": {},
+                "secret_keys": [],
+                "health_path": "/livez",
             },
         )()
         manifests = tasks._render_manifests(project, deployment, "registry/img:commit-abc123")

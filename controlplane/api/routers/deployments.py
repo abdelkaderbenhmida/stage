@@ -18,6 +18,13 @@ from controlplane.api.schemas import (
     WebhookSubscriptionCreate,
     WebhookSubscriptionOut,
 )
+from controlplane.core.app_config import (
+    ConfigError,
+    assert_disjoint,
+    delete_secrets,
+    store_secrets,
+    validate_env,
+)
 from controlplane.core.repo_url import InvalidRepoUrl, validate_repo_url
 from controlplane.models import Deployment, Project, User, WebhookSubscription
 from controlplane.repositories.base import NotFoundError, Scope
@@ -70,10 +77,26 @@ def create_deployment(
     except InvalidRepoUrl as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
+    # Configuration is validated before anything is written, so a bad name
+    # cannot leave a half-configured deployment behind.
+    try:
+        env_vars = validate_env(body.env)
+        secrets = validate_env(body.secrets, kind="secret")
+        assert_disjoint(env_vars, secrets)
+    except ConfigError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+
     repo = DeploymentRepository(db, scope)
     deployment = repo.create(
         project.id, body.service_name, body.repo_url, body.branch, body.port, body.replicas, body.strategy
     )
+    deployment.env_vars = env_vars
+    deployment.health_path = body.health_path
+    db.flush()
+
+    # Secret *values* go to the secret store; only their names touch the row,
+    # so nothing here can hand them back through the API.
+    deployment.secret_keys = store_secrets(project.team_id, deployment.id, secrets)
     db.commit()
     tasks.queue_deploy(deployment, project, user.id)
     db.commit()
@@ -103,6 +126,9 @@ def delete_deployment(
 ):
     project = ProjectRepository(db, scope).get_project(deployment.project_id)
     tasks.queue_undeploy(deployment, project, user.id)
+    # Otherwise a deleted service's credentials would outlive it in the secret
+    # store, with nothing left pointing at them.
+    delete_secrets(project.team_id, deployment.id)
     DeploymentRepository(db, scope).delete(deployment.id)
     db.commit()
     audit(db, user.id, "deployment.delete", request, resource_type="deployment", resource_id=str(deployment.id), team_id=project.team_id)

@@ -1,0 +1,22 @@
+# The namespace promtail runs in, split into its own file so that
+# `kubectl apply -f k8s/monitoring/loki/` creates it before the objects that
+# live inside it — the directory is applied in filename order, and
+# "namespace.yaml" sorts ahead of "promtail-config.yaml" and "promtail.yaml".
+#
+# Why promtail is not in `monitoring`: that namespace enforces the PodSecurity
+# "restricted" profile, and a log collector cannot satisfy it — reading the
+# kubelet's log files needs hostPath mounts and root. Relaxing `monitoring`
+# would have weakened Prometheus, Grafana and Loki to accommodate one
+# workload; this confines the exemption to the pod that needs it.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: logging
+  labels:
+    app.kubernetes.io/name: logging
+    app.kubernetes.io/part-of: devops-platform
+    # The exemption, stated where it can be read.
+    pod-security.kubernetes.io/enforce: privileged
+    pod-security.kubernetes.io/audit: privileged
+    pod-security.kubernetes.io/warn: privileged

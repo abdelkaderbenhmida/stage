@@ -20,12 +20,35 @@ spec:
           image: {{ image }}
           ports:
             - containerPort: {{ port }}
+          env:
+            {# PORT is set by the platform, not the tenant: the probes below
+               target the port the platform assigned. #}
+            - name: PORT
+              value: "{{ port }}"
+{% for key, value in env_vars.items() %}
+            - name: {{ key }}
+              value: {{ value | tojson }}
+{% endfor %}
+{% if secret_keys %}
+          envFrom:
+            - secretRef:
+                name: {{ name }}-env
+{% endif %}
           readinessProbe:
             httpGet:
-              path: /livez
+              path: {{ health_path }}
               port: {{ port }}
             initialDelaySeconds: 5
             periodSeconds: 10
+          {# Readiness alone only removes a wedged pod from the Service; it
+             never restarts it, so a hung process stays hung forever. #}
+          livenessProbe:
+            httpGet:
+              path: {{ health_path }}
+              port: {{ port }}
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            failureThreshold: 3
           resources:
             requests:
               cpu: 100m

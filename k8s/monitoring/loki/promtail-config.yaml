@@ -15,7 +15,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: promtail-config
-  namespace: monitoring
+  namespace: logging
   labels:
     app.kubernetes.io/name: promtail
     app.kubernetes.io/part-of: devops-platform
@@ -25,7 +25,11 @@ data:
       http_listen_port: 9080
       grpc_listen_port: 0
     positions:
-      filename: /tmp/positions.yaml
+      # On the mounted hostPath, not /tmp: the container's root filesystem is
+      # read-only, so writes to /tmp fail ("read-only file system") and the
+      # file never persists. Without it promtail forgets how far it read and
+      # re-ships every line in every log file after each restart.
+      filename: /run/promtail/positions.yaml
     clients:
       - url: http://loki.monitoring.svc.cluster.local:3100/loki/api/v1/push
     scrape_configs:
