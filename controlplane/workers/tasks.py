@@ -106,10 +106,19 @@ def _log_lines(job_id: uuid.UUID):
     return on_line
 
 
-def _check(result) -> None:
+def _check(result, hint: str | None = None) -> None:
+    """Raise on a failed sandbox run.
+
+    `hint` is a human-readable explanation for a known failure mode. The raw
+    output is what reaches the user's screen otherwise, and pasting docker's
+    "unable to evaluate symlinks in Dockerfile path: lstat ..." at someone who
+    simply has no Dockerfile tells them nothing they can act on.
+    """
     if result.timed_out:
-        raise RuntimeError(f"command timed out: {result.output[-500:]}")
+        raise RuntimeError(hint or f"command timed out: {result.output[-500:]}")
     if result.exit_code != 0:
+        if hint:
+            raise RuntimeError(hint)
         raise RuntimeError(f"command exited {result.exit_code}: {result.output[-800:]}")
 
 
@@ -584,7 +593,7 @@ def _safe_json(text: str) -> dict:
         return {"raw": text[:5000]}
 
 
-def _clone_repo(repo_url: str, job_id: str, on_line) -> Path:
+def _clone_repo(repo_url: str, job_id: str, on_line, branch: str | None = None) -> Path:
     """Validate + clone into a fresh host-visible workspace. Returns the repo dir.
 
     The workspace root is mounted into the sandbox with the repo subdir
@@ -595,19 +604,50 @@ def _clone_repo(repo_url: str, job_id: str, on_line) -> Path:
     root.mkdir(parents=True, exist_ok=True)
     (root / "repo").mkdir(parents=True, exist_ok=True)
     target = root / "repo"
-    _append_log(job_id, f"cloning {repo_url}")
+
+    command = ["git", "clone", "--depth", "1"]
+    if branch:
+        # The branch was ignored here entirely: a deployment pinned to
+        # "develop" cloned the repository's default branch and shipped it
+        # under the develop label. Silently deploying code the user did not
+        # ask for is worse than failing, so the branch is now explicit and a
+        # missing one is an error.
+        command += ["--branch", branch]
+    command += [repo_url, str(target)]
+
+    _append_log(job_id, f"cloning {repo_url} ({branch or 'default branch'})")
     result = run_sandbox(
         SandboxRun(
-            command=["git", "clone", "--depth", "1", repo_url, str(target)],
+            command=command,
             workspace=root,
             writable_paths=["repo"],
             network_enabled=True,
             timeout_seconds=settings.scan_timeout_seconds,
             on_line=on_line,
+            # Without this git blocks on stdin asking for a username whenever
+            # the repository is private or misspelt, and the job sits there
+            # until the sandbox timeout kills it — minutes of a build slot
+            # spent on a failure that is knowable immediately.
+            env={"GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": "/bin/true"},
         )
     )
-    _check(result)
+    _check(result, _clone_hint(result, repo_url, branch))
     return target
+
+
+def _clone_hint(result, repo_url: str, branch: str | None) -> str | None:
+    """Translate git's failure into something the person who typed the URL can act on."""
+    output = (result.output or "").lower()
+    if "could not read username" in output or "authentication failed" in output:
+        return (
+            f"Cannot read {repo_url}: the repository is private or does not exist. "
+            "This platform clones over HTTPS with no credentials, so the repository must be public."
+        )
+    if "remote branch" in output and "not found" in output:
+        return f"Branch '{branch}' does not exist in {repo_url}."
+    if "repository not found" in output or "not found" in output and "fatal" in output:
+        return f"Repository {repo_url} not found."
+    return None
 
 
 def _find_requirements(repo: Path) -> Path:
@@ -694,7 +734,19 @@ def deploy_task(job_id: str, deployment_id: str, project_id: str, user_id: str) 
         cloned: Path | None = None
         try:
             _append_log(job_id, "[1/7] cloning repository")
-            cloned = _clone_repo(deployment.repo_url, job_id, on_line)
+            cloned = _clone_repo(deployment.repo_url, job_id, on_line, branch=deployment.branch)
+
+            # Check this before spending a build slot on it. docker's own
+            # complaint ("unable to evaluate symlinks in Dockerfile path:
+            # lstat .../repo/Dockerfile") names a path inside a temp directory
+            # the user has never heard of and cannot inspect.
+            if not (cloned / "Dockerfile").is_file():
+                raise RuntimeError(
+                    f"No Dockerfile at the root of {deployment.repo_url} "
+                    f"(branch {deployment.branch}). This platform builds a service from a "
+                    "Dockerfile in the repository root — add one and deploy again."
+                )
+
             repo.set_status(deployment, "building")
             db.commit()
 
