@@ -98,7 +98,20 @@ def stub_runners(monkeypatch):
     monkeypatch.setattr(tasks, "run_trivy", lambda *a, **k: RawResult(tool="trivy", target="img", stdout=TRIVY_OK))
     monkeypatch.setattr(tasks, "run_gitleaks", lambda *a, **k: RawResult(tool="gitleaks", target="x"))
     monkeypatch.setattr(tasks, "run_pip_audit", lambda *a, **k: RawResult(tool="pip_audit", target="x"))
-    monkeypatch.setattr(tasks, "_clone_repo", lambda *a, **k: __import__("pathlib").Path("/tmp/fake-repo"))
+    # A stand-in checkout that looks like something deployable. deploy_task
+    # now refuses to spend a build slot on a repository with no Dockerfile at
+    # its root, so a bare path would fail there rather than at the gate and
+    # rollout logic these tests are about.
+    def _fake_clone(*a, **k):
+        import pathlib
+        import tempfile
+
+        repo = pathlib.Path(tempfile.mkdtemp(prefix="fake-repo-")) / "repo"
+        repo.mkdir(parents=True, exist_ok=True)
+        (repo / "Dockerfile").write_text("FROM scratch\n")
+        return repo
+
+    monkeypatch.setattr(tasks, "_clone_repo", _fake_clone)
     # deploy_task shells out through run_sandbox for `docker build` and
     # `docker push`; without stubbing it the task fails long before reaching
     # the trivy gate and rollout logic these tests are actually asserting on.
