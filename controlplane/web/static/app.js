@@ -427,6 +427,11 @@ function nodeRowHtml(node, index) {
     </div>`;
 }
 
+// The isolation selector defaults to the shared cluster: it is ready in
+// seconds and costs a namespace, where dedicated VMs take about ten minutes
+// and roughly 12 GB of RAM — of which a developer machine fits one or two.
+// It used to default to VMs, so anyone clicking through the form got the
+// slowest possible environment and could exhaust the host by doing it twice.
 function renderNewProject() {
   setNav("projects");
   const nodes = [
@@ -448,8 +453,8 @@ function renderNewProject() {
         <div class="grid">
           <div class="field"><label for="p-mode">Isolation</label>
             <select id="p-mode">
-              <option value="namespace">Shared cluster — ready in seconds</option>
-              <option value="vm" selected>Dedicated VMs — stronger isolation, ~10 minutes</option>
+              <option value="namespace" selected>Shared cluster — ready in seconds</option>
+              <option value="vm">Dedicated VMs — stronger isolation, ~10 minutes</option>
             </select></div>
           <div class="field"><label for="p-ttl">Destroy after</label>
             <select id="p-ttl">
