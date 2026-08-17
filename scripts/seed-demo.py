@@ -29,6 +29,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from pathlib import Path
 
 PASSWORD = "Test!Passw0rd123"
 
@@ -194,11 +195,19 @@ def main() -> int:
 
 
 def _promote_admins() -> list[str]:
+    # Run as `python3 scripts/seed-demo.py`, sys.path[0] is scripts/, so the
+    # package at the repository root is not importable without this.
+    root = str(Path(__file__).resolve().parent.parent)
+    if root not in sys.path:
+        sys.path.insert(0, root)
     try:
         from controlplane.db import SessionLocal
         from controlplane.models import User
-    except ImportError:
-        print("  ! controlplane not importable; admin roles unchanged", file=sys.stderr)
+    except Exception as exc:  # noqa: BLE001
+        # Naming the error matters: this failed silently as "not importable"
+        # when the real cause was the path, and the admins stayed ordinary
+        # users with only a passing note to say so.
+        print(f"  ! admin roles unchanged ({type(exc).__name__}: {exc})", file=sys.stderr)
         return []
 
     wanted = [email for email, role in USERS if role == "admin"]

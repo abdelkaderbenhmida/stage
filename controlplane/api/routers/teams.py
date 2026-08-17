@@ -170,7 +170,13 @@ def put_git_credential(
     user: User = Depends(get_current_user),
 ):
     """Store the token the platform uses to clone this team's private repositories."""
-    check_rate_limit(request, "git-credential")
+    # Writing a credential is cheap but repeated attempts are a smell; bound
+    # per user rather than per IP so one tenant cannot lock out another.
+    if not check_rate_limit(f"git-credential:{user.id}", 20, 3600):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many credential updates. Try again later.",
+        )
     require_team_role(team_id, user, db, "team.manage")
     try:
         set_team_token(team_id, body.token, username=body.username)
@@ -180,7 +186,10 @@ def put_git_credential(
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from None
     # The token itself is never written to the audit trail, only the fact.
-    audit(db, user, "team.git_credential.set", str(team_id))
+    audit(
+        db, user.id, "team.git_credential.set", request,
+        resource_type="team", resource_id=str(team_id), team_id=team_id,
+    )
     return GitCredentialStatus(configured=True, encrypted=store_is_encrypted())
 
 
@@ -200,10 +209,14 @@ def get_git_credential_status(
 @router.delete("/teams/{team_id}/git-credential", response_model=GitCredentialStatus)
 def remove_git_credential(
     team_id: uuid.UUID,
+    request: Request,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
     require_team_role(team_id, user, db, "team.manage")
     delete_team_token(team_id)
-    audit(db, user, "team.git_credential.delete", str(team_id))
+    audit(
+        db, user.id, "team.git_credential.delete", request,
+        resource_type="team", resource_id=str(team_id), team_id=team_id,
+    )
     return GitCredentialStatus(configured=False, encrypted=store_is_encrypted())
