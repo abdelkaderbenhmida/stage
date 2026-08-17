@@ -255,9 +255,9 @@ Decisions that are easy to get wrong, and how they are handled here:
 
 | Concern | Tool | Notes |
 | --- | --- | --- |
-| Metrics | Prometheus | scrapes kubelet/cAdvisor via a ServiceMonitor maintained by the Prometheus Operator, so it works on kind, k3s or kubeadm without hardcoded node IPs |
+| Metrics | Prometheus | scrapes kubelet/cAdvisor via a ServiceMonitor maintained by the Prometheus Operator, so it works on kind, k3s or kubeadm without hardcoded node IPs. `PROMETHEUS_URL` must be reachable *from the control plane*, which on a local cluster means a port-forward |
 | Dashboards | Grafana | platform dashboards; anonymous access disabled |
-| Logs | Loki (and an ELK stack for the platform's own services) | per-namespace queries built server-side |
+| Logs | Loki (and an ELK stack for the platform's own services) | per-namespace queries built server-side. **`k8s/monitoring/loki/` currently ships only a promtail config — there is no Loki deployment, so the per-project log view has no backend to talk to** |
 | Alerts | AlertManager | SLO rules, with history browsable from the operator console |
 | Per-project view | the control plane itself | four panels — CPU cores, memory, running pods, container restarts — scoped to the project namespace |
 
@@ -426,7 +426,8 @@ pip install -r controlplane/requirements.txt
 
 # 3. Database schema
 export DATABASE_URL=postgresql+psycopg://user:pass@localhost/controlplane
-alembic -c controlplane/alembic.ini upgrade head
+# alembic.ini resolves script_location relative to itself, so run it from there
+(cd controlplane && alembic upgrade head)
 
 # 4. API and worker (separate shells)
 uvicorn controlplane.api.main:app --port 8000
@@ -578,6 +579,9 @@ a hosted product.
 - **`local-vault.sh` runs Vault in dev mode**: in-memory, auto-unsealed, a known root
   token. Restarting it discards every stored credential.
   `k8s/vault/manifests.yaml` is the real deployment.
+- **Logs have no backend.** `k8s/monitoring/loki/` contains a promtail config and
+  no Loki deployment, so the per-project log view returns nothing on a stock install.
+  The ELK stack covers the platform's own services only.
 - **Applications cannot yet be configured.** Environment variables and per-deployment
   secrets are modelled and validated but not yet rendered into the pod spec, so a
   service that needs configuration cannot be deployed as-is.
