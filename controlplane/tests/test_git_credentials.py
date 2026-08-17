@@ -5,6 +5,8 @@ sensitive thing a tenant hands over, so these tests pin the properties that
 make holding it defensible rather than the happy path.
 """
 
+from types import SimpleNamespace
+
 import pytest
 from controlplane.core import git_credentials as gc
 from controlplane.core.redaction import scrub_line
@@ -109,3 +111,35 @@ def test_a_tenant_named_repo_cannot_switch_scrubbing_off():
     """
     line = "cloning https://github.com/org/example.com.git with ghs_abcdefghij1234567890abcd"
     assert scrub_line(line) == "[REDACTED]"
+
+
+# --- where the token is allowed to live -------------------------------------
+
+def test_a_production_instance_without_vault_refuses_to_store_a_token(monkeypatch):
+    """The dev store keeps values as plaintext in Redis.
+
+    ``get_secret_store`` falls back to it whenever ``vault_addr`` is unset, and
+    that fallback is not limited to development — so a deployment that simply
+    forgot to configure Vault would accept tenants' git tokens and hold them in
+    the clear, with nothing in the interface indicating a problem.
+    """
+    # settings is a frozen dataclass, so swap the module's reference to it.
+    monkeypatch.setattr(gc, "settings", SimpleNamespace(is_dev=False))
+
+    with pytest.raises(gc.InsecureSecretStore):
+        gc.set_team_token("team-a", "ghs_aaaaaaaaaaaaaaaaaaaaaaaa")
+
+
+def test_development_is_exempt(monkeypatch):
+    """There is no real credential to protect in dev, so it must still work."""
+    monkeypatch.setattr(gc, "settings", SimpleNamespace(is_dev=True))
+    gc.set_team_token("team-a", "ghs_aaaaaaaaaaaaaaaaaaaaaaaa")
+    assert gc.has_team_token("team-a")
+
+
+def test_the_status_reports_plaintext_storage_honestly():
+    """Nobody may be told their token is protected while it sits in Redis."""
+    assert gc.store_is_encrypted() is False, (
+        "this test instance uses the dev store; the flag must say so rather than "
+        "defaulting to a reassuring value"
+    )

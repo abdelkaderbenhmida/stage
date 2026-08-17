@@ -46,7 +46,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
-from controlplane.core.vault import get_secret_store
+from controlplane.core.config import settings
+from controlplane.core.vault import DevSecretStore, get_secret_store
 
 # One entry per team. The store is keyed by "user_id" in its own vocabulary;
 # we pass the team id, which is what tenancy is actually scoped by.
@@ -86,8 +87,44 @@ esac
 """
 
 
+class InsecureSecretStore(RuntimeError):
+    """Raised rather than writing a tenant's token somewhere unsuitable."""
+
+
+def _assert_store_is_suitable() -> None:
+    """Refuse to hold a tenant credential in the development store.
+
+    ``get_secret_store`` falls back to ``DevSecretStore`` — plaintext values in
+    Redis — whenever ``vault_addr`` is unset, and that fallback is not limited
+    to development. A deployment that simply forgot to configure Vault would
+    therefore accept tenants' git tokens and store them unencrypted, with
+    nothing in the interface suggesting anything was wrong.
+
+    A read-only token to private source is not something to lose quietly, so
+    this fails loudly instead. Development is exempt because there is no real
+    credential there to protect.
+    """
+    if settings.is_dev:
+        return
+    if isinstance(get_secret_store(), DevSecretStore):
+        raise InsecureSecretStore(
+            "Refusing to store a git credential: no Vault is configured, so it would "
+            "be held in plaintext. Set vault_addr (VAULT_ADDR) first."
+        )
+
+
+def store_is_encrypted() -> bool:
+    """Whether credentials are held in a real secret manager.
+
+    Surfaced in the UI so nobody is told their token is protected when it is
+    sitting in Redis in the clear.
+    """
+    return not isinstance(get_secret_store(), DevSecretStore)
+
+
 def set_team_token(team_id: str, token: str, username: str = GITHUB_TOKEN_USERNAME) -> None:
     """Store (or replace) the git token for a team."""
+    _assert_store_is_suitable()
     token = token.strip()
     if not token:
         raise ValueError("Token must not be empty.")

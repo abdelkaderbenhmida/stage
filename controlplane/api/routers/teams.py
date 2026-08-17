@@ -24,9 +24,11 @@ from controlplane.api.schemas import (
 from controlplane.core.config import settings
 from controlplane.core.costs import summarise
 from controlplane.core.git_credentials import (
+    InsecureSecretStore,
     delete_team_token,
     has_team_token,
     set_team_token,
+    store_is_encrypted,
 )
 from controlplane.db import get_db
 from controlplane.models import Project, User
@@ -172,11 +174,14 @@ def put_git_credential(
     require_team_role(team_id, user, db, "team.manage")
     try:
         set_team_token(team_id, body.token, username=body.username)
+    except InsecureSecretStore as exc:
+        # A misconfigured deployment, not a bad request.
+        raise HTTPException(status_code=503, detail=str(exc)) from None
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from None
     # The token itself is never written to the audit trail, only the fact.
     audit(db, user, "team.git_credential.set", str(team_id))
-    return GitCredentialStatus(configured=True)
+    return GitCredentialStatus(configured=True, encrypted=store_is_encrypted())
 
 
 @router.get("/teams/{team_id}/git-credential", response_model=GitCredentialStatus)
@@ -187,7 +192,9 @@ def get_git_credential_status(
 ):
     """Whether a credential is configured. Never returns the value."""
     require_team_role(team_id, user, db, "team.manage")
-    return GitCredentialStatus(configured=has_team_token(team_id))
+    return GitCredentialStatus(
+        configured=has_team_token(team_id), encrypted=store_is_encrypted()
+    )
 
 
 @router.delete("/teams/{team_id}/git-credential", response_model=GitCredentialStatus)
@@ -199,4 +206,4 @@ def remove_git_credential(
     require_team_role(team_id, user, db, "team.manage")
     delete_team_token(team_id)
     audit(db, user, "team.git_credential.delete", str(team_id))
-    return GitCredentialStatus(configured=False)
+    return GitCredentialStatus(configured=False, encrypted=store_is_encrypted())

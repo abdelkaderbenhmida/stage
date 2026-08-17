@@ -1273,6 +1273,11 @@ async function renderTeams() {
     const costs = await Promise.all(
       teams.map((team) => api(`/teams/${team.id}/costs`).catch(() => null))
     );
+    // Only whether a credential exists — the API deliberately has no way to
+    // read the token back, so there is nothing here to display or leak.
+    const gitCreds = await Promise.all(
+      teams.map((team) => api(`/teams/${team.id}/git-credential`).catch(() => null))
+    );
 
     view().innerHTML = `
       <div class="between">
@@ -1284,6 +1289,7 @@ async function renderTeams() {
       </div>
       ${teams.map((team, index) => {
         const cost = costs[index];
+        const git = gitCreds[index];
         return `
         <div class="panel">
           <div class="between">
@@ -1301,6 +1307,23 @@ async function renderTeams() {
             <button class="small add-member" data-id="${team.id}">Add member</button>
           </div>
           <div id="members-${team.id}"></div>
+          <div class="between" style="margin-top:1rem;padding-top:.75rem;border-top:1px solid var(--border)">
+            <div>
+              <b>Private repository access</b>
+              <p class="muted small" style="margin:.25rem 0 0">
+                ${git === null
+                  ? "Status unavailable."
+                  : git.configured
+                    ? "A git credential is configured. The platform can clone this team's private repositories."
+                      + (git.encrypted === false ? " Stored unencrypted — no Vault is configured on this instance." : "")
+                    : "No credential. Only public repositories can be deployed."}
+              </p>
+            </div>
+            <div class="row">
+              <button class="small set-git" data-id="${team.id}">${git && git.configured ? "Replace token" : "Add token"}</button>
+              ${git && git.configured ? `<button class="small danger clear-git" data-id="${team.id}">Remove</button>` : ""}
+            </div>
+          </div>
         </div>`;
       }).join("")}`;
 
@@ -1348,6 +1371,47 @@ async function renderTeams() {
             method: "POST", body: { email, role },
           });
           toast("Member added.");
+          renderTeams();
+        } catch (err) { toast(err.message, true); }
+      };
+    });
+
+    view().querySelectorAll(".set-git").forEach((btn) => {
+      btn.onclick = async () => {
+        const token = await modalPrompt(
+          "Private repository access",
+          "Paste a token the platform may use to clone this team's private repositories. "
+          + "A GitHub App installation token is preferred — it expires within the hour and "
+          + "covers only the repositories you selected. A fine-grained personal access token "
+          + "also works; scope it to read-only access on the repositories you deploy. "
+          + "The token can never be read back out of the platform."
+          + (git && git.encrypted === false
+              ? " Warning: this instance has no Vault configured, so it will be stored unencrypted."
+              : " It is held in the platform's secret manager."),
+          { type: "password", placeholder: "ghs_… or github_pat_…" },
+        );
+        if (!token) return;
+        try {
+          await api(`/teams/${btn.dataset.id}/git-credential`, {
+            method: "PUT", body: { token },
+          });
+          toast("Credential stored.");
+          renderTeams();
+        } catch (err) { toast(err.message, true); }
+      };
+    });
+
+    view().querySelectorAll(".clear-git").forEach((btn) => {
+      btn.onclick = async () => {
+        const ok = await modalConfirm(
+          "Remove credential",
+          "Deployments from this team's private repositories will start failing. Continue?",
+          "Remove",
+        );
+        if (!ok) return;
+        try {
+          await api(`/teams/${btn.dataset.id}/git-credential`, { method: "DELETE" });
+          toast("Credential removed.");
           renderTeams();
         } catch (err) { toast(err.message, true); }
       };

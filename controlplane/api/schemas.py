@@ -168,6 +168,9 @@ class GitCredentialStatus(BaseModel):
     """Whether a credential exists. Never carries the value."""
 
     configured: bool
+    # Whether it is held in a real secret manager. Reported so the interface
+    # cannot tell someone their token is protected while it sits in plaintext.
+    encrypted: bool = True
 
 
 class CostOut(BaseModel):
