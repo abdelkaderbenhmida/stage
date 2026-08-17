@@ -510,6 +510,10 @@ def scan_task(job_id: str, scan_id: str, project_id: str, tool: str, target: str
         repo = ScanRepository(db, Scope.system())
         scan = db.get(Scan, uuid.UUID(scan_id))
         if scan is None:
+            # Defence in depth against the dispatch-before-commit race the
+            # router now avoids: returning silently here used to leave the job
+            # "running" forever with nothing to explain it.
+            _mark_job(db, uuid.UUID(job_id), "failed", f"scan {scan_id} not found")
             return
         repo.set_result(scan, "running")
         db.commit()

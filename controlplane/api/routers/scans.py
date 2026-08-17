@@ -50,12 +50,18 @@ def create_scans(
 
     tools = list(_TOOLS) if body.tool == "all" else [body.tool]
     repo = ScanRepository(db, scope)
-    created = []
-    for tool in tools:
-        scan = repo.create(project.id, tool, body.target)
-        created.append(scan)
-        tasks.queue_scan(scan, project.id)
+    created = [repo.create(project.id, tool, body.target) for tool in tools]
+
+    # Commit before dispatching, never inside the loop. scan_task looks the
+    # Scan row up by id and returns early when it is missing, so handing the
+    # id to a worker while the row is still uncommitted is a race the worker
+    # can win: it finds nothing, returns, and leaves the scan stuck "queued"
+    # with its job stuck "running" forever. Observed exactly that — three
+    # scans queued, the fastest task returned in 6ms having done nothing.
     db.commit()
+
+    for scan in created:
+        tasks.queue_scan(scan, project.id)
     audit(db, user.id, "scans.create", request, resource_type="project", resource_id=str(project.id),
           detail={"tools": tools, "target": body.target}, team_id=project.team_id)
     return created

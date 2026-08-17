@@ -467,3 +467,18 @@ def test_reap_stale_jobs_leaves_a_running_job_alone(session, user, team):
     session.expire_all()
     assert session.get(Job, fresh.id).status == "running"
     assert session.get(Project, project.id).status == "provisioning"
+
+
+def test_scan_task_fails_the_job_when_its_scan_row_is_missing(session, project, user):
+    """The worker must never return silently on a missing Scan row: that left
+    the job "running" forever with nothing to explain it. Guards the
+    dispatch-before-commit race the scans router now avoids."""
+    import uuid as _uuid
+
+    job = _new_job(session, project, "scan")
+    tasks.scan_task(str(job.id), str(_uuid.uuid4()), str(project.id), "trivy", "nginx:alpine")
+
+    session.expire_all()
+    refreshed = session.get(Job, job.id)
+    assert refreshed.status == "failed"
+    assert "not found" in (refreshed.error_message or "")
