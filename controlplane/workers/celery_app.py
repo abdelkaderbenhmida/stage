@@ -58,6 +58,13 @@ celery_app.conf.update(
             "task": "controlplane.workers.tasks.reap_expired_projects",
             "schedule": crontab(minute="*/10"),
         },
+        # A worker killed mid-task leaves its Job row "running" forever, which
+        # locks that project's provision and destroy endpoints at 409 and hides
+        # it from the expiry reaper. Sweep those up.
+        "reap-stale-jobs": {
+            "task": "controlplane.workers.tasks.reap_stale_jobs",
+            "schedule": crontab(minute="*/5"),
+        },
         "replenish-warm-pool": {
             "task": "controlplane.workers.tasks.replenish_pool",
             "schedule": crontab(minute="*/15"),

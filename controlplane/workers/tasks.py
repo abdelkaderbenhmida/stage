@@ -998,6 +998,67 @@ def _wait_for_ssh(job_id: str, ips: list[str], timeout_seconds: int = 240, poll_
 EXPIRY_WARNING_MINUTES = 60
 
 
+# ---------------------------------------------------------------------------
+# Stale job reaper
+# ---------------------------------------------------------------------------
+
+@celery_app.task(name="controlplane.workers.tasks.reap_stale_jobs")
+def reap_stale_jobs() -> dict:
+    """Fail jobs whose worker died mid-task, so a project is not bricked.
+
+    A worker that is SIGKILLed — OOM, redeploy, node eviction, or Celery's own
+    hard ``task_time_limit`` — never runs its ``except`` block, so the Job row
+    stays "running" forever. That is not cosmetic:
+    ``get_active_provision_job`` treats queued/running provision and destroy
+    jobs as an in-flight lock, so the project's provision *and* destroy
+    endpoints both return 409 permanently, and ``reap_expired_projects`` skips
+    it too — the environment can never be rebuilt, removed, or reaped, and
+    whatever infrastructure it holds leaks for good.
+
+    Celery kills a task at ``task_time_limit`` (provision_timeout_seconds +
+    120), so a job still marked running well past that limit cannot be alive.
+    The margin below is deliberately generous: failing a job that is merely
+    slow would abort real work, whereas leaving a genuinely dead one costs
+    only the next sweep.
+    """
+    from datetime import datetime, timedelta
+
+    hard_limit = settings.provision_timeout_seconds + 120
+    cutoff = datetime.now(UTC) - timedelta(seconds=hard_limit + 300)
+
+    db = SessionLocal()
+    failed = 0
+    try:
+        stale = (
+            db.query(Job)
+            .filter(
+                Job.status == "running",
+                Job.started_at.is_not(None),
+                Job.started_at < cutoff,
+            )
+            .all()
+        )
+        for job in stale:
+            job.status = "failed"
+            job.finished_at = datetime.now(UTC)
+            job.error_message = (
+                "Worker stopped without reporting a result (killed, restarted or "
+                f"timed out). Marked failed after {hard_limit + 300}s so the "
+                "environment is not left locked."
+            )
+            failed += 1
+            # A project left mid-flight by a dead worker is in an unknown
+            # state; say so rather than implying the last action succeeded.
+            if job.project_id is not None:
+                project = db.get(Project, job.project_id)
+                if project is not None and project.status in ("provisioning", "destroying"):
+                    project.status = "failed"
+        db.commit()
+        return {"failed": failed}
+    finally:
+        db.close()
+
+
 @celery_app.task(name="controlplane.workers.tasks.reap_expired_projects")
 def reap_expired_projects() -> dict:
     """Destroy projects whose TTL has elapsed; warn those about to expire."""

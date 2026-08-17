@@ -404,3 +404,66 @@ def test_destroy_task_completes_when_project_row_already_deleted(
 
     session.expire_all()
     assert session.get(Job, job_id).status == "succeeded"
+
+
+def test_reap_stale_jobs_unlocks_a_project_whose_worker_died(session, user, team):
+    """A SIGKILLed worker never runs its except block, so the Job row stays
+    "running" forever. get_active_provision_job treats that as an in-flight
+    lock, so provision and destroy both 409 permanently and the expiry reaper
+    skips the project too — it can never be rebuilt, removed or reaped."""
+    from datetime import UTC, datetime, timedelta
+
+    from controlplane.core.config import settings
+    from controlplane.repositories.base import Scope
+    from controlplane.repositories.projects import ProjectRepository
+
+    project = Project(
+        owner_id=user.id, team_id=team.id, name="wedged", status="provisioning",
+        infra_spec={"version": 1, "project": "wedged", "mode": "namespace", "network": {}, "nodes": []},
+    )
+    session.add(project)
+    session.flush()
+
+    dead = Job(project_id=project.id, type="provision", status="running")
+    # Older than Celery's own hard time limit, so it cannot still be alive.
+    dead.started_at = datetime.now(UTC) - timedelta(
+        seconds=settings.provision_timeout_seconds + 120 + 600
+    )
+    session.add(dead)
+    session.commit()
+
+    scope = Scope.from_session(session, user.id)
+    repo = ProjectRepository(session, scope)
+    # The lock the API checks before allowing provision or destroy.
+    assert repo.get_active_provision_job(project.id) is not None
+
+    assert tasks.reap_stale_jobs()["failed"] == 1
+
+    session.expire_all()
+    assert session.get(Job, dead.id).status == "failed"
+    assert session.get(Project, project.id).status == "failed"
+    # Project is usable again: no in-flight job is blocking provision/destroy.
+    assert repo.get_active_provision_job(project.id) is None
+
+
+def test_reap_stale_jobs_leaves_a_running_job_alone(session, user, team):
+    """A job inside its time budget is still doing real work — failing it
+    would abort a live provision."""
+    from datetime import UTC, datetime, timedelta
+
+    project = Project(
+        owner_id=user.id, team_id=team.id, name="inflight", status="provisioning",
+        infra_spec={"version": 1, "project": "inflight", "mode": "namespace", "network": {}, "nodes": []},
+    )
+    session.add(project)
+    session.flush()
+
+    fresh = Job(project_id=project.id, type="provision", status="running")
+    fresh.started_at = datetime.now(UTC) - timedelta(seconds=30)
+    session.add(fresh)
+    session.commit()
+
+    assert tasks.reap_stale_jobs()["failed"] == 0
+    session.expire_all()
+    assert session.get(Job, fresh.id).status == "running"
+    assert session.get(Project, project.id).status == "provisioning"
