@@ -968,11 +968,32 @@ def deploy_task(job_id: str, deployment_id: str, project_id: str, user_id: str) 
             # An image whose vulnerabilities are unknown is not an image known
             # to be safe, so treat an unusable scan as a block.
             if trivy.timed_out or trivy.exit_code != 0:
+                # Trivy downloads its vulnerability database on first use, and
+                # two scans starting together can collide over it. That is a
+                # transient failure, and blocking a deployment over it while
+                # an identical image sails through minutes later is not a
+                # security decision — it is a coin toss. Retry once; a real
+                # failure still blocks, because the gate stays fail-closed.
+                _append_log(job_id, f"trivy exited {trivy.exit_code} — retrying once")
+                time.sleep(5)
+                trivy = run_trivy(
+                    scan_ref,
+                    on_line=on_line,
+                    from_registry=True,
+                    network=settings.registry_network,
+                    insecure=settings.registry_insecure,
+                )
+
+            if trivy.timed_out or trivy.exit_code != 0:
                 repo.set_status(deployment, "blocked", image_ref=image_ref)
                 db.commit()
                 raise RuntimeError(
                     "Image could not be scanned, so it was not deployed. "
-                    f"Trivy exited {trivy.exit_code}: {(trivy.output or '')[-400:]}"
+                    # RawResult carries `stdout`; there is no `output`. Reading
+                    # the wrong attribute raised AttributeError while building
+                    # this very message, which replaced the real reason with a
+                    # type error on six deployments.
+                    f"Trivy exited {trivy.exit_code}: {(trivy.stdout or '')[-400:]}"
                 )
 
             if not _is_usable_trivy_report(trivy.stdout):

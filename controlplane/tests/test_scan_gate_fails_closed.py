@@ -89,3 +89,28 @@ def test_output_with_no_report_is_left_alone():
     failure = "FATAL\tunable to inspect the image: no such image"
     assert _json_document(failure) == failure
     assert _is_usable_trivy_report(_json_document(failure)) is False
+
+
+# --- the gate must not blame the wrong thing ---------------------------------
+
+def test_the_gate_reads_the_attribute_a_scanner_result_actually_has():
+    """RawResult carries `stdout`; there is no `output`.
+
+    The failure branch built its message from `trivy.output`, so a scanner
+    that exited non-zero raised AttributeError while explaining itself. Six
+    deployments were blocked with "'RawResult' object has no attribute
+    'output'" instead of the real reason, which pointed the reader at a type
+    error rather than at their scan.
+    """
+    from controlplane.runners.scanners.base import RawResult
+
+    fields = set(RawResult.__dataclass_fields__)
+    assert "stdout" in fields
+    assert "output" not in fields, "if this changes, update deploy_task's gate message"
+
+    source = (
+        __import__("pathlib")
+        .Path(__import__("controlplane.workers.tasks", fromlist=["x"]).__file__)
+        .read_text()
+    )
+    assert "trivy.output" not in source, "the gate is reading a field RawResult does not have"
