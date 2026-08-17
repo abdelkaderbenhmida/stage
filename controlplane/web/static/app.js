@@ -73,6 +73,17 @@ function isPlatformAdmin() { return currentRole() === "admin"; }
 /* -------------------------------------------------------------- modals
  * Task 6.2: real dialogs instead of prompt()/confirm(). Close on Escape,
  * focus the first field, return focus to the trigger. */
+/** Where a modal must be mounted.
+ *
+ * The modal styles are scoped to `#cp-root`, so appending to document.body —
+ * as this used to — put the dialog outside the selector's reach and it
+ * rendered as unstyled HTML at the bottom of the page, below the fold. The
+ * toast had the same problem and was fixed the same way.
+ */
+function modalHost() {
+  return document.getElementById("cp-root") || document.body;
+}
+
 function modalShell(title, body) {
   const backdrop = document.createElement("div");
   backdrop.className = "modal-backdrop";
@@ -114,7 +125,7 @@ function modalPrompt(title, message, options = {}) {
       resolve(answer);
     };
     backdrop.querySelector('[data-action="cancel"]').onclick = () => { close(); resolve(null); };
-    document.body.appendChild(backdrop);
+    modalHost().appendChild(backdrop);
     input.focus();
     input.select();
   });
@@ -127,7 +138,7 @@ function modalConfirm(title, message, okLabel = "Confirm") {
   return new Promise((resolve) => {
     backdrop.querySelector('[data-action="ok"]').onclick = () => { close(); resolve(true); };
     backdrop.querySelector('[data-action="cancel"]').onclick = () => { close(); resolve(false); };
-    document.body.appendChild(backdrop);
+    modalHost().appendChild(backdrop);
     backdrop.querySelector('[data-action="ok"]').focus();
   });
 }

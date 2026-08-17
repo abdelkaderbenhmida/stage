@@ -16,6 +16,8 @@ import uuid
 from datetime import UTC
 from pathlib import Path
 
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from controlplane.core.config import settings
@@ -35,7 +37,15 @@ from controlplane.core.runtime import (
 )
 from controlplane.core.validation import k8s_namespace
 from controlplane.db import SessionLocal
-from controlplane.models import Deployment, Job, PooledCluster, Project, Scan, Team
+from controlplane.models import (
+    ACTIVE_STATUSES,
+    Deployment,
+    Job,
+    PooledCluster,
+    Project,
+    Scan,
+    Team,
+)
 from controlplane.renderers import render_ansible, render_namespace, render_terraform
 from controlplane.repositories.base import Scope
 from controlplane.repositories.deployments import DeploymentRepository
@@ -539,10 +549,27 @@ def scan_task(job_id: str, scan_id: str, project_id: str, tool: str, target: str
         cloned: Path | None = None
         try:
             if tool == "trivy":
-                result = run_trivy(target, on_line=on_line)
+                # Same reasoning as the pre-deploy gate: the sandbox has no
+                # docker socket, deliberately, so Trivy's default daemon
+                # lookup cannot work and an on-demand image scan failed with
+                # "failed to connect to the docker API". Read the image from
+                # the registry instead. Only the deploy path was fixed
+                # before, which left this one broken.
+                result = run_trivy(
+                    _registry_scan_ref(target),
+                    on_line=on_line,
+                    from_registry=True,
+                    network=settings.registry_network,
+                    insecure=settings.registry_insecure,
+                )
                 from controlplane.parsers.trivy_parser import parse_trivy
 
                 parsed = parse_trivy(result.stdout)
+                if not _is_usable_trivy_report(result.stdout):
+                    raise RuntimeError(
+                        f"Trivy could not scan {target}. Exit {result.exit_code}: "
+                        f"{(result.stdout or '')[-400:]}"
+                    )
             elif tool == "gitleaks":
                 cloned = _clone_repo(target, job_id, on_line, team_id=scan_team_id)
                 result = run_gitleaks(cloned, on_line=on_line)
@@ -769,6 +796,19 @@ def _purge_path(path: Path, job_id: str | None = None) -> bool:
     return True
 
 
+def _registry_scan_ref(image_ref: str) -> str:
+    """Rewrite a pushed image reference the way a sandbox can reach it.
+
+    The control plane pushes to `settings.registry`, an address published on
+    the host. Inside a sandbox container that same address resolves to the
+    container itself, so the image has to be named by its address on the
+    registry's own network.
+    """
+    if settings.registry_internal and image_ref.startswith(f"{settings.registry}/"):
+        return image_ref.replace(settings.registry, settings.registry_internal, 1)
+    return image_ref
+
+
 def _is_usable_trivy_report(raw: str) -> bool:
     """True only when the output is a report Trivy actually produced.
 
@@ -822,14 +862,60 @@ def _find_requirements(repo: Path) -> Path:
 # Deployment pipeline
 # ---------------------------------------------------------------------------
 
+class DeployAlreadyRunning(RuntimeError):
+    """A deploy for this deployment is already queued or running.
+
+    Carries the job so callers can point the user at the run in progress
+    rather than at a bare error.
+    """
+
+    def __init__(self, job: Job) -> None:
+        super().__init__("A deploy for this service is already in progress.")
+        self.job = job
+
+
+def active_deploy_job(db: Session, deployment_id: uuid.UUID) -> Job | None:
+    """The deploy job currently in flight for this deployment, if any."""
+    return db.scalars(
+        select(Job)
+        .where(
+            Job.deployment_id == deployment_id,
+            Job.type == "deploy",
+            Job.status.in_(ACTIVE_STATUSES),
+        )
+        .order_by(Job.created_at.desc())
+        .limit(1)
+    ).first()
+
+
 def queue_deploy(deployment: Deployment, project: Project, user_id: uuid.UUID) -> Job:
+    """Queue a deploy, refusing to start a second one for the same deployment.
+
+    Two concurrent deploys of one service build from different commits, push
+    under the same tag prefix and apply the same manifests, so the rollout
+    that survives is decided by which worker happens to finish last.
+    """
     db = SessionLocal()
     try:
+        running = active_deploy_job(db, deployment.id)
+        if running is not None:
+            raise DeployAlreadyRunning(running)
+
         job = Job(project_id=project.id, deployment_id=deployment.id, type="deploy", status="queued")
         _stamp_request_id(job)
         db.add(job)
-        db.flush()
-        db.commit()
+        try:
+            db.flush()
+            db.commit()
+        except IntegrityError:
+            # Two requests both passed the check above before either inserted.
+            # The partial unique index is what actually decides; the loser
+            # reports the winner.
+            db.rollback()
+            running = active_deploy_job(db, deployment.id)
+            if running is None:
+                raise
+            raise DeployAlreadyRunning(running) from None
         result = deploy_task.apply_async(
             args=[str(job.id), str(deployment.id), str(project.id), str(user_id)]
         )
@@ -945,9 +1031,7 @@ def deploy_task(job_id: str, deployment_id: str, project_id: str, user_id: str) 
             # sandbox can reach it: the control plane pushes to
             # settings.registry (published on the host), which resolves to the
             # sandbox container itself from inside one.
-            scan_ref = image_ref
-            if settings.registry_internal and image_ref.startswith(f"{settings.registry}/"):
-                scan_ref = image_ref.replace(settings.registry, settings.registry_internal, 1)
+            scan_ref = _registry_scan_ref(image_ref)
             trivy = run_trivy(
                 scan_ref,
                 on_line=on_line,

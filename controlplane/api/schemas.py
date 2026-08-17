@@ -317,5 +317,25 @@ class JobOut(BaseModel):
     error_message: str | None
 
 
+class JobSummaryOut(BaseModel):
+    """A run in a deployment's history — everything but the log.
+
+    The log stays behind `GET /jobs/{id}`: history pages are read far more
+    often than logs, and each one can be 200 kB.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    project_id: uuid.UUID | None
+    deployment_id: uuid.UUID | None
+    type: str
+    status: str
+    created_at: datetime
+    started_at: datetime | None
+    finished_at: datetime | None
+    error_message: str | None
+
+
 class Message(BaseModel):
     message: str

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 
-from sqlalchemy import ForeignKey, Index, Integer, String, Text
+from sqlalchemy import ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -11,7 +11,13 @@ from controlplane.models.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
 
 class Deployment(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "deployments"
-    __table_args__ = (Index("ix_deployments_project_id", "project_id"),)
+    __table_args__ = (
+        Index("ix_deployments_project_id", "project_id"),
+        # A service name identifies one service inside a project. Enforced in
+        # the database as well as in the repository, because a duplicate here
+        # means two rows describing one Kubernetes Deployment.
+        UniqueConstraint("project_id", "service_name", name="uq_deployments_project_service"),
+    )
 
     project_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("projects.id", ondelete="CASCADE"), nullable=False

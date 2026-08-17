@@ -3,9 +3,9 @@ from __future__ import annotations
 import uuid
 
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, defer
 
-from controlplane.models import Finding, Job, Project, Scan
+from controlplane.models import Deployment, Finding, Job, Project, Scan
 from controlplane.repositories.base import NotFoundError, Scope, paginate
 
 
@@ -27,6 +27,33 @@ class JobRepository:
         if project is None or not self.scope.can_access(project):
             raise NotFoundError()
         return job
+
+    def list_for_deployment(
+        self, deployment_id: uuid.UUID, page: int = 1, page_size: int = 20
+    ) -> tuple[list[Job], int]:
+        """One deployment's run history, newest first.
+
+        Access is decided by the deployment's project, exactly as in `get`: a
+        deployment whose project is gone or belongs to another team is not
+        listable, and says "not found" rather than confirming it exists.
+
+        Logs are not loaded — a history page would otherwise pull up to 200 kB
+        of log per row for output nobody reads until they open a single run.
+        """
+        deployment = self.session.get(Deployment, deployment_id)
+        if deployment is None:
+            raise NotFoundError()
+        project = self.session.get(Project, deployment.project_id)
+        if project is None or not self.scope.can_access(project):
+            raise NotFoundError()
+
+        query = (
+            select(Job)
+            .where(Job.deployment_id == deployment_id)
+            .options(defer(Job.log))
+            .order_by(Job.created_at.desc())
+        )
+        return paginate(self.session, query, page, page_size)
 
     def create(self, project_id: uuid.UUID | None, type_: str) -> Job:
         job = Job(project_id=project_id, type=type_, status="queued")

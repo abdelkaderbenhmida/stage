@@ -12,6 +12,7 @@ from controlplane.api.rbac import require_deployment_action, require_project_act
 from controlplane.api.schemas import (
     DeploymentCreate,
     DeploymentOut,
+    JobSummaryOut,
     Message,
     WebhookSecretOut,
     WebhookSubscriptionCreate,
@@ -21,6 +22,7 @@ from controlplane.core.repo_url import InvalidRepoUrl, validate_repo_url
 from controlplane.models import Deployment, Project, User, WebhookSubscription
 from controlplane.repositories.base import NotFoundError, Scope
 from controlplane.repositories.deployments import DeploymentRepository
+from controlplane.repositories.jobs import JobRepository
 from controlplane.repositories.projects import ProjectRepository
 from controlplane.workers import tasks
 
@@ -172,6 +174,32 @@ def list_webhooks(
     )
 
 
+@router.get("/deployments/{deployment_id}/jobs", response_model=list[JobSummaryOut])
+def list_deployment_jobs(
+    deployment_id: uuid.UUID,
+    request: Request,
+    response: Response,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    db: Session = Depends(get_db),
+    scope: Scope = Depends(get_scope),
+):
+    """This deployment's pipeline history, newest first.
+
+    Every run was already recorded against the deployment; without this
+    endpoint nothing could read them back, so a tenant could only ever see the
+    run they happened to be watching.
+    """
+    try:
+        items, total = JobRepository(db, scope).list_for_deployment(
+            deployment_id, page, page_size
+        )
+    except NotFoundError:
+        raise HTTPException(status_code=404, detail="Deployment not found.") from None
+    response.headers.update(pagination_headers(request, total, page, page_size))
+    return items
+
+
 @router.post("/deployments/{deployment_id}/redeploy", response_model=Message, status_code=status.HTTP_202_ACCEPTED)
 def redeploy(
     request: Request,
@@ -183,9 +211,22 @@ def redeploy(
     project = ProjectRepository(db, scope).get_project(deployment.project_id)
 
     repo = DeploymentRepository(db, scope)
+    previous_status = deployment.status
     repo.set_status(deployment, "queued")
     db.commit()
-    tasks.queue_deploy(deployment, project, user.id)
+    try:
+        tasks.queue_deploy(deployment, project, user.id)
+    except tasks.DeployAlreadyRunning as exc:
+        # The status was moved to "queued" for a run that will not exist.
+        repo.set_status(deployment, previous_status)
+        db.commit()
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"A deploy of this service is already {exc.job.status} "
+                f"(job {exc.job.id}). Wait for it to finish, or cancel it first."
+            ),
+        ) from None
     db.commit()
     audit(db, user.id, "deployment.redeploy", request, resource_type="deployment", resource_id=str(deployment.id), team_id=project.team_id)
     return Message(message="Redeploy queued.")

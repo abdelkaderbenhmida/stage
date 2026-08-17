@@ -3,7 +3,7 @@
 from controlplane.models.audit import AuditLog, RefreshToken
 from controlplane.models.base import Base
 from controlplane.models.deployment import Deployment
-from controlplane.models.job import Job
+from controlplane.models.job import ACTIVE_STATUSES, Job
 from controlplane.models.pool import PooledCluster
 from controlplane.models.project import Node, Project
 from controlplane.models.scan import Finding, Scan
@@ -12,6 +12,7 @@ from controlplane.models.user import User
 from controlplane.models.webhook import WebhookSubscription
 
 __all__ = [
+    "ACTIVE_STATUSES",
     "ROLE_ORDER",
     "AuditLog",
     "Base",

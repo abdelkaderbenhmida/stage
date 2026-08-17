@@ -131,5 +131,13 @@ async def receive_webhook(
     if repo_url and matched.repo_url and repo_url.rstrip(".git") != matched.repo_url.rstrip(".git"):
         return Message(message="Ignored: repository does not match the subscription.")
 
-    tasks.queue_deploy(deployment, project, project.owner_id)
+    try:
+        tasks.queue_deploy(deployment, project, project.owner_id)
+    except tasks.DeployAlreadyRunning as exc:
+        # Pushes arrive in bursts. Failing the delivery would make the
+        # provider retry and mark the hook unhealthy, so this is a normal,
+        # successful outcome: the deploy in flight already covers the branch.
+        return Message(
+            message=f"Ignored: a deploy is already {exc.job.status} for this service."
+        )
     return Message(message="Deploy queued.")

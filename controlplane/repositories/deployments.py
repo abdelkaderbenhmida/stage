@@ -45,6 +45,32 @@ class DeploymentRepository:
         strategy: str = "deployment",
     ) -> Deployment:
         self.scope.guard(self._project(project_id), "deployment.create")
+
+        # A service name identifies one service inside a project, so deploying
+        # it again updates that service rather than adding a second row. It
+        # used to insert unconditionally, which left one Kubernetes Deployment
+        # described by several rows: the project page listed the same service
+        # repeatedly with conflicting statuses, and deleting one row tore down
+        # the workload the others still claimed to own.
+        existing = self.session.scalar(
+            select(Deployment).where(
+                Deployment.project_id == project_id,
+                Deployment.service_name == service_name,
+            )
+        )
+        if existing is not None:
+            existing.repo_url = repo_url
+            existing.branch = branch
+            existing.port = port
+            existing.replicas = replicas
+            existing.strategy = strategy
+            existing.status = "queued"
+            # The previous image and URL describe the previous release; keep
+            # them until this one supersedes them, so the service does not
+            # appear to vanish while it rebuilds.
+            self.session.flush()
+            return existing
+
         deployment = Deployment(
             project_id=project_id,
             service_name=service_name,
