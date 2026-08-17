@@ -4,6 +4,6 @@
 #
 # Kept exact-pinned (==) for reproducible installs. Add `--require-hashes`
 # in production Dockerfiles via a compiled lockfile (see ../requirements.lock).
-hvac==2.1.0
-prometheus-fastapi-instrumentator==6.1.0
+hvac==2.3.0
+prometheus-fastapi-instrumentator==8.1.0
 python-json-logger==2.0.7
