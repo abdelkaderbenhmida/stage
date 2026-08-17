@@ -55,6 +55,48 @@ def _reset_rate_limiter():
     _limiter._events.clear()
 
 
+class _InMemoryRedis:
+    """Stand-in for redis.Redis covering the DevSecretStore surface.
+
+    DevSecretStore talks to Redis because the API and worker are separate
+    processes. Unit tests are one process and CI runs no Redis daemon, so the
+    suite would otherwise fail on connection refused for every test that
+    touches a secret. The store itself stays a real DevSecretStore, so the
+    `isinstance(..., DevSecretStore)` checks in core/git_credentials.py still
+    see what they see in production-without-Vault.
+    """
+
+    def __init__(self) -> None:
+        self.data: dict[str, str] = {}
+
+    def set(self, key, value):
+        self.data[key] = value
+
+    def get(self, key):
+        return self.data.get(key)
+
+    def delete(self, key):
+        self.data.pop(key, None)
+
+
+@pytest.fixture(autouse=True)
+def _in_memory_secret_store():
+    """Give every test a fresh, hermetic dev secret store.
+
+    Also isolates tests from each other: the store is a module-level
+    singleton, so a token written by one test would otherwise still be
+    readable by the next.
+    """
+    from controlplane.core import vault
+
+    store = vault.DevSecretStore.__new__(vault.DevSecretStore)
+    store._client = _InMemoryRedis()
+    previous = vault._secret_store
+    vault._secret_store = store
+    yield store
+    vault._secret_store = previous
+
+
 @pytest.fixture(autouse=True)
 def _clean_db(request):
     """Truncate all tables after every integration test, regardless of which

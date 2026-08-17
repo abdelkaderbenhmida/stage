@@ -24,8 +24,14 @@ def test_buckets_are_per_key():
 
 
 def test_window_slides():
+    import time
     from collections import deque
 
     rl = RateLimiter()
-    rl._events["eve"] = deque([0.0])  # event long in the past
+    # Seeded relative to the clock the limiter reads. time.monotonic() counts
+    # from an arbitrary origin (uptime on Linux), so a literal 0.0 is only in
+    # the past on a machine up longer than the window; on a freshly booted CI
+    # runner now - 60 is negative, 0.0 is later than that, and the event was
+    # never evicted.
+    rl._events["eve"] = deque([time.monotonic() - 3600])
     assert rl.allow("eve", max_events=1, window_seconds=60)
