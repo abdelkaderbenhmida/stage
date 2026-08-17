@@ -110,6 +110,11 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--base-url", default="http://127.0.0.1:8000")
     parser.add_argument("--deploy", action="store_true", help="also queue one deployment per project")
+    parser.add_argument(
+        "--no-provision",
+        action="store_true",
+        help="leave projects in draft (they cannot be deployed to until provisioned)",
+    )
     args = parser.parse_args()
     base = args.base_url.rstrip("/")
 
@@ -150,6 +155,21 @@ def main() -> int:
             print(f"  ! project for {email}: {status} {body}", file=sys.stderr)
             continue
 
+        # A draft project has no namespace, no quota and no monitoring, and
+        # refuses deployments — so an unprovisioned account still looks empty,
+        # which is the complaint this seeder exists to answer. Provision by
+        # default and wait, since the deployment below depends on it.
+        if project_id and not args.no_provision:
+            status, _ = call(base, f"/projects/{project_id}/provision", {}, token=token)
+            if status not in (200, 202):
+                print(f"  ! provision for {email}: {status}", file=sys.stderr)
+            else:
+                for _ in range(60):
+                    _, detail = call(base, f"/projects/{project_id}", token=token)
+                    if detail and detail.get("status") in ("ready", "failed"):
+                        break
+                    time.sleep(5)
+
         if args.deploy and project_id:
             status, body = call(base, f"/projects/{project_id}/deployments", {
                 "service_name": "web",
@@ -161,10 +181,39 @@ def main() -> int:
             if status != 201:
                 print(f"  ! deployment for {email}: {status} {body}", file=sys.stderr)
 
+    # Registration always creates an ordinary user, by design — there is no
+    # API that hands out the admin role, and there should not be. Promoting
+    # the two demo admins is therefore a direct database write, and is the one
+    # thing here that a user could not do for themselves.
+    promoted = _promote_admins()
+
     print(f"\n{created} accounts created; password for all: {PASSWORD}")
-    print("admins are marked in USERS but the role must be set out of band —")
-    print("registration always creates an ordinary user.")
+    if promoted:
+        print(f"admins: {', '.join(promoted)}")
     return 0
+
+
+def _promote_admins() -> list[str]:
+    try:
+        from controlplane.db import SessionLocal
+        from controlplane.models import User
+    except ImportError:
+        print("  ! controlplane not importable; admin roles unchanged", file=sys.stderr)
+        return []
+
+    wanted = [email for email, role in USERS if role == "admin"]
+    db = SessionLocal()
+    try:
+        promoted = []
+        for email in wanted:
+            user = db.query(User).filter(User.email == email).first()
+            if user is not None:
+                user.role = "admin"
+                promoted.append(email)
+        db.commit()
+        return promoted
+    finally:
+        db.close()
 
 
 if __name__ == "__main__":
