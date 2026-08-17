@@ -149,6 +149,27 @@ class TeamMemberCreate(BaseModel):
 # ----------------------------------------------------------- cost + catalogue
 
 
+class GitCredentialIn(BaseModel):
+    """A token the platform may use to clone this team's private repositories.
+
+    Prefer a GitHub App installation token (``ghs_``), which expires in an hour
+    and covers only the repositories the team selected. A fine-grained PAT is
+    accepted but is long-lived, so scope it to ``contents: read`` on specific
+    repositories.
+    """
+
+    token: str = Field(min_length=8, max_length=500)
+    # GitHub ignores the username when the password is a token; this default is
+    # what it documents for installation tokens and is harmless for a PAT.
+    username: str = Field(default="x-access-token", min_length=1, max_length=100)
+
+
+class GitCredentialStatus(BaseModel):
+    """Whether a credential exists. Never carries the value."""
+
+    configured: bool
+
+
 class CostOut(BaseModel):
     currency: str
     total: float

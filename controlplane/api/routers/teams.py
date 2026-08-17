@@ -13,6 +13,8 @@ from controlplane.api.rate_limit import check_rate_limit
 from controlplane.api.rbac import require_team_role
 from controlplane.api.schemas import (
     CostOut,
+    GitCredentialIn,
+    GitCredentialStatus,
     Message,
     TeamCreate,
     TeamMemberCreate,
@@ -21,6 +23,11 @@ from controlplane.api.schemas import (
 )
 from controlplane.core.config import settings
 from controlplane.core.costs import summarise
+from controlplane.core.git_credentials import (
+    delete_team_token,
+    has_team_token,
+    set_team_token,
+)
 from controlplane.db import get_db
 from controlplane.models import Project, User
 from controlplane.repositories.base import NotFoundError
@@ -142,3 +149,54 @@ def team_costs(
     require_team_role(team_id, user, db, "project.read")
     projects = list(db.scalars(select(Project).where(Project.team_id == team_id)))
     return summarise(projects)
+
+
+# --- git credentials for private repositories -------------------------------
+#
+# Deliberately write-only. There is no endpoint that returns the token: the
+# platform can use a credential it holds, but nobody can read it back, so a
+# stolen session cannot exfiltrate the key to a tenant's source. Status
+# reports only whether one exists.
+
+
+@router.put("/teams/{team_id}/git-credential", response_model=GitCredentialStatus)
+def put_git_credential(
+    team_id: uuid.UUID,
+    body: GitCredentialIn,
+    request: Request,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Store the token the platform uses to clone this team's private repositories."""
+    check_rate_limit(request, "git-credential")
+    require_team_role(team_id, user, db, "team.manage")
+    try:
+        set_team_token(team_id, body.token, username=body.username)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+    # The token itself is never written to the audit trail, only the fact.
+    audit(db, user, "team.git_credential.set", str(team_id))
+    return GitCredentialStatus(configured=True)
+
+
+@router.get("/teams/{team_id}/git-credential", response_model=GitCredentialStatus)
+def get_git_credential_status(
+    team_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Whether a credential is configured. Never returns the value."""
+    require_team_role(team_id, user, db, "team.manage")
+    return GitCredentialStatus(configured=has_team_token(team_id))
+
+
+@router.delete("/teams/{team_id}/git-credential", response_model=GitCredentialStatus)
+def remove_git_credential(
+    team_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    require_team_role(team_id, user, db, "team.manage")
+    delete_team_token(team_id)
+    audit(db, user, "team.git_credential.delete", str(team_id))
+    return GitCredentialStatus(configured=False)

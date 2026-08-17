@@ -15,8 +15,10 @@ destroyed afterwards. Key properties:
 - Output is scrubbed per §7.4 before being emitted.
 """
 
+import os
 import select
 import subprocess
+import tempfile
 import time
 import uuid
 from collections.abc import Callable
@@ -50,6 +52,11 @@ class SandboxRun:
     writable_paths: list[str] = field(default_factory=list)
     mounts: list[tuple[Path, str, bool]] = field(default_factory=list)
     env: dict[str, str] = field(default_factory=dict)
+    # Secrets. Kept apart from `env` because these must never appear in the
+    # `docker run` argv — argv is world-readable through /proc, so `-e
+    # TOKEN=...` hands the value to every local user for the lifetime of the
+    # run. These are written to a private file and passed with --env-file.
+    secret_env: dict[str, str] = field(default_factory=dict)
     network_enabled: bool = True
     # Join a named docker network. Needed to reach a service that is not
     # published on the host — the image registry is bound to 127.0.0.1 and is
@@ -103,6 +110,21 @@ def run_sandbox(run: SandboxRun) -> SandboxResult:
         args += ["-v", "/var/run/docker.sock:/var/run/docker.sock"]
     for key, value in run.env.items():
         args += ["-e", f"{key}={value}"]
+
+    # Secrets go through a 0600 file that only this process can read, and it
+    # is removed as soon as the container has consumed it.
+    secret_file: Path | None = None
+    if run.secret_env:
+        handle, path = tempfile.mkstemp(prefix="ctl-secret-", text=True)
+        secret_file = Path(path)
+        with os.fdopen(handle, "w") as fh:
+            for key, value in run.secret_env.items():
+                # --env-file parses KEY=VALUE per line and does no quoting, so
+                # a newline in a value would forge an extra variable.
+                fh.write(f"{key}={value.replace(chr(10), '')}\n")
+        secret_file.chmod(0o600)
+        args += ["--env-file", str(secret_file)]
+
     args += [_container_image_ref(run.image), *run.command]
 
     proc = subprocess.Popen(
@@ -145,6 +167,8 @@ def run_sandbox(run: SandboxRun) -> SandboxResult:
             proc.wait()
         # Guaranteed cleanup on both success and failure paths.
         subprocess.run(["docker", "rm", "-f", name], capture_output=True)
+        if secret_file is not None:
+            secret_file.unlink(missing_ok=True)
 
     # Drain the pipe on every path, not just the timeout one.
     #

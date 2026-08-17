@@ -8,6 +8,7 @@ before they are written to the database (§7.4).
 import contextlib
 import json
 import os
+import shutil
 import socket
 import tempfile
 import time
@@ -18,6 +19,7 @@ from pathlib import Path
 from sqlalchemy.orm import Session
 
 from controlplane.core.config import settings
+from controlplane.core.git_credentials import ASKPASS_SCRIPT, credential_for_repo
 from controlplane.core.kubeconfigs import get_kubeconfig, store_kubeconfig, transfer_kubeconfig
 from controlplane.core.logging import request_id_var
 from controlplane.core.pool import claim_cluster
@@ -528,6 +530,12 @@ def scan_task(job_id: str, scan_id: str, project_id: str, tool: str, target: str
         db.commit()
 
         on_line = _log_lines(job_id)
+        # Scans clone the same private repositories deployments do, so they
+        # resolve the same team credential. Taken from the scan's own project
+        # rather than anything the caller supplied: that is what stops one
+        # tenant's job from reaching another tenant's credential.
+        scan_project = db.get(Project, scan.project_id) if scan.project_id else None
+        scan_team_id = scan_project.team_id if scan_project is not None else None
         # Tenant source lands on the shared control-plane host only for as long
         # as the scan needs it. Cleanup used to sit inline after each scanner
         # call, so any failure between clone and cleanup — a scanner crash, a
@@ -541,7 +549,7 @@ def scan_task(job_id: str, scan_id: str, project_id: str, tool: str, target: str
 
                 parsed = parse_trivy(result.stdout)
             elif tool == "gitleaks":
-                cloned = _clone_repo(target, job_id, on_line)
+                cloned = _clone_repo(target, job_id, on_line, team_id=scan_team_id)
                 result = run_gitleaks(cloned, on_line=on_line)
                 raw = result.artifact_path
                 text = Path(raw).read_text() if raw and Path(raw).exists() else "[]"
@@ -549,7 +557,7 @@ def scan_task(job_id: str, scan_id: str, project_id: str, tool: str, target: str
 
                 parsed = parse_gitleaks(text)
             else:  # pip_audit
-                cloned = _clone_repo(target, job_id, on_line)
+                cloned = _clone_repo(target, job_id, on_line, team_id=scan_team_id)
                 requirements = _find_requirements(cloned)
                 result = run_pip_audit(requirements, on_line=on_line)
                 from controlplane.parsers.pip_audit_parser import parse_pip_audit
@@ -578,9 +586,7 @@ def scan_task(job_id: str, scan_id: str, project_id: str, tool: str, target: str
             _fail(db, uuid.UUID(job_id), str(exc))
         finally:
             if cloned is not None:
-                import shutil
-
-                shutil.rmtree(cloned.parent, ignore_errors=True)
+                _purge_path(cloned.parent, job_id)
     finally:
         db.close()
 
@@ -593,7 +599,13 @@ def _safe_json(text: str) -> dict:
         return {"raw": text[:5000]}
 
 
-def _clone_repo(repo_url: str, job_id: str, on_line, branch: str | None = None) -> Path:
+def _clone_repo(
+    repo_url: str,
+    job_id: str,
+    on_line,
+    branch: str | None = None,
+    team_id=None,
+) -> Path:
     """Validate + clone into a fresh host-visible workspace. Returns the repo dir.
 
     The workspace root is mounted into the sandbox with the repo subdir
@@ -615,6 +627,29 @@ def _clone_repo(repo_url: str, job_id: str, on_line, branch: str | None = None) 
         command += ["--branch", branch]
     command += [repo_url, str(target)]
 
+    # Without this git blocks on stdin asking for a username whenever the
+    # repository is private or misspelt, and the job sits there until the
+    # sandbox timeout kills it — minutes of a build slot spent on a failure
+    # that is knowable immediately.
+    env = {"GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": "/bin/true"}
+    secret_env: dict[str, str] = {}
+
+    credential = credential_for_repo(str(team_id), repo_url) if team_id else None
+    if credential is not None:
+        # The token is handed to git through an askpass helper rather than
+        # embedded in the URL. A URL credential is written by git into
+        # .git/config inside the checkout, and the next pipeline step builds
+        # an image from that directory — a `COPY . .` would bake the tenant's
+        # token into an image and push it to a registry.
+        askpass = root / "askpass.sh"
+        askpass.write_text(ASKPASS_SCRIPT)
+        askpass.chmod(0o700)
+        env["GIT_ASKPASS"] = str(askpass)
+        # Routed through secret_env so the value never reaches the docker run
+        # argv, which is readable by any local user through /proc.
+        secret_env = credential.askpass_env()
+        _append_log(job_id, "using the team's configured git credential")
+
     _append_log(job_id, f"cloning {repo_url} ({branch or 'default branch'})")
     result = run_sandbox(
         SandboxRun(
@@ -624,15 +659,78 @@ def _clone_repo(repo_url: str, job_id: str, on_line, branch: str | None = None) 
             network_enabled=True,
             timeout_seconds=settings.scan_timeout_seconds,
             on_line=on_line,
-            # Without this git blocks on stdin asking for a username whenever
-            # the repository is private or misspelt, and the job sits there
-            # until the sandbox timeout kills it — minutes of a build slot
-            # spent on a failure that is knowable immediately.
-            env={"GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": "/bin/true"},
+            env=env,
+            secret_env=secret_env,
         )
     )
-    _check(result, _clone_hint(result, repo_url, branch))
+    _check(result, _clone_hint(result, repo_url, branch, authenticated=credential is not None))
+
+    # Drop the git metadata before anything builds from this directory. It
+    # carries the remote configuration and, for an authenticated clone, is
+    # where a credential would live; it has no business inside a container
+    # image either way. A tenant Dockerfile doing `COPY . .` would otherwise
+    # copy it in and the image gets pushed to a registry.
+    #
+    # Checked rather than assumed: this used to be an ignore_errors rmtree that
+    # could not remove root-owned files and said nothing about it.
+    if not _purge_path(target / ".git", job_id):
+        raise RuntimeError(
+            "Could not remove .git from the checkout before building. Refusing to "
+            "continue, because the build context would carry git metadata — and, for "
+            "an authenticated clone, the credential used to fetch it — into the image."
+        )
+    (root / "askpass.sh").unlink(missing_ok=True)
     return target
+
+
+def _purge_path(path: Path, job_id: str | None = None) -> bool:
+    """Delete ``path`` even though the sandbox created it as root.
+
+    The sandbox runs containers as uid 0, so everything a clone or build
+    writes is owned by root while the control plane runs unprivileged. A plain
+    ``shutil.rmtree`` therefore fails with EPERM, and because these calls
+    passed ``ignore_errors=True`` it failed *silently*: tenant checkouts
+    accumulated in /tmp indefinitely (4.8 MB across 49 directories on this
+    instance) and ``.git`` survived into the image build.
+
+    Removal happens inside a container for the same reason the files exist
+    there. ``rm`` is invoked with an argv, never a shell string, because the
+    repository path is attacker-influenced and a shell would make it
+    injectable.
+    """
+    path = Path(path)
+    if not path.exists():
+        return True
+
+    # Try unprivileged first: nothing to gain from a container when the files
+    # are ours (a failed clone before the container wrote anything).
+    shutil.rmtree(path, ignore_errors=True)
+    if not path.exists():
+        return True
+
+    parent = path.parent
+    try:
+        run_sandbox(
+            SandboxRun(
+                # The workspace is bind-mounted at its own host path, so the
+                # container sees the same absolute path we do.
+                command=["rm", "-rf", str(path)],
+                workspace=parent,
+                workspace_writable=True,
+                network_enabled=False,
+                timeout_seconds=120,
+            )
+        )
+    except Exception:  # noqa: BLE001
+        # Cleanup must never be the reason a job reports failure.
+        pass
+
+    if path.exists():
+        message = f"could not remove {path}; it holds tenant data and is now orphaned"
+        if job_id:
+            _append_log(job_id, message)
+        return False
+    return True
 
 
 def _is_usable_trivy_report(raw: str) -> bool:
@@ -652,13 +750,22 @@ def _is_usable_trivy_report(raw: str) -> bool:
     return isinstance(data, dict) and "Results" in data
 
 
-def _clone_hint(result, repo_url: str, branch: str | None) -> str | None:
+def _clone_hint(result, repo_url: str, branch: str | None, authenticated: bool = False) -> str | None:
     """Translate git's failure into something the person who typed the URL can act on."""
     output = (result.output or "").lower()
     if "could not read username" in output or "authentication failed" in output:
+        if authenticated:
+            # Telling someone to make the repository public when they have
+            # already configured a credential sends them the wrong way.
+            return (
+                f"Cannot read {repo_url} with the team's git credential. The token may be "
+                "expired, may not grant access to this repository, or may lack read access "
+                "to its contents."
+            )
         return (
             f"Cannot read {repo_url}: the repository is private or does not exist. "
-            "This platform clones over HTTPS with no credentials, so the repository must be public."
+            "Either make it public, or add a git credential for your team so the platform "
+            "can read it."
         )
     if "remote branch" in output and "not found" in output:
         return f"Branch '{branch}' does not exist in {repo_url}."
@@ -751,7 +858,10 @@ def deploy_task(job_id: str, deployment_id: str, project_id: str, user_id: str) 
         cloned: Path | None = None
         try:
             _append_log(job_id, "[1/7] cloning repository")
-            cloned = _clone_repo(deployment.repo_url, job_id, on_line, branch=deployment.branch)
+            cloned = _clone_repo(
+                deployment.repo_url, job_id, on_line,
+                branch=deployment.branch, team_id=project.team_id,
+            )
 
             # Check this before spending a build slot on it. docker's own
             # complaint ("unable to evaluate symlinks in Dockerfile path:
@@ -786,7 +896,8 @@ def deploy_task(job_id: str, deployment_id: str, project_id: str, user_id: str) 
                     requires_docker_daemon=True,
                     timeout_seconds=600,
                     on_line=on_line,
-                    env={"REGISTRY_PASSWORD": settings.registry_password, "REGISTRY_USER": settings.registry_user},
+                    env={"REGISTRY_USER": settings.registry_user},
+                    secret_env={"REGISTRY_PASSWORD": settings.registry_password},
                 )
             )
             _check(push)
@@ -877,9 +988,7 @@ def deploy_task(job_id: str, deployment_id: str, project_id: str, user_id: str) 
             _fail(db, uuid.UUID(job_id), str(exc))
         finally:
             if cloned is not None:
-                import shutil
-
-                shutil.rmtree(cloned.parent, ignore_errors=True)
+                _purge_path(cloned.parent, job_id)
     finally:
         db.close()
 
