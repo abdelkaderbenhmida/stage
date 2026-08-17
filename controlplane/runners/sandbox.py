@@ -146,13 +146,24 @@ def run_sandbox(run: SandboxRun) -> SandboxResult:
         # Guaranteed cleanup on both success and failure paths.
         subprocess.run(["docker", "rm", "-f", name], capture_output=True)
 
-    if timed_out:
-        # Drain whatever the container emitted before dying.
-        for line in proc.stdout:
-            clean = line.rstrip("\n")
-            lines.append(clean)
-            if run.on_line:
-                run.on_line(clean)
+    # Drain the pipe on every path, not just the timeout one.
+    #
+    # The read loop above runs `while proc.poll() is None`, so it stops the
+    # instant the container exits — and anything still sitting in the pipe
+    # buffer at that moment was silently dropped. A command that writes more
+    # than the buffer holds and then exits promptly, which is every image
+    # scan (Trivy's report here was 295 KB), had its output truncated
+    # mid-document while the exit code still said success.
+    #
+    # That is what made the vulnerability gate unreliable in practice: a
+    # truncated report is invalid JSON, the parser treated unreadable output
+    # as "no findings", and the deployment proceeded. The scan looked like it
+    # had run, because it had — only its conclusion never arrived.
+    for line in proc.stdout:
+        clean = scrub_line(line.rstrip("\n")) if run.on_line else line.rstrip("\n")
+        lines.append(clean)
+        if run.on_line:
+            run.on_line(clean)
 
     output = "\n".join(lines)
     if timed_out:
