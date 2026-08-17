@@ -416,9 +416,7 @@ def destroy_task(
                 _set_project_status(db, project_id, "failed")
                 _mark_job(db, uuid.UUID(job_id), "failed", result.output[-800:])
                 return
-            import shutil
-
-            shutil.rmtree(ws, ignore_errors=True)
+            _remove_workspace(ws, job_id)
             _set_project_status(db, project_id, "destroyed")
             _mark_job(db, uuid.UUID(job_id), "succeeded")
             _append_log(job_id, f"Namespace {ns} ({project_name}) removed.")
@@ -432,10 +430,7 @@ def destroy_task(
                 _set_project_status(db, project_id, "failed")
                 _mark_job(db, uuid.UUID(job_id), "failed", result.output[-800:])
                 return
-            import shutil
-
-            shutil.rmtree(ws, ignore_errors=True)
-            _append_log(job_id, "Workspace removed.")
+            _remove_workspace(ws, job_id)
         else:
             _append_log(job_id, "No workspace found — nothing to destroy.")
 
@@ -597,6 +592,47 @@ def _safe_json(text: str) -> dict:
         return data if isinstance(data, dict | list) else {"raw": text[:5000]}
     except json.JSONDecodeError:
         return {"raw": text[:5000]}
+
+
+def _logger():
+    import logging
+
+    return logging.getLogger("controlplane.workers")
+
+
+def _remove_workspace(ws: Path, job_id: str) -> None:
+    """Delete a project workspace, and refuse to delete anything else.
+
+    `queue_destroy` passes `workspace or ""` (tasks.py, queue_destroy), so a
+    project whose `workspace_path` was never set — a draft, or one adopted
+    from the warm pool — arrives here as `Path("")`. That is `.`, and
+    `shutil.rmtree(".", ignore_errors=True)` deletes the worker's current
+    working directory: on this instance, the control plane's own checkout,
+    silently, because errors were ignored.
+
+    A workspace always lives under `settings.workspace_root`. Anything else is
+    a bug in the caller, so it is refused and recorded rather than obeyed.
+    """
+    root = Path(settings.workspace_root).resolve()
+    try:
+        target = ws.resolve()
+    except OSError:
+        _append_log(job_id, f"refusing to remove unresolvable workspace path {ws!r}")
+        return
+
+    if not str(ws).strip():
+        _append_log(job_id, "no workspace recorded for this project — nothing to remove")
+        return
+    if target == root or root not in target.parents:
+        _append_log(
+            job_id,
+            f"refusing to remove {target}: outside the workspace root {root}",
+        )
+        _logger().error("destroy.unsafe_workspace path=%s root=%s", target, root)
+        return
+
+    shutil.rmtree(target, ignore_errors=True)
+    _append_log(job_id, f"workspace {target} removed")
 
 
 def _clone_repo(
