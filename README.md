@@ -24,7 +24,7 @@ platform stores no tenant source code at all.**
 
 A deployment holds a *pointer*, not a copy:
 
-```
+```text
 repo_url  = https://github.com/some-org/their-service.git
 branch     = main
 image_ref  = registry/<team>/<project>-<service>:commit-abc1234
@@ -38,7 +38,7 @@ keeps it.
 Three things are easy to confuse:
 
 | | Holds | Where |
-|---|---|---|
+| --- | --- | --- |
 | **Tenant code** | a user's application source | their own Git repository (external) |
 | **Workspaces** | Terraform state, generated inventories | `WORKSPACE_ROOT`, one per project |
 | **`app/`** | the platform's *own* demo microservices | this repository — **not** tenant code |
@@ -50,7 +50,7 @@ platform and are managed from the operator console. No tenant's code ever lands 
 
 ## What it does
 
-**For a tenant**
+### For a tenant
 
 - Create a **project** — a quota-bounded namespace on the shared cluster, or a set of
   real VMs provisioned with Terraform and Ansible.
@@ -62,14 +62,14 @@ platform and are managed from the operator console. No tenant's code ever lands 
   server-side so nobody can widen them to another tenant.
 - Environments carry a **TTL** and are reaped automatically when it expires.
 
-**For an operator**
+### For an operator
 
 A separate console (`Operations`, admin-only) covering the platform's own services:
 health, deployments, ArgoCD, Vault, Terraform reconciliation, and the CI matrix.
 
 ## How a deployment runs
 
-```
+```text
 [1/7] clone repository        shallow clone of the requested branch, no credentials
                               unless the team configured one; .git is removed after
 [2/7] build image             docker build inside a sandboxed container
@@ -109,7 +109,7 @@ Security-relevant behaviour that is easy to get wrong, and how it is handled her
 ## Stack
 
 | Layer | Tool |
-|---|---|
+| --- | --- |
 | Control plane | FastAPI, SQLAlchemy, Alembic, Celery, PostgreSQL, Redis |
 | Infrastructure as code | Terraform (libvirt/KVM — local VMs, no cloud account) |
 | Configuration | Ansible (`docker`, `k8s_common`, `k8s_master`, `k8s_worker`) |
@@ -120,7 +120,7 @@ Security-relevant behaviour that is easy to get wrong, and how it is handled her
 
 ## Repository layout
 
-```
+```text
 controlplane/        the platform itself
   api/routers/       auth, projects, deployments, jobs, scans, teams,
                      logs, monitoring, catalogue, infrastructure, webhooks, platform
@@ -159,7 +159,7 @@ celery -A controlplane.workers.celery_app worker --loglevel=info --concurrency=2
 python3 scripts/seed-demo.py
 ```
 
-The console is then at **http://127.0.0.1:8000**.
+The console is then at **<http://127.0.0.1:8000>**.
 
 `local-registry.sh` sets up both halves of the registry, and both are needed: a
 registry published on the host so the control plane can push, and a containerd mirror
@@ -169,7 +169,7 @@ node*, so a registry the host can reach is still invisible to the kubelet.
 ### Useful scripts
 
 | Script | Purpose |
-|---|---|
+| --- | --- |
 | `seed-demo.py` | rebuild a demo tenancy through the public API |
 | `local-registry.sh` / `local-vault.sh` | stand up the registry and secret store |
 | `backup.sh` / `restore.sh` | database + workspaces as one checksummed unit |
@@ -192,7 +192,7 @@ need real VMs and SSH.
 Read from the environment (see `controlplane/core/config.py`):
 
 | Variable | Meaning |
-|---|---|
+| --- | --- |
 | `DATABASE_URL`, `REDIS_URL` | control-plane storage |
 | `WORKSPACE_ROOT` | per-project workspaces — **the only tree the destroy path may delete** |
 | `REGISTRY`, `REGISTRY_INTERNAL`, `REGISTRY_NETWORK` | how the platform and the sandbox each reach the registry |
