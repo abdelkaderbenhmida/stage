@@ -820,12 +820,17 @@ async function renderCiTab(body) {
     return pill(r.conclusion || r.status || "unknown", "muted");
   };
 
+  const isTerminal = (r) => r.status === "completed" && (r.conclusion === "success" || r.conclusion === "failure" || r.conclusion === "cancelled");
+
   const rows = data.runs.map((r) => `
-    <div class="run-row">
+    <div class="run-row" data-run-id="${r.databaseId}">
       <div class="run-main">
         ${statusPill(r)}
         <div>
-          <div class="run-title">${esc(r.displayTitle)}</div>
+          <div class="run-title">
+            ${esc(r.displayTitle)}
+            <button class="act-btn sm" data-act="toggleCiGraph" data-a1="${r.databaseId}" title="Show pipeline graph">⧉ graph</button>
+          </div>
           <div class="run-meta">${esc(r.workflowName)} · ${esc(r.headBranch)} · ${esc(r.event)} · ${esc(new Date(r.createdAt).toLocaleString())}</div>
         </div>
       </div>
@@ -835,6 +840,7 @@ async function renderCiTab(body) {
         ${r.conclusion === "failure" ? `<button class="act-btn" data-act="ciRerun" data-a1="${r.databaseId}">↻ rerun failed</button>` : ""}
         ${r.status === "in_progress" || r.status === "queued" ? `<button class="act-btn danger" data-act="ciCancel" data-a1="${r.databaseId}">✕ cancel</button>` : ""}
       </div>
+      <div class="ci-graph-panel" id="ci-graph-${r.databaseId}" style="display:none;"></div>
     </div>`).join("");
 
   body.innerHTML = `
@@ -845,6 +851,51 @@ async function renderCiTab(body) {
       <button class="act-btn" data-act="refreshConfigTab">↻ refresh</button>
     </div>
     <div class="run-list">${rows || `<div class="empty">no runs found</div>`}</div>`;
+
+  // Bind toggle handlers
+  body.querySelectorAll('[data-act="toggleCiGraph"]').forEach(btn => {
+    btn.onclick = async () => {
+      const runId = btn.dataset.a1;
+      const panel = $(`#ci-graph-${runId}`);
+      const isOpen = panel.style.display !== "none";
+      if (isOpen) { panel.style.display = "none"; btn.textContent = "⧉ graph"; return; }
+      panel.style.display = "block";
+      btn.textContent = "⧍ hide graph";
+      if (panel.innerHTML.trim()) return; // already rendered
+      panel.innerHTML = `<div class="cfg-loading">fetching pipeline graph…</div>`;
+      try {
+        const graph = await api("GET", `/api/v1/platform/ci/runs/${runId}/graph`);
+        if (window.PipelineGraph) {
+          const container = window.PipelineGraph.render(graph);
+          panel.innerHTML = "";
+          panel.appendChild(container);
+        } else {
+          panel.innerHTML = `<div class="error">PipelineGraph renderer not loaded</div>`;
+        }
+      } catch (e) {
+        panel.innerHTML = `<div class="error">${esc(e.message)}</div>`;
+      }
+    };
+  });
+
+  // Poll live runs every 5s (state.pipelineTimer pattern)
+  if (state.ciGraphTimer) clearInterval(state.ciGraphTimer);
+  state.ciGraphTimer = setInterval(async () => {
+    const liveRuns = data.runs.filter(r => !isTerminal(r));
+    if (!liveRuns.length) { clearInterval(state.ciGraphTimer); state.ciGraphTimer = null; return; }
+    for (const r of liveRuns) {
+      const panel = $(`#ci-graph-${r.databaseId}`);
+      if (!panel || panel.style.display === "none") continue;
+      try {
+        const graph = await api("GET", `/api/v1/platform/ci/runs/${r.databaseId}/graph`);
+        if (window.PipelineGraph) {
+          const container = window.PipelineGraph.render(graph);
+          panel.innerHTML = "";
+          panel.appendChild(container);
+        }
+      } catch (e) { /* ignore */ }
+    }
+  }, 5000);
 }
 
 async function ciTrigger() {
@@ -1651,6 +1702,7 @@ function bindDispatch(root) {
 
 function switchView(name) {
   if (state.pipelineTimer) { clearInterval(state.pipelineTimer); state.pipelineTimer = null; }
+  if (state.ciGraphTimer) { clearInterval(state.ciGraphTimer); state.ciGraphTimer = null; }
   const root = $("platform-root");
   if (!root) return;
   root.querySelectorAll(".nav-item").forEach((n) => n.classList.toggle("active", n.dataset.view === name));
@@ -1695,6 +1747,7 @@ function unmount() {
   state.mounted = false;
   if (state.pipelineTimer) { clearInterval(state.pipelineTimer); state.pipelineTimer = null; }
   if (state.runTimer) { clearInterval(state.runTimer); state.runTimer = null; }
+  if (state.ciGraphTimer) { clearInterval(state.ciGraphTimer); state.ciGraphTimer = null; }
   closeDetail();
 }
 

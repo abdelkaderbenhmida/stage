@@ -1625,6 +1625,7 @@ async function renderJob(jobId) {
         <button class="danger" id="cancel-job">Cancel job</button>
       </div>
       ${job.error_message ? `<div class="panel"><p class="error">${esc(job.error_message)}</p></div>` : ""}
+      <div class="panel" id="pipeline-graph">Loading graph…</div>
       ${stageTracker(job.log, job.status)}
       <div class="panel">
         <div class="between" style="margin-bottom:.6rem">
@@ -1641,6 +1642,23 @@ async function renderJob(jobId) {
       } catch (err) { toast(err.message, true); }
     };
 
+    // Fetch and render pipeline graph
+    async function renderGraph() {
+      try {
+        const graph = await api(`/projects/${job.project_id}/jobs/${jobId}/graph`);
+        if (window.PipelineGraph) {
+          const container = window.PipelineGraph.render(graph);
+          const target = $("#pipeline-graph");
+          if (target) target.replaceWith(container);
+        } else {
+          // Fallback: keep stageTracker (already in DOM)
+        }
+      } catch (e) {
+        // Fallback: stageTracker already rendered
+      }
+    }
+    await renderGraph();
+
     // Only stream while the job can still produce output.
     if (job.status === "queued" || job.status === "running") {
       streamJobLog(jobId);
@@ -1651,11 +1669,27 @@ async function renderJob(jobId) {
     showError(err, route);
   }
 }
-
 function streamJobLog(jobId) {
   const logEl = $("#log");
   const stateEl = $("#stream-state");
   stateEl.textContent = "streaming…";
+
+  let lastGraphFetch = 0;
+  async function maybeRefetchGraph() {
+    const now = Date.now();
+    if (now - lastGraphFetch >= 2000) {
+      lastGraphFetch = now;
+      try {
+        const job = await api(`/jobs/${jobId}`);
+        const graph = await api(`/projects/${job.project_id}/jobs/${jobId}/graph`);
+        if (window.PipelineGraph) {
+          const container = window.PipelineGraph.render(graph);
+          const target = $("#pipeline-graph");
+          if (target) target.replaceWith(container);
+        }
+      } catch (e) { /* ignore */ }
+    }
+  }
 
   // EventSource cannot send an Authorization header, so the log stream uses a
   // short-lived stream token minted server-side instead of the access token
@@ -1677,6 +1711,7 @@ function streamJobLog(jobId) {
         if (!delta) return;
         if (logEl.textContent === "Waiting for output…") logEl.textContent = "";
         logEl.textContent += delta;
+
         logEl.scrollTop = logEl.scrollHeight;
         // Keep the step tracker in step with the log it is derived from.
         const stagesEl = $("#stages");
@@ -1685,12 +1720,16 @@ function streamJobLog(jobId) {
           if (stagesEl) stagesEl.outerHTML = markup;
           else logEl.closest(".panel").insertAdjacentHTML("beforebegin", markup);
         }
+        // Re-fetch graph (throttled 2s)
+        maybeRefetchGraph();
       });
 
       stream.addEventListener("done", () => {
         stateEl.textContent = "finished";
         stream.close();
         if (activeStream === stream) activeStream = null;
+        // Final graph fetch on done
+        maybeRefetchGraph();
         renderJob(jobId);
       });
 

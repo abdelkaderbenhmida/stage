@@ -221,6 +221,16 @@ def api_live_ci() -> dict:
     return platform_ops.ci_runs()
 
 
+@router.get("/ci/runs/{run_id}/graph")
+def api_ci_run_graph(run_id: str) -> dict:
+    """Return a pipeline graph for a GitHub Actions run.
+
+    Edges from workflow file (parse_ci), statuses from gh run view.
+    Degraded path: when gh unreachable, returns reachable:false + nodes/edges with all skipped.
+    """
+    return platform_ops.ci_run_graph(run_id)
+
+
 @router.post("/live/ci/trigger")
 def api_live_ci_trigger(body: WorkflowRef) -> dict:
     return _guard(platform_ops.ci_trigger, body.workflow, body.ref or None)
