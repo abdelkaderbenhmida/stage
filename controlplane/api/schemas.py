@@ -357,3 +357,38 @@ class JobSummaryOut(BaseModel):
 
 class Message(BaseModel):
     message: str
+
+
+class GraphNode(BaseModel):
+    """One box in a pipeline graph. `status` uses the shared six-value
+    vocabulary (queued, running, succeeded, failed, cancelled, skipped)."""
+
+    id: str
+    name: str
+    status: str
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    duration_s: float | None = None
+    detail: str = ""
+    url: str | None = None
+
+
+class GraphEdge(BaseModel):
+    """Edge between two graph nodes. Serialized as {"from": ..., "to": ...}
+    so the shared renderer reads e.from / e.to directly."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    from_: str = Field(alias="from")
+    to: str
+
+
+class PipelineGraphOut(BaseModel):
+    """A graph: node list + edge list, enough for the shared renderer."""
+
+    source: str
+    title: str
+    status: str
+    updated_at: datetime | None = None
+    nodes: list[GraphNode] = []
+    edges: list[GraphEdge] = []

@@ -5,6 +5,7 @@ gate logic and error handling without touching real infra (docs/PLATFORM_SPEC.md
 import json
 
 import pytest
+import sqlalchemy as sa
 from controlplane.core.security import hash_password
 from controlplane.models import Deployment, Job, Project, Scan, User
 from controlplane.runners.scanners.base import RawResult
@@ -495,3 +496,109 @@ def test_scan_task_fails_the_job_when_its_scan_row_is_missing(session, project, 
     refreshed = session.get(Job, job.id)
     assert refreshed.status == "failed"
     assert "not found" in (refreshed.error_message or "")
+
+
+# ---------------------------------------------------------------------------
+# job_steps rows — the pipeline graph's source of truth
+# ---------------------------------------------------------------------------
+
+
+def test_step_records_rows_with_indexes_totals_and_timestamps(session, project, user):
+    from controlplane.models import JobStep
+
+    job = _new_job(session, project, "provision")
+    tasks._step(job.id, 1, 4, "terraform init")
+    tasks._step(job.id, 2, 4, "terraform apply")
+    tasks._step(job.id, 3, 4, "capturing node IPs")
+    tasks._step(job.id, 4, 4, "ansible-playbook configure")
+    tasks._mark_job(session, job.id, "succeeded")
+
+    session.expire_all()
+    steps = session.scalars(
+        sa.select(JobStep).where(JobStep.job_id == job.id).order_by(JobStep.index)
+    ).all()
+    assert [s.index for s in steps] == [1, 2, 3, 4]
+    assert all(s.total == 4 for s in steps)
+    assert [s.name for s in steps] == [
+        "terraform init", "terraform apply", "capturing node IPs", "ansible-playbook configure",
+    ]
+    # Every step is closed by the next one (or by _mark_job) and timestamped.
+    assert all(s.status == "succeeded" for s in steps)
+    for s in steps:
+        assert s.started_at is not None
+        assert s.finished_at is not None
+        assert s.finished_at >= s.started_at
+
+
+def test_step_emits_n_of_n_markers_to_the_log(session, project, user):
+    job = _new_job(session, project, "provision")
+    tasks._step(job.id, 1, 3, "one")
+    tasks._step(job.id, 2, 3, "two")
+    tasks._step(job.id, 3, 3, "three")
+
+    session.expire_all()
+    log = session.get(Job, job.id).log
+    assert "[1/3]" in log and "[2/3]" in log and "[3/3]" in log
+
+
+def test_failed_job_carries_error_into_the_final_step_detail(session, project, user):
+    from controlplane.models import JobStep
+
+    job = _new_job(session, project, "deploy")
+    tasks._step(job.id, 1, 7, "cloning repository")
+    tasks._step(job.id, 2, 7, "building image")
+    tasks._mark_job(session, job.id, "failed", error="docker build failed: OOM")
+
+    session.expire_all()
+    job = session.get(Job, job.id)
+    assert job.status == "failed"
+    assert job.error_message == "docker build failed: OOM"
+    steps = session.scalars(
+        sa.select(JobStep).where(JobStep.job_id == job.id).order_by(JobStep.index)
+    ).all()
+    assert steps[0].status == "succeeded"
+    assert steps[1].status == "failed"
+    assert steps[1].detail == "docker build failed: OOM"
+    assert steps[1].finished_at is not None
+
+
+def test_failed_job_truncates_error_detail_at_500_chars(session, project, user):
+    from controlplane.models import JobStep
+
+    job = _new_job(session, project, "deploy")
+    tasks._step(job.id, 1, 1, "build image")
+    tasks._mark_job(session, job.id, "failed", error="x" * 2000)
+
+    session.expire_all()
+    steps = session.scalars(
+        sa.select(JobStep).where(JobStep.job_id == job.id).order_by(JobStep.index)
+    ).all()
+    assert len(steps) == 1
+    assert len(steps[0].detail) == 500
+
+
+def test_log_truncation_keeps_all_seven_steps(session, project, user):
+    """The log is capped head-first at 200 kB; the graph must not lose steps."""
+    from controlplane.models import JobStep
+    from controlplane.workers.tasks import _LOG_CAP, _append_log
+
+    job = _new_job(session, project, "deploy")
+    step_names = [
+        "cloning repository", "building image", "pushing image to registry",
+        "trivy scan + gate", "rendering + applying manifests",
+        "waiting for rollout", "capturing live URL",
+    ]
+    for i, name in enumerate(step_names, start=1):
+        tasks._step(job.id, i, 7, name)
+        _append_log(job.id, f"step {i} output: " + "x" * 40_000)
+    tasks._mark_job(session, job.id, "succeeded")
+
+    session.expire_all()
+    job = session.get(Job, job.id)
+    assert len(job.log) <= _LOG_CAP
+    steps = session.scalars(
+        sa.select(JobStep).where(JobStep.job_id == job.id).order_by(JobStep.index)
+    ).all()
+    assert len(steps) == 7
+    assert [s.index for s in steps] == [1, 2, 3, 4, 5, 6, 7]
+    assert steps[6].status == "succeeded"

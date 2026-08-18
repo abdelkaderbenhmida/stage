@@ -1615,6 +1615,106 @@ def ci_cancel(run_id: str) -> dict[str, Any]:
     return {"ok": True, "message": f"cancelled run {run_id}"}
 
 
+# ─── CI pipeline graph ───
+
+
+def _ci_job_status(gj: dict[str, Any]) -> str:
+    """Map a GitHub Actions job (status/conclusion) onto the graph vocabulary."""
+    status = gj.get("status", "")
+    conclusion = gj.get("conclusion", "")
+    if status == "completed":
+        if conclusion == "success":
+            return "succeeded"
+        if conclusion == "cancelled":
+            return "cancelled"
+        if conclusion == "skipped":
+            return "skipped"
+        # conclusion "interrupted" (cancelled mid-run) or "failure" → failed;
+        # a completed run with no conclusion is a stopped run → failed.
+        return "failed" if conclusion else "skipped"
+    if status == "in_progress":
+        return "running"
+    if status in ("queued", "waiting", "requested", "pending"):
+        return "queued"
+    return "skipped"
+
+
+def _rollup_statuses(statuses: list[str]) -> str:
+    """Matrix collapse: any failure→failed, else any running→running,
+    else any queued→queued, else all success→succeeded."""
+    if not statuses:
+        return "skipped"
+    if any(s == "failed" for s in statuses):
+        return "failed"
+    if any(s == "running" for s in statuses):
+        return "running"
+    if any(s == "queued" for s in statuses):
+        return "queued"
+    if all(s == "succeeded" for s in statuses):
+        return "succeeded"
+    if any(s == "cancelled" for s in statuses):
+        return "cancelled"
+    return "skipped"
+
+
+def _degraded_ci_graph(title: str, error: str, nodes: list[dict[str, Any]], edges: list[dict[str, str]]) -> dict[str, Any]:
+    for n in nodes:
+        n["status"] = "skipped"
+        n["detail"] = error[:200]
+    return {"reachable": False, "title": title, "error": error, "nodes": nodes, "edges": edges}
+
+
+def ci_run_graph(run_id: str) -> dict[str, Any]:
+    """Pipeline graph for a GitHub Actions run.
+
+    DAG (nodes + edges) comes from the workflow file via ``parse_ci()`` —
+    not from GitHub — so the topology is stable. Statuses come from
+    ``gh run view`` jobs, joined to workflow jobs by name (matrix legs roll
+    up into their workflow job). Degraded: when gh is unreachable the shape
+    stays (greyed/skipped nodes) instead of disappearing.
+    """
+    slug = _repo_slug()
+    ci = parse_ci()
+    nodes = [
+        {"id": j["id"], "name": j["name"], "status": "queued", "detail": "", "index": i}
+        for i, j in enumerate(ci["jobs"])
+    ]
+    edges = [{"from": e["from"], "to": e["to"]} for e in ci["edges"]]
+    title = f"run {run_id}"
+
+    res = _run(["gh", "run", "view", run_id, "--repo", slug, "--json", "jobs,displayTitle"], timeout=GH_TIMEOUT)
+    if not res["ok"]:
+        return _degraded_ci_graph(title, res["stderr"] or "gh CLI unavailable", nodes, edges)
+    try:
+        data = json.loads(res["stdout"])
+    except json.JSONDecodeError:
+        return _degraded_ci_graph(title, "could not parse gh run view output", nodes, edges)
+
+    title = data.get("displayTitle") or title
+    by_name: dict[str, list[dict[str, Any]]] = {}
+    for gj in data.get("jobs", []):
+        by_name.setdefault(gj.get("name") or "", []).append(gj)
+
+    for n in nodes:
+        # Join on display name first (GitHub job names carry the workflow
+        # `name:`), fall back to the workflow job id for jobs without one.
+        # Matrix legs arrive suffixed " (v1, v2)" — prefix-match those so the
+        # legs roll up into their workflow job instead of going unmatched.
+        legs = by_name.get(n["name"]) or by_name.get(n["id"])
+        if not legs:
+            prefix = n["name"] + " ("
+            legs = [gj for gj in data.get("jobs", []) if (gj.get("name") or "").startswith(prefix)]
+        if not legs:
+            n["status"] = "skipped"
+            n["detail"] = "no matching job in run"
+            continue
+        n["status"] = _rollup_statuses([_ci_job_status(gj) for gj in legs])
+        if len(legs) > 1:
+            n["detail"] = f"{len(legs)} matrix legs"
+
+    return {"reachable": True, "repo": slug, "title": title, "nodes": nodes, "edges": edges}
+
+
 # ─── Kubernetes cluster reachability ───
 
 def cluster_status() -> dict[str, Any]:

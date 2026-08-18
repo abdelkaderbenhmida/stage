@@ -7,6 +7,7 @@ same tag prefix and applying the same manifests, with the last one to finish
 winning by accident.
 """
 
+import json
 import uuid
 
 import pytest
@@ -199,3 +200,179 @@ def test_a_finished_run_does_not_block_other_deployments(client, deployment):
         headers=auth,
     )
     assert resp.status_code == 201, resp.text
+
+
+# ---------------------------------------------------------------------------
+# Pipeline graph
+# ---------------------------------------------------------------------------
+
+
+def _job_id(client, dep_id, auth) -> str:
+    runs = client.get(f"/api/v1/deployments/{dep_id}/jobs", headers=auth).json()
+    return runs[0]["id"]
+
+
+def test_graph_returns_steps_as_nodes_and_chained_edges(client, deployment, session):
+    from datetime import UTC, datetime, timedelta
+
+    from controlplane.models import JobStep
+
+    project_id, dep_id, auth = deployment
+    job_id = _job_id(client, dep_id, auth)
+    now = datetime.now(UTC)
+    session.add_all(
+        [
+            JobStep(
+                job_id=uuid.UUID(job_id), index=1, total=2, name="Create VM",
+                status="succeeded", started_at=now, finished_at=now + timedelta(seconds=12),
+            ),
+            JobStep(
+                job_id=uuid.UUID(job_id), index=2, total=2, name="Provision k8s",
+                status="running", started_at=now + timedelta(seconds=12),
+            ),
+        ]
+    )
+    session.commit()
+
+    resp = client.get(f"/api/v1/projects/{project_id}/jobs/{job_id}/graph", headers=auth)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["source"] == "deployment"
+    assert "history" in body["title"]
+    assert [n["name"] for n in body["nodes"]] == ["Create VM", "Provision k8s"]
+    assert [n["status"] for n in body["nodes"]] == ["succeeded", "running"]
+    assert body["nodes"][0]["duration_s"] == 12.0
+    assert body["edges"] == [{"from": "create-vm", "to": "provision-k8s"}]
+
+
+def test_graph_has_single_node_fallback_for_step_less_jobs(client, deployment):
+    """scan/destroy/undeploy jobs have no steps — the graph degrades to the
+    job itself instead of an empty canvas."""
+    project_id, dep_id, auth = deployment
+    job_id = _job_id(client, dep_id, auth)
+    resp = client.get(f"/api/v1/projects/{project_id}/jobs/{job_id}/graph", headers=auth)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert len(body["nodes"]) == 1
+    assert body["nodes"][0]["id"] == "job"
+    assert body["nodes"][0]["status"] == "queued"
+    assert body["edges"] == []
+
+
+def test_graph_of_another_teams_job_is_not_found(client, deployment, auth_headers):
+    project_id, dep_id, auth = deployment
+    job_id = _job_id(client, dep_id, auth)
+    stranger = auth_headers(email="stranger@example.com")
+    resp = client.get(f"/api/v1/projects/{project_id}/jobs/{job_id}/graph", headers=stranger)
+    assert resp.status_code == 404
+
+
+def test_graph_requires_auth(client, deployment):
+    project_id, dep_id, auth = deployment
+    job_id = _job_id(client, dep_id, auth)
+    resp = client.get(f"/api/v1/projects/{project_id}/jobs/{job_id}/graph")
+    assert resp.status_code == 401
+
+
+def test_graph_of_unknown_job_is_not_found(client, auth_headers):
+    auth = auth_headers()
+    resp = client.get(f"/api/v1/projects/{uuid.uuid4()}/jobs/{uuid.uuid4()}/graph", headers=auth)
+    assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Platform CI graph endpoint
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def admin_headers(client, session):
+    from controlplane.core.security import hash_password
+    from controlplane.models import User
+
+    admin = User(
+        email=f"admin-{uuid.uuid4().hex[:8]}@example.com",
+        password_hash=hash_password("Sup3rSecret!"),
+        role="admin",
+    )
+    session.add(admin)
+    session.commit()
+    login = client.post(
+        "/api/v1/auth/login",
+        json={"email": admin.email, "password": "Sup3rSecret!"},
+    )
+    assert login.status_code == 200, login.text
+    return {"Authorization": f"Bearer {login.json()['access_token']}"}
+
+
+def _fake_gh(monkeypatch, run_view_payload: dict):
+    """Point platform_ops at a stable slug and stub _run with canned gh JSON."""
+    from controlplane import platform_ops
+
+    monkeypatch.setattr(platform_ops, "_repo_slug", lambda: "acme/stage")
+
+    def _fake_run(cmd, **kwargs):
+        if cmd and cmd[0] == "gh":
+            return {"ok": True, "stdout": json.dumps(run_view_payload), "stderr": "", "code": 0}
+        return {"ok": True, "stdout": "origin https://github.com/acme/stage.git", "stderr": "", "code": 0}
+
+    monkeypatch.setattr(platform_ops, "_run", _fake_run)
+
+
+def test_ci_graph_endpoint_returns_dag_shape(client, admin_headers, monkeypatch):
+    _fake_gh(
+        monkeypatch,
+        {
+            "displayTitle": "ci: main",
+            "jobs": [
+                {"databaseId": "101", "name": "Discover services", "status": "completed", "conclusion": "success"},
+                {"databaseId": "102", "name": "Lint", "status": "completed", "conclusion": "success"},
+                {"databaseId": "103", "name": "Tests + Dependency Audit", "status": "completed", "conclusion": "failure"},
+            ],
+        },
+    )
+    resp = client.get("/api/v1/platform/ci/runs/7/graph", headers=admin_headers)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["reachable"] is True
+    assert body["title"] == "ci: main"
+    assert body["nodes"], "DAG must come from the workflow file"
+    by_id = {n["id"]: n for n in body["nodes"]}
+    assert by_id["discover"]["status"] == "succeeded"
+    assert by_id["test"]["status"] == "failed"
+    assert any(e["to"] == "test" for e in body["edges"])
+
+
+def test_ci_graph_endpoint_matrix_rolls_up(client, admin_headers, monkeypatch):
+    _fake_gh(
+        monkeypatch,
+        {
+            "displayTitle": "ci: matrix",
+            "jobs": [
+                {"databaseId": "201", "name": "Tests + Dependency Audit (a)", "status": "completed", "conclusion": "success"},
+                {"databaseId": "202", "name": "Tests + Dependency Audit (b)", "status": "completed", "conclusion": "failure"},
+            ],
+        },
+    )
+    resp = client.get("/api/v1/platform/ci/runs/8/graph", headers=admin_headers)
+    assert resp.status_code == 200, resp.text
+    test_node = next(n for n in resp.json()["nodes"] if n["id"] == "test")
+    assert test_node["status"] == "failed"
+    assert test_node["detail"] == "2 matrix legs"
+
+
+def test_ci_graph_endpoint_degraded_keeps_shape(client, admin_headers, monkeypatch):
+    from controlplane import platform_ops
+
+    monkeypatch.setattr(platform_ops, "_repo_slug", lambda: "acme/stage")
+    monkeypatch.setattr(
+        platform_ops, "_run",
+        lambda cmd, **kw: {"ok": False, "stdout": "", "stderr": "gh not installed", "code": -1},
+    )
+    resp = client.get("/api/v1/platform/ci/runs/9/graph", headers=admin_headers)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["reachable"] is False
+    assert body["nodes"], "degraded path must keep the DAG shape"
+    assert all(n["status"] == "skipped" for n in body["nodes"])
+    assert any(e["to"] == "test" for e in body["edges"])

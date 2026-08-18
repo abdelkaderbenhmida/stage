@@ -132,7 +132,7 @@
   // ── SVG Rendering ────────────────────────────────────────────────
 
   function escapeHtml(s) {
-    return String(s).replace(/&/g, '&').replace(/</g, '<').replace(/>/g, '>').replace(/"/g, '"').replace(/'/g, ''');
+    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
   }
 
   function formatDuration(s) {
@@ -182,12 +182,12 @@
         <style>
           .pipe-node .pipe-name { font: 600 13px system-ui, sans-serif; fill: var(--fg); }
           .pipe-node .pipe-meta { font: 12px system-ui, sans-serif; fill: var(--muted); }
-          .pipe-node.pipe-queued rect { fill: var(--surface-2); stroke: var(--border); }
-          .pipe-node.pipe-running rect { fill: var(--surface-2); stroke: var(--accent); animation: pipe-pulse 1.5s ease-in-out infinite; }
+          .pipe-node.pipe-queued rect { fill: var(--panel); stroke: var(--border); }
+          .pipe-node.pipe-running rect { fill: var(--panel); stroke: var(--accent); animation: pipe-pulse 1.5s ease-in-out infinite; }
           .pipe-node.pipe-succeeded rect { fill: var(--ok-bg); stroke: var(--ok); }
           .pipe-node.pipe-failed rect { fill: var(--fail-bg); stroke: var(--fail); }
           .pipe-node.pipe-cancelled rect { fill: var(--warn-bg); stroke: var(--warn); }
-          .pipe-node.pipe-skipped rect { fill: var(--surface-1); stroke: var(--border); stroke-dasharray: 4 4; }
+          .pipe-node.pipe-skipped rect { fill: var(--panel-solid); stroke: var(--border); stroke-dasharray: 4 4; }
           .pipe-edge { fill: none; stroke: var(--border); stroke-width: 2; stroke-linecap: round; }
           .pipe-a11y { position: absolute; left: -9999px; }
           @keyframes pipe-pulse { 0%, 100% { stroke-opacity: 0.6; } 50% { stroke-opacity: 1; } }

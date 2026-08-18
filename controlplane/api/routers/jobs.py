@@ -18,7 +18,7 @@ from controlplane.api.deps import (
 )
 from controlplane.api.schemas import JobOut, Message, PipelineGraphOut, GraphNode, GraphEdge
 from controlplane.db import SessionLocal
-from controlplane.models import Job, User, JobStep
+from controlplane.models import Deployment, Job, Project, User, JobStep
 from controlplane.repositories.base import NotFoundError, Scope
 from controlplane.repositories.jobs import JobRepository
 from controlplane.workers.tasks import revoke_job
@@ -140,6 +140,8 @@ def job_graph(
     from the job itself.
     """
     job = _get(db, scope, job_id)
+    project = db.get(Project, job.project_id) if job.project_id else None
+    deployment = db.get(Deployment, job.deployment_id) if job.deployment_id else None
 
     # Build nodes from job_steps
     steps = (
@@ -178,7 +180,7 @@ def job_graph(
         nodes = [
             GraphNode(
                 id="job",
-                name=job.deployment.service_name if job.deployment else job.type,
+                name=deployment.service_name if deployment else job.type,
                 status=job.status,
                 started_at=job.started_at,
                 finished_at=job.finished_at,
@@ -191,7 +193,7 @@ def job_graph(
     updated_at = job.updated_at or job.finished_at or job.started_at or job.created_at
     return PipelineGraphOut(
         source="deployment",
-        title=f"{job.project.name if job.project else 'unknown'} · {job.deployment.service_name if job.deployment else job.type}",
+        title=f"{project.name if project else 'unknown'} · {deployment.service_name if deployment else job.type}",
         status=job.status,
         updated_at=updated_at,
         nodes=nodes,
