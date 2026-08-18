@@ -42,6 +42,7 @@ from controlplane.models import (
     ACTIVE_STATUSES,
     Deployment,
     Job,
+    JobStep,
     PooledCluster,
     Project,
     Scan,
@@ -98,6 +99,19 @@ def _mark_job(db: Session, job_id: uuid.UUID, status: str, error: str | None = N
         from datetime import datetime
 
         job.finished_at = datetime.now(UTC)
+    # Close the final open step (if any)
+    from sqlalchemy import select
+
+    step = db.execute(
+        select(JobStep)
+        .where(JobStep.job_id == job_id, JobStep.finished_at.is_(None))
+        .order_by(JobStep.index.desc())
+    ).scalar_one_or_none()
+    if step:
+        step.finished_at = datetime.now(UTC)
+        step.status = "succeeded" if status == "succeeded" else "failed"
+        if error and status != "succeeded":
+            step.detail = error[:500]
     db.commit()
 
 
@@ -117,6 +131,40 @@ def _log_lines(job_id: uuid.UUID):
         _append_log(job_id, line)
 
     return on_line
+
+
+def _step(job_id: uuid.UUID, index: int, total: int, name: str) -> None:
+    """Open step `index`, closing the previous one.
+
+    Steps are recorded as rows because the log they used to be parsed from is
+    truncated head-first at 200 kB — on a long run the early steps vanish
+    from it, and with them the start of the graph.
+    """
+    from datetime import UTC, datetime
+
+    with SessionLocal() as db:
+        # Close the previous open step (if any)
+        prev = db.execute(
+            select(JobStep)
+            .where(JobStep.job_id == job_id, JobStep.finished_at.is_(None))
+            .order_by(JobStep.index.desc())
+        ).scalar_one_or_none()
+        if prev:
+            prev.finished_at = datetime.now(UTC)
+            prev.status = "succeeded"
+        # Insert the new step
+        step = JobStep(
+            job_id=job_id,
+            index=index,
+            total=total,
+            name=name,
+            status="running",
+            started_at=datetime.now(UTC),
+        )
+        db.add(step)
+        db.commit()
+    # Still emit to log so parseStages keeps working
+    _append_log(job_id, f"[{index}/{total}] {name}")
 
 
 def _check(result, hint: str | None = None) -> None:
@@ -205,10 +253,10 @@ def provision_task(
         render_ansible(spec, ansible_runtime(), ws)
         _append_log(job_id, "Rendered Terraform and Ansible artifacts.")
 
-        _append_log(job_id, "[1/4] terraform init")
+        _step(job_id, 1, 4, "terraform init")
         _check(terraform_init(ws, on_line=on_line))
 
-        _append_log(job_id, "[2/4] terraform apply")
+        _step(job_id, 2, 4, "terraform apply")
         try:
             _check(terraform_apply(ws, on_line=on_line))
         except Exception:
@@ -217,7 +265,7 @@ def provision_task(
             _append_log(job_id, f"cleanup result: {cleanup.exit_code}")
             raise
 
-        _append_log(job_id, "[3/4] capturing node IPs")
+        _step(job_id, 3, 4, "capturing node IPs")
         out = terraform_output(ws, "node_ips")
         _check(out)
         node_ips = json.loads(out.output)
@@ -237,7 +285,7 @@ def provision_task(
         _append_log(job_id, "Waiting for nodes to accept SSH connections...")
         _wait_for_ssh(job_id, list(node_ips.values()))
 
-        _append_log(job_id, "[4/4] ansible-playbook configure")
+        _step(job_id, 4, 4, "ansible-playbook configure")
         key = user_ssh_private_key(uuid.UUID(user_id))
         # sshd starts long before cloud-init finishes creating the user and
         # installing the authorized key — and cloud-init itself runs a full
@@ -311,10 +359,10 @@ def _provision_namespace(
     """Provision by carving a quota-bounded namespace out of a shared cluster."""
     project = db.get(Project, uuid.UUID(project_id))
     ns = k8s_namespace(project.id)
-    _append_log(job_id, "[1/2] rendering namespace, quota, limits and network policy")
+    _step(job_id, 1, 2, "rendering namespace, quota, limits and network policy")
     manifest = render_namespace(spec, ns, ws)
 
-    _append_log(job_id, "[2/2] applying to the shared cluster")
+    _step(job_id, 2, 2, "applying to the shared cluster")
     kubectl_apply([manifest], project, on_line)
 
     # There are no VMs in this mode; the recorded nodes describe the quota
@@ -983,7 +1031,7 @@ def deploy_task(job_id: str, deployment_id: str, project_id: str, user_id: str) 
         # removal must not depend on the build, scan and push all succeeding.
         cloned: Path | None = None
         try:
-            _append_log(job_id, "[1/7] cloning repository")
+            _step(job_id, 1, 7, "cloning repository")
             cloned = _clone_repo(
                 deployment.repo_url, job_id, on_line,
                 branch=deployment.branch, team_id=project.team_id,
@@ -1003,7 +1051,7 @@ def deploy_task(job_id: str, deployment_id: str, project_id: str, user_id: str) 
             repo.set_status(deployment, "building")
             db.commit()
 
-            _append_log(job_id, "[2/7] building image")
+            _step(job_id, 2, 7, "building image")
             build = run_sandbox(
                 SandboxRun(
                     command=["docker", "build", "-t", image_ref, "."],
@@ -1015,7 +1063,7 @@ def deploy_task(job_id: str, deployment_id: str, project_id: str, user_id: str) 
             )
             _check(build)
 
-            _append_log(job_id, "[3/7] pushing image to registry")
+            _step(job_id, 3, 7, "pushing image to registry")
             push = run_sandbox(
                 SandboxRun(
                     command=["docker", "push", image_ref],
@@ -1028,7 +1076,7 @@ def deploy_task(job_id: str, deployment_id: str, project_id: str, user_id: str) 
             )
             _check(push)
 
-            _append_log(job_id, "[4/7] trivy scan + gate")
+            _step(job_id, 4, 7, "trivy scan + gate")
             repo.set_status(deployment, "scanning")
             db.commit()
             # Scan the image that was just pushed, addressed the way a
@@ -1102,7 +1150,7 @@ def deploy_task(job_id: str, deployment_id: str, project_id: str, user_id: str) 
                     f"{parsed.summary['high']} high. Gate on CRITICAL/HIGH."
                 )
 
-            _append_log(job_id, "[5/7] rendering + applying manifests")
+            _step(job_id, 5, 7, "rendering + applying manifests")
             repo.set_status(deployment, "deploying", image_ref=image_ref)
             db.commit()
             manifests = _render_manifests(project, deployment, image_ref)
@@ -1115,7 +1163,7 @@ def deploy_task(job_id: str, deployment_id: str, project_id: str, user_id: str) 
                     if path.name == "secret.yaml":
                         path.unlink(missing_ok=True)
 
-            _append_log(job_id, "[6/7] waiting for rollout")
+            _step(job_id, 6, 7, "waiting for rollout")
             resource = "rollout" if deployment.strategy != "deployment" else "deployment"
             ns = k8s_namespace(project.id)
             rollout = kubectl(
@@ -1127,7 +1175,7 @@ def deploy_task(job_id: str, deployment_id: str, project_id: str, user_id: str) 
                 kubectl(["rollout", "undo", f"{resource}/{_deployment_name(deployment)}", f"--namespace={ns}"], project, on_line=on_line)
                 raise RuntimeError(f"rollout failed: {rollout.output[-500:]}")
 
-            _append_log(job_id, "[7/7] capturing live URL")
+            _step(job_id, 7, 7, "capturing live URL")
             live_url = f"http://{_deployment_name(deployment)}.{ns}.{_cluster_domain()}"
             repo.set_status(deployment, "live", image_ref=image_ref, live_url=live_url)
             db.commit()
