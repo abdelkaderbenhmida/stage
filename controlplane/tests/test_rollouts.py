@@ -173,6 +173,8 @@ def test_canary_deploy_awaits_rollout_resource(session, monkeypatch, tmp_path):
 
     monkeypatch.setattr(tasks, "run_sandbox", _ok)
     monkeypatch.setattr(tasks, "_clone_repo", lambda *a, **k: tmp_path)
+    # deploy_task refuses to build from a repository with no Dockerfile.
+    (tmp_path / "Dockerfile").write_text("FROM scratch\n")
     monkeypatch.setattr(
         tasks, "run_trivy", lambda *a, **k: RawResult(tool="trivy", target="img", stdout=TRIVY_OK)
     )

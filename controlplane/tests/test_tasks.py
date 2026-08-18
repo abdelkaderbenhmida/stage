@@ -117,6 +117,9 @@ def stub_runners(monkeypatch):
     # `docker push`; without stubbing it the task fails long before reaching
     # the trivy gate and rollout logic these tests are actually asserting on.
     monkeypatch.setattr(tasks, "run_sandbox", _ok)
+    # provision_task blocks on a real TCP wait for guest SSH (:22); the
+    # stubbed nodes' IPs are unreachable in tests, so skip the wait.
+    monkeypatch.setattr(tasks, "_wait_for_ssh", lambda *a, **k: None)
     return tasks
 
 

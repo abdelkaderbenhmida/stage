@@ -107,6 +107,9 @@ def stubbed_infra(monkeypatch, tmp_path):
     monkeypatch.setattr(tasks, "kubectl", _ok)
     monkeypatch.setattr(tasks, "kubectl_apply", lambda *a, **k: None)
     monkeypatch.setattr(tasks, "user_ssh_private_key", lambda *a, **k: "dummy-key")
+    # provision_task blocks on a real TCP wait for guest SSH (:22) on the
+    # fake node IPs; no VMs exist here, so skip the wait.
+    monkeypatch.setattr(tasks, "_wait_for_ssh", lambda *a, **k: None)
     monkeypatch.setattr(tasks, "_clone_repo", _fake_clone)
     monkeypatch.setattr(
         tasks, "terraform_output",
