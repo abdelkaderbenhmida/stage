@@ -16,82 +16,232 @@
  */
 
 :root {
-  /* Surfaces */
+  /* =========================================================================
+     DESIGN TOKENS — Glassmorphism Dark Dashboard (DevOps Central Platform)
+     Refined from design-system: dark tech + status green, density 7/10
+     ========================================================================= */
+
+  /* Surfaces — layered glassmorphism */
   --bg: #070a10;
-  --bg2: #0b1019;
-  --panel: rgba(20, 27, 41, .72);
+  --bg-elevated: #0b1019;
+  --panel: rgba(20, 27, 41, 0.72);
   --panel-solid: #131a29;
-  --panel2: rgba(28, 37, 56, .6);
-  --border: rgba(90, 110, 150, .18);
-  --border-hi: rgba(120, 150, 200, .32);
+  --panel-hover: rgba(28, 37, 56, 0.8);
+  --panel-strong: rgba(30, 41, 61, 0.9);
+  --border: rgba(90, 110, 150, 0.18);
+  --border-hi: rgba(120, 150, 200, 0.32);
+  --border-focus: rgba(76, 194, 255, 0.5);
+
+  /* Glassmorphism utilities */
+  --glass-bg: rgba(19, 26, 41, 0.6);
+  --glass-border: rgba(120, 150, 200, 0.15);
+  --glass-blur: blur(12px);
+  --glass-blur-strong: blur(20px);
 
   /* Text */
   --text: #e6ecf5;
+  --text-dim: #a0aec0;
   --muted: #8a97ad;
   --dim: #5c6880;
 
-  /* Accents */
+  /* Accents — indigo/violet brand + semantic status */
   --accent: #4cc2ff;
+  --accent-dim: rgba(76, 194, 255, 0.6);
   --accent2: #7a5cff;
   --accent-text: #061019;
 
-  /* Status */
+  /* Status / Semantic — accessible on dark */
   --green: #34d399;
+  --green-bg: rgba(52, 211, 153, 0.12);
+  --green-border: rgba(52, 211, 153, 0.3);
   --red: #f87171;
+  --red-bg: rgba(248, 113, 113, 0.12);
+  --red-border: rgba(248, 113, 113, 0.3);
   --amber: #fbbf24;
+  --amber-bg: rgba(251, 191, 36, 0.12);
+  --amber-border: rgba(251, 191, 36, 0.3);
   --violet: #a78bfa;
+  --violet-bg: rgba(167, 139, 250, 0.12);
+  --violet-border: rgba(167, 139, 250, 0.3);
+
+  /* Status aliases (used by control-plane) */
   --ok: #34d399;
+  --ok-bg: rgba(52, 211, 153, 0.12);
   --warn: #fbbf24;
+  --warn-bg: rgba(251, 191, 36, 0.12);
   --fail: #f87171;
+  --fail-bg: rgba(248, 113, 113, 0.12);
 
   /* Severity ramp (control-plane security views) */
   --critical: #f87171;
+  --critical-bg: rgba(248, 113, 113, 0.12);
   --high: #fb923c;
+  --high-bg: rgba(251, 146, 60, 0.12);
   --medium: #fbbf24;
+  --medium-bg: rgba(251, 191, 36, 0.12);
   --low: #4ade80;
+  --low-bg: rgba(74, 222, 128, 0.12);
   --unknown: #8a97ad;
+  --unknown-bg: rgba(138, 151, 173, 0.12);
 
   /* Type + shape */
   --mono: "JetBrains Mono", "SFMono-Regular", Menlo, Consolas, monospace;
   --sans: "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
-  --radius: 14px;
-  --shadow: 0 10px 40px rgba(0, 0, 0, .45);
-  --glow-accent: 0 0 18px rgba(76, 194, 255, .35);
+  --radius: 12px;
+  --radius-sm: 8px;
+  --radius-lg: 16px;
+  --shadow: 0 10px 40px rgba(0, 0, 0, 0.45);
+  --shadow-sm: 0 4px 14px rgba(0, 0, 0, 0.3);
+  --shadow-lg: 0 20px 60px rgba(0, 0, 0, 0.5);
+  --glow-accent: 0 0 18px rgba(76, 194, 255, 0.35);
+  --glow-green: 0 0 18px rgba(52, 211, 153, 0.35);
+  --glow-red: 0 0 18px rgba(248, 113, 113, 0.35);
+
+  /* Motion tokens */
+  --duration-fast: 120ms;
+  --duration-normal: 200ms;
+  --duration-slow: 300ms;
+  --duration-stagger: 60ms;
+  --easing-standard: cubic-bezier(0.4, 0, 0.2, 1);
+  --easing-emphasized: cubic-bezier(0.2, 0, 0, 1);
+  --easing-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+
+  /* Spacing scale (density 7/10 — compact dashboard) */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+
+  /* Layout */
+  --sidebar-width: 228px;
+  --sidebar-width-collapsed: 64px;
+  --topbar-height: 56px;
+  --content-max: 1360px;
 }
 
-* { box-sizing: border-box; margin: 0; padding: 0; }
+/* =========================================================================
+   REDUCED MOTION — respect user preference
+   ========================================================================= */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --duration-fast: 1ms;
+    --duration-normal: 1ms;
+    --duration-slow: 1ms;
+    --duration-stagger: 1ms;
+  }
+  *,
+  *::before,
+  *::after {
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 1ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* =========================================================================
+   HIGH CONTRAST MODE — Windows HCM support
+   ========================================================================= */
+@media (forced-colors: active) {
+  :root {
+    --border: CanvasText;
+    --border-hi: CanvasText;
+    --panel: Canvas;
+    --panel-solid: Canvas;
+  }
+  .pill,
+  .sev-tag,
+  .badge {
+    border-color: currentColor !important;
+  }
+}
+
+/* =========================================================================
+   RESET & BASE
+   ========================================================================= */
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
 
 /* `nav` and `.row` set `display: flex` unconditionally, which — per the
    cascade — beats the UA stylesheet's `[hidden] { display: none }`, so
    toggling `hidden` on those elements left them visibly on screen. */
-[hidden] { display: none !important; }
+[hidden] {
+  display: none !important;
+}
 
-html, body { height: 100%; }
+html,
+body {
+  height: 100%;
+}
 
 body {
   background:
-    radial-gradient(1100px 500px at 15% -10%, rgba(76, 194, 255, .10), transparent 60%),
-    radial-gradient(1100px 500px at 90% -10%, rgba(122, 92, 255, .10), transparent 60%),
+    radial-gradient(1100px 500px at 15% -10%, rgba(76, 194, 255, 0.08), transparent 60%),
+    radial-gradient(1100px 500px at 90% -10%, rgba(122, 92, 255, 0.08), transparent 60%),
     var(--bg);
   color: var(--text);
   font-family: var(--sans);
-  font-size: 14px;
+  font-size: 13px;
   line-height: 1.5;
   overflow-x: hidden;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Focus visible — global, high contrast */
+*:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Ensure buttons/links get pointer cursor */
+button,
+[role="button"],
+a,
+input[type="submit"],
+input[type="button"],
+input[type="reset"],
+select,
+label {
+  cursor: pointer;
+}
+
+/* Disable text selection on UI chrome */
+.sidebar,
+.nav-item,
+.brand,
+.topbar,
+.btn,
+.tab {
+  user-select: none;
 }
 
 /* The control-plane half renders into a pane inside the platform layout, so
    it must not re-establish a page-height flex column of its own. */
-#cp-root { display: block; }
+#cp-root {
+  display: block;
+}
 
 /* Shown before either half has booted, so it belongs to neither subtree. */
-.boot { padding: 3rem; color: var(--muted); }
+.boot {
+  padding: var(--space-6);
+  color: var(--muted);
+  text-align: center;
+}
 
 /* Sidebar section labels — shell chrome, above both halves. */
 #platform-root .nav-group {
   padding: 14px 8px 4px;
   font-size: 10px;
-  letter-spacing: .13em;
+  letter-spacing: 0.13em;
   text-transform: uppercase;
   color: var(--dim);
   font-weight: 700;
@@ -122,10 +272,158 @@ body {
   padding: 5px 8px;
   font: inherit;
   font-size: 12px;
-  cursor: pointer;
+  transition: color var(--duration-fast), border-color var(--duration-fast);
 }
 
 #platform-root .sidebar-footer button:hover {
   color: var(--text);
   border-color: var(--border-hi);
+}
+
+/* =========================================================================
+   UTILITY CLASSES — available globally
+   ========================================================================= */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.flex {
+  display: flex;
+}
+.flex-col {
+  flex-direction: column;
+}
+.items-center {
+  align-items: center;
+}
+.justify-between {
+  justify-content: space-between;
+}
+.gap-1 { gap: var(--space-1); }
+.gap-2 { gap: var(--space-2); }
+.gap-3 { gap: var(--space-3); }
+.gap-4 { gap: var(--space-4); }
+
+.text-muted { color: var(--muted); }
+.text-dim { color: var(--dim); }
+.text-accent { color: var(--accent); }
+.text-green { color: var(--green); }
+.text-red { color: var(--red); }
+.text-amber { color: var(--amber); }
+
+.mono { font-family: var(--mono); }
+.small { font-size: 11px; }
+.tiny { font-size: 10px; }
+
+.w-full { width: 100%; }
+.max-w-full { max-width: 100%; }
+
+.overflow-auto { overflow: auto; }
+.overflow-hidden { overflow: hidden; }
+
+.rounded { border-radius: var(--radius); }
+.rounded-sm { border-radius: var(--radius-sm); }
+.rounded-lg { border-radius: var(--radius-lg); }
+
+.transition-fast { transition: all var(--duration-fast) var(--easing-standard); }
+.transition-normal { transition: all var(--duration-normal) var(--easing-standard); }
+.transition-slow { transition: all var(--duration-slow) var(--easing-standard); }
+
+.glass {
+  background: var(--glass-bg);
+  backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--glass-border);
+}
+.glass-strong {
+  background: var(--panel-strong);
+  backdrop-filter: var(--glass-blur-strong);
+  border: 1px solid var(--border-hi);
+}
+
+/* Skeleton loading */
+.skeleton {
+  background: linear-gradient(90deg, var(--border) 25%, var(--panel-hover) 50%, var(--border) 75%);
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.4s infinite;
+  border-radius: var(--radius-sm);
+}
+@keyframes skeleton-shimmer {
+  from { background-position: 200% 0; }
+  to { background-position: -200% 0; }
+}
+
+/* Stagger animation for lists */
+.stagger-in > * {
+  opacity: 0;
+  transform: translateY(8px) scale(0.98);
+  animation: stagger-in var(--duration-slow) var(--easing-spring) forwards;
+}
+.stagger-in > *:nth-child(1) { animation-delay: calc(var(--duration-stagger) * 0); }
+.stagger-in > *:nth-child(2) { animation-delay: calc(var(--duration-stagger) * 1); }
+.stagger-in > *:nth-child(3) { animation-delay: calc(var(--duration-stagger) * 2); }
+.stagger-in > *:nth-child(4) { animation-delay: calc(var(--duration-stagger) * 3); }
+.stagger-in > *:nth-child(5) { animation-delay: calc(var(--duration-stagger) * 4); }
+.stagger-in > *:nth-child(6) { animation-delay: calc(var(--duration-stagger) * 5); }
+.stagger-in > *:nth-child(7) { animation-delay: calc(var(--duration-stagger) * 6); }
+.stagger-in > *:nth-child(8) { animation-delay: calc(var(--duration-stagger) * 7); }
+@keyframes stagger-in {
+  to { opacity: 1; transform: none; }
+}
+
+/* Fade in/out */
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes fade-out {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+.animate-fade-in {
+  animation: fade-in var(--duration-normal) var(--easing-standard);
+}
+.animate-fade-out {
+  animation: fade-out var(--duration-fast) var(--easing-standard);
+}
+
+/* Slide in from right (for detail panel) */
+@keyframes slide-in-right {
+  from { transform: translateX(100%); }
+  to { transform: translateX(0); }
+}
+@keyframes slide-out-right {
+  from { transform: translateX(0); }
+  to { transform: translateX(100%); }
+}
+.animate-slide-in-right {
+  animation: slide-in-right var(--duration-normal) var(--easing-standard);
+}
+.animate-slide-out-right {
+  animation: slide-out-right var(--duration-fast) var(--easing-standard);
+}
+
+/* Pulse for live indicators */
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+.pulse {
+  animation: pulse 2s infinite;
+}
+
+/* Spin for loading */
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+.spin {
+  animation: spin 1s linear infinite;
 }

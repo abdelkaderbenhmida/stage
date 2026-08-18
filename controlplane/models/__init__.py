@@ -4,6 +4,7 @@ from controlplane.models.audit import AuditLog, RefreshToken
 from controlplane.models.base import Base
 from controlplane.models.deployment import Deployment
 from controlplane.models.job import ACTIVE_STATUSES, Job
+from controlplane.models.job_step import JobStep
 from controlplane.models.pool import PooledCluster
 from controlplane.models.project import Node, Project
 from controlplane.models.scan import Finding, Scan
@@ -19,6 +20,7 @@ __all__ = [
     "Deployment",
     "Finding",
     "Job",
+    "JobStep",
     "Node",
     "PooledCluster",
     "Project",
