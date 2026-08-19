@@ -14,12 +14,15 @@ data to scope, so this is gated on platform-admin, not team membership
 
 from __future__ import annotations
 
+import asyncio
+import json
 import time
 from collections.abc import Callable
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
+from sse_starlette.sse import EventSourceResponse
 
 from controlplane import platform_ops
 from controlplane.api.rbac import require_platform_admin
@@ -94,6 +97,65 @@ def api_platform() -> dict:
         "uptime_s": int(time.time() - START_TIME),
         "server_time": time.strftime("%H:%M:%S"),
     }
+
+
+# `api_platform()` is not the cheap local introspection it looks like:
+# `platform_overview()` calls `service_pipeline()` per discovered service,
+# which makes real live-status checks (cluster, registry, CI) with their own
+# per-call timeouts — measured 26s+ wall clock on an instance where those
+# systems aren't reachable. A stream pushing every 2s must never call that
+# directly per tick: N connected admins, or just a tight loop, would replay
+# that full cost every couple of seconds — worse than the 30s client poll it
+# replaces, and hardest hit exactly when those systems are already unhappy.
+# Cache the computed snapshot for `_SUMMARY_TTL_S` and serve every tick from
+# it; the real work happens at most once per TTL no matter how many clients
+# are connected or how tight the stream's own sleep is. TTL is generous
+# because the computation itself can legitimately take longer than a short
+# TTL would allow (each unreachable live check burns its own timeout) — a
+# TTL shorter than the compute time means every tick sees a cache that is
+# already "expired" the moment it's written, and never actually caches
+# anything. The timestamp is stamped *after* the compute finishes, not
+# before it starts, for the same reason.
+_SUMMARY_TTL_S = 20.0
+_summary_cache: dict[str, Any] = {"data": None, "at": 0.0}
+_summary_lock = asyncio.Lock()
+
+
+async def _cached_platform_summary() -> dict:
+    now = time.monotonic()
+    if _summary_cache["data"] is not None and now - _summary_cache["at"] < _SUMMARY_TTL_S:
+        return _summary_cache["data"]
+    async with _summary_lock:
+        now = time.monotonic()
+        if _summary_cache["data"] is not None and now - _summary_cache["at"] < _SUMMARY_TTL_S:
+            return _summary_cache["data"]
+        data = await asyncio.to_thread(api_platform)
+        _summary_cache["data"] = data
+        _summary_cache["at"] = time.monotonic()
+        return data
+
+
+@router.get("/live/stream")
+async def platform_live_stream():
+    """Push the console's summary payload (same shape as ``GET /platform``)
+    the moment a fresh one is computed, instead of every client polling on
+    its own 30s clock. Served from ``_cached_platform_summary()`` — see its
+    docstring for why this must never call ``api_platform()`` directly per
+    tick. The "live/*" endpoints that hit GitHub/kubectl/ArgoCD/Vault keep
+    their own dedicated, already much-faster polls (down to 1.2s) and are
+    not part of this stream.
+    """
+
+    async def events():
+        while True:
+            try:
+                snapshot = await _cached_platform_summary()
+                yield {"event": "update", "data": json.dumps(snapshot, default=str)}
+            except Exception as exc:  # noqa: BLE001 - keep the stream alive on a bad read
+                yield {"event": "error", "data": json.dumps({"error": str(exc)})}
+            await asyncio.sleep(1)
+
+    return EventSourceResponse(events())
 
 
 @router.get("/overview")
@@ -221,13 +283,22 @@ def api_live_ci() -> dict:
     return platform_ops.ci_runs()
 
 
-@router.get("/ci/runs/{run_id}/graph")
+@router.get("/live/ci/{run_id}/graph")
 def api_ci_run_graph(run_id: str) -> dict:
     """Return a pipeline graph for a GitHub Actions run.
 
-    Edges from workflow file (parse_ci), statuses from gh run view.
-    Degraded path: when gh unreachable, returns reachable:false + nodes/edges with all skipped.
+    DAG (depends_on) from the workflow file (parse_ci — a local file, never
+    fails), statuses from one gh run view call. run_id accepts the literal
+    "latest". Degraded path: when gh is unreachable, returns HTTP 200 with
+    the complete static DAG, every node pending, degraded: true. The graph
+    is fully renderable without gh — do not 502 it.
     """
+    if run_id == "latest":
+        runs = platform_ops.ci_runs(limit=1)
+        runs_list = runs.get("runs", [])
+        if not runs_list:
+            raise HTTPException(status_code=404, detail="No CI runs found.")
+        run_id = str(runs_list[0]["databaseId"])
     return platform_ops.ci_run_graph(run_id)
 
 

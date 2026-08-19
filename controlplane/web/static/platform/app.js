@@ -704,7 +704,7 @@ function offlineCard(label, err) {
 }
 
 function renderConfig() {
-  const tabs = ["ci", "argocd", "vault", "monitoring", "run", "infra", "drift", "logs"];
+  const tabs = ["ci", "argocd", "vault", "monitoring", "run", "infra", "drift", "logs", "graph"];
   const tabHtml = tabs.map((t) => `
     <button class="cfg-tab ${t === state.configTab ? "active" : ""}" data-act="switchConfigTab" data-a1="${t}">
       ${t.toUpperCase()}
@@ -723,6 +723,7 @@ function renderConfig() {
 
 function switchConfigTab(t) {
   if (state.runTimer) { clearInterval(state.runTimer); state.runTimer = null; }
+  if (state.graphTimer) { clearInterval(state.graphTimer); state.graphTimer = null; }
   state.configTab = t;
   renderConfig();
 }
@@ -730,6 +731,10 @@ function switchConfigTab(t) {
 async function loadConfigTab(tab) {
   const body = $("cfg-body");
   if (!body) return;
+  // Leaving a tab clears its timer; renderConfig -> switchConfigTab handles it,
+  // but be defensive: if we re-enter the same tab via refreshConfigTab,
+  // the timer might be stale.
+  if (state.graphTimer) { clearInterval(state.graphTimer); state.graphTimer = null; }
   try {
     if (tab === "ci") await renderCiTab(body);
     else if (tab === "argocd") await renderArgocdTab(body);
@@ -739,6 +744,7 @@ async function loadConfigTab(tab) {
     else if (tab === "infra") await renderInfraTab(body);
     else if (tab === "drift") await renderDriftTab(body);
     else if (tab === "logs") await renderLogsTab(body);
+    else if (tab === "graph") await renderGraphTab(body);
   } catch (e) {
     body.innerHTML = offlineCard(tab, e.message);
   }
@@ -829,7 +835,7 @@ async function renderCiTab(body) {
         <div>
           <div class="run-title">
             ${esc(r.displayTitle)}
-            <button class="act-btn sm" data-act="toggleCiGraph" data-a1="${r.databaseId}" title="Show pipeline graph">⧉ graph</button>
+            <button class="act-btn sm" data-act="showCiGraph" data-a1="${r.databaseId}" title="Show pipeline graph">⧉ graph</button>
           </div>
           <div class="run-meta">${esc(r.workflowName)} · ${esc(r.headBranch)} · ${esc(r.event)} · ${esc(new Date(r.createdAt).toLocaleString())}</div>
         </div>
@@ -852,50 +858,23 @@ async function renderCiTab(body) {
     </div>
     <div class="run-list">${rows || `<div class="empty">no runs found</div>`}</div>`;
 
-  // Bind toggle handlers
-  body.querySelectorAll('[data-act="toggleCiGraph"]').forEach(btn => {
-    btn.onclick = async () => {
-      const runId = btn.dataset.a1;
-      const panel = $(`#ci-graph-${runId}`);
-      const isOpen = panel.style.display !== "none";
-      if (isOpen) { panel.style.display = "none"; btn.textContent = "⧉ graph"; return; }
-      panel.style.display = "block";
-      btn.textContent = "⧍ hide graph";
-      if (panel.innerHTML.trim()) return; // already rendered
-      panel.innerHTML = `<div class="cfg-loading">fetching pipeline graph…</div>`;
-      try {
-        const graph = await api("GET", `/api/v1/platform/ci/runs/${runId}/graph`);
-        if (window.PipelineGraph) {
-          const container = window.PipelineGraph.render(graph);
-          panel.innerHTML = "";
-          panel.appendChild(container);
-        } else {
-          panel.innerHTML = `<div class="error">PipelineGraph renderer not loaded</div>`;
-        }
-      } catch (e) {
-        panel.innerHTML = `<div class="error">${esc(e.message)}</div>`;
-      }
-    };
-  });
-
-  // Poll live runs every 5s (state.pipelineTimer pattern)
-  if (state.ciGraphTimer) clearInterval(state.ciGraphTimer);
-  state.ciGraphTimer = setInterval(async () => {
+  // Poll live runs: only refresh the visible per-run graphs every 8s.
+  if (state.graphTimer) clearInterval(state.graphTimer);
+  state.graphTimer = setInterval(async () => {
+    if (!state.mounted || !$("autorefresh").checked) return;
     const liveRuns = data.runs.filter(r => !isTerminal(r));
-    if (!liveRuns.length) { clearInterval(state.ciGraphTimer); state.ciGraphTimer = null; return; }
+    if (!liveRuns.length) { clearInterval(state.graphTimer); state.graphTimer = null; return; }
     for (const r of liveRuns) {
-      const panel = $(`#ci-graph-${r.databaseId}`);
+      const panel = $(`ci-graph-${r.databaseId}`);
       if (!panel || panel.style.display === "none") continue;
       try {
-        const graph = await api("GET", `/api/v1/platform/ci/runs/${r.databaseId}/graph`);
+        const graph = await api("GET", `/api/v1/platform/live/ci/${r.databaseId}/graph`);
         if (window.PipelineGraph) {
-          const container = window.PipelineGraph.render(graph);
-          panel.innerHTML = "";
-          panel.appendChild(container);
+          panel.innerHTML = window.PipelineGraph.render(graph);
         }
       } catch (e) { /* ignore */ }
     }
-  }, 5000);
+  }, 8000);
 }
 
 async function ciTrigger() {
@@ -925,6 +904,68 @@ async function ciCancel(runId) {
     toast("✓ " + r.message, true);
     setTimeout(refreshConfigTab, 2000);
   } catch (e) { toast("✕ " + e.message, false); }
+}
+
+/**
+ * renderCiGraphTab(runId) — draws the pipeline graph for a single CI run
+ * and starts an 8s poll while the run is running/pending. The poll is
+ * stored on state.graphTimer and cleared when the run completes, when the
+ * user leaves the config view, or when the panel is closed.
+ */
+async function renderCiGraphTab(runId, elementId = `ci-graph-${runId}`) {
+  const panel = $(elementId);
+  if (!panel) return;
+  panel.style.display = "block";
+  const row = panel.closest(".run-row");
+  const btn = row ? row.querySelector('[data-act="showCiGraph"]') : null;
+  if (btn) btn.textContent = "⧍ hide graph";
+
+  async function fetchAndRender() {
+    try {
+      const graph = await api("GET", `/api/v1/platform/live/ci/${runId}/graph`);
+      if (window.PipelineGraph) {
+        panel.innerHTML = window.PipelineGraph.render(graph);
+      }
+    } catch (e) {
+      panel.innerHTML = `<div class="error">${esc(e.message)}</div>`;
+    }
+  }
+  await fetchAndRender();
+
+  // Start per-run 8s poll, guarded like the 30s timer.
+  if (state.graphTimer) clearInterval(state.graphTimer);
+  state.graphTimer = setInterval(async () => {
+    if (!state.mounted || !$("autorefresh").checked) return;
+    const run = (await api("GET", "/api/v1/platform/live/ci")).runs.find(r => r.databaseId === runId);
+    if (!run || run.status === "completed") {
+      clearInterval(state.graphTimer);
+      state.graphTimer = null;
+      return;
+    }
+    await fetchAndRender();
+  }, 8000);
+}
+
+/**
+ * renderGraphTab(body) — the "graph" config tab. Shows the latest run's
+ * pipeline graph with live polling.
+ */
+async function renderGraphTab(body) {
+  const data = await api("GET", "/api/v1/platform/live/ci");
+  if (!data.reachable) { body.innerHTML = offlineCard("GitHub Actions", data.error); return; }
+  const latest = data.runs[0];
+  if (!latest) { body.innerHTML = `<div class="empty">no CI runs yet</div>`; return; }
+
+  body.innerHTML = `
+    <div class="cfg-toolbar">
+      <span class="cfg-repo">${esc(data.repo)}</span>
+      <span class="sp"></span>
+      <button class="btn sm" data-act="ciTrigger">▶ run workflow</button>
+      <button class="act-btn" data-act="refreshConfigTab">↻ refresh</button>
+    </div>
+    <div class="ci-graph-panel" id="ci-graph-latest" style="display:block;"></div>`;
+
+  await renderCiGraphTab(latest.databaseId, "ci-graph-latest");
 }
 
 /* ─── ArgoCD: real Application CRDs + sync ─── */
@@ -1637,6 +1678,7 @@ const ACTIONS = {
   viewCiLogs: (el) => viewCiLogs(el.dataset.a1),
   ciRerun: (el) => ciRerun(el.dataset.a1),
   ciCancel: (el) => ciCancel(el.dataset.a1),
+  showCiGraph: (el) => renderCiGraphTab(el.dataset.a1),
   showArgoResources: (el) => showArgoResources(el.dataset.a1),
   argoRefresh: (el) => argoRefresh(el.dataset.a1),
   argoSync: (el) => argoSync(el.dataset.a1),
@@ -1702,7 +1744,7 @@ function bindDispatch(root) {
 
 function switchView(name) {
   if (state.pipelineTimer) { clearInterval(state.pipelineTimer); state.pipelineTimer = null; }
-  if (state.ciGraphTimer) { clearInterval(state.ciGraphTimer); state.ciGraphTimer = null; }
+  if (state.graphTimer) { clearInterval(state.graphTimer); state.graphTimer = null; }
   const root = $("platform-root");
   if (!root) return;
   root.querySelectorAll(".nav-item").forEach((n) => n.classList.toggle("active", n.dataset.view === name));
@@ -1713,16 +1755,61 @@ function switchView(name) {
   }
 }
 
-function startTimer() {
-  if (state.timer) clearInterval(state.timer);
-  state.timer = setInterval(async () => {
-    const box = $("autorefresh");
-    // Paused while the user is on a control-plane route: the poll hits six
-    // live endpoints (cluster, CI, ArgoCD, Vault, alerts, pods) and there is
-    // nothing on screen to update.
-    if (!state.mounted || !box || !box.checked) return;
-    try { await fetchData(); } catch { /* keep last data */ }
-  }, 30000);
+/**
+ * Live console summary: instead of every open tab polling `GET /platform`
+ * on its own 30s clock, one long-lived request reads
+ * `GET /platform/live/stream` (server pushes a fresh snapshot every ~2s,
+ * see platform.py) and re-renders the instant a frame arrives. Native
+ * `EventSource` can't send an Authorization header, so this reads the same
+ * `text/event-stream` body by hand through `fetch()`, which can.
+ */
+async function startLiveStream() {
+  stopLiveStream();
+  const box = $("autorefresh");
+  if (box && !box.checked) return;
+  const controller = new AbortController();
+  state.liveAbort = controller;
+  try {
+    const res = await fetch("/api/v1/platform/live/stream", {
+      headers: authHeaders(),
+      signal: controller.signal,
+    });
+    if (res.status === 401) { location.href = "/"; return; }
+    if (!res.ok || !res.body) throw new Error(`live stream HTTP ${res.status}`);
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+    while (state.mounted) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      let sep;
+      while ((sep = buf.indexOf("\n\n")) !== -1) {
+        const frame = buf.slice(0, sep);
+        buf = buf.slice(sep + 2);
+        const dataLine = frame.split("\n").find((l) => l.startsWith("data:"));
+        if (!dataLine) continue;
+        const isError = frame.split("\n").some((l) => l.startsWith("event:") && l.slice(6).trim() === "error");
+        if (isError) continue; // transient server-side read failure — keep last good data
+        try {
+          state.data = JSON.parse(dataLine.slice(5).trim());
+          render();
+        } catch (e) { console.error("[live/stream] frame handling failed:", e); }
+      }
+    }
+  } catch (e) {
+    if (e.name === "AbortError") return; // intentional: unmount() / checkbox off
+    console.error("[live/stream] connection failed:", e);
+    // Connection dropped (network blip, worker restart) — reconnect rather
+    // than leaving the console stuck on a stale snapshot.
+    if (state.mounted && (!box || box.checked)) setTimeout(startLiveStream, 3000);
+    return;
+  }
+  if (state.mounted && (!box || box.checked)) setTimeout(startLiveStream, 500);
+}
+
+function stopLiveStream() {
+  if (state.liveAbort) { state.liveAbort.abort(); state.liveAbort = null; }
 }
 
 let booted = false;
@@ -1739,15 +1826,18 @@ async function mount(view) {
   } catch (e) {
     $("view-topology").innerHTML = `<div class="card" style="border-color:var(--red)"><span class="red">Failed to load: ${esc(e.message)}</span></div>`;
   }
-  startTimer();
+  startLiveStream();
+  const box = $("autorefresh");
+  if (box) box.addEventListener("change", () => (box.checked ? startLiveStream() : stopLiveStream()));
 }
 
 /** Called by the shell router when the user leaves for a control-plane route. */
 function unmount() {
   state.mounted = false;
+  stopLiveStream();
   if (state.pipelineTimer) { clearInterval(state.pipelineTimer); state.pipelineTimer = null; }
   if (state.runTimer) { clearInterval(state.runTimer); state.runTimer = null; }
-  if (state.ciGraphTimer) { clearInterval(state.ciGraphTimer); state.ciGraphTimer = null; }
+  if (state.graphTimer) { clearInterval(state.graphTimer); state.graphTimer = null; }
   closeDetail();
 }
 

@@ -429,28 +429,74 @@ label {
 }
 
 /* =========================================================================
-   PIPELINE GRAPH — .pipe-* classes (global, no subtree scope)
+   PIPELINE GRAPH — .pg-* classes (global, no subtree scope). The only
+   shared stylesheet; the other two are scoped to #cp-root / #platform-root
+   and must not reach each other. Every class used in graph.js has a rule
+   here — the .pg- prefix is kept unique by tests/test_ui.py.
    ========================================================================= */
-.pipe-panel {
-  overflow: auto;
+.pg-wrap {
+  overflow-x: auto;
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: var(--space-4);
   max-width: 100%;
 }
-.pipe-svg {
+.pg-svg {
   display: block;
   width: 100%;
   height: auto;
+  min-width: 420px;
 }
-.pipe-node.pipe-queued rect { fill: var(--panel); stroke: var(--border); }
-.pipe-node.pipe-running rect { fill: var(--panel); stroke: var(--accent); }
-.pipe-node.pipe-succeeded rect { fill: var(--ok-bg); stroke: var(--ok); }
-.pipe-node.pipe-failed rect { fill: var(--fail-bg); stroke: var(--fail); }
-.pipe-node.pipe-cancelled rect { fill: var(--warn-bg); stroke: var(--warn); }
-.pipe-node.pipe-skipped rect { fill: var(--panel-solid); stroke: var(--border); stroke-dasharray: 4 4; }
-.pipe-edge { fill: none; stroke: var(--border); stroke-width: 2; stroke-linecap: round; }
-@keyframes pipe-pulse { 0%, 100% { stroke-opacity: 0.6; } 50% { stroke-opacity: 1; } }
-.pipe-node.pipe-running rect { animation: pipe-pulse 1.5s ease-in-out infinite; }
+.pg-empty {
+  color: var(--muted);
+  padding: var(--space-4);
+  text-align: center;
+}
+.pg-degraded {
+  color: var(--warn);
+  font-size: 12px;
+  padding: 0 0 var(--space-2);
+}
+.pg-detail {
+  color: var(--fail);
+  font-size: 12px;
+  padding: 0 0 var(--space-2);
+}
+.pg-node rect { fill: var(--panel); stroke: currentColor; stroke-width: 1.5; }
+.pg-node .pg-stack { fill: var(--panel-solid); stroke: var(--border); }
+.pg-node .pg-glyph { font-size: 11px; text-anchor: middle; dominant-baseline: middle; }
+.pg-node .pg-name { font: 600 12px system-ui, sans-serif; fill: currentColor; }
+.pg-node .pg-meta { font: 11px system-ui, sans-serif; fill: var(--muted); }
+.pg-node .pg-chip rect { fill: var(--panel-solid); stroke: var(--border); }
+.pg-node .pg-chip text { font: 10px system-ui, sans-serif; fill: var(--muted); }
+.pg-node.pending { color: var(--muted); }
+.pg-node.running { color: var(--accent); }
+.pg-node.succeeded { color: var(--ok); }
+.pg-node.failed { color: var(--fail); }
+.pg-node.skipped { color: var(--dim); }
+.pg-node.skipped > rect:not(.pg-stack) { stroke-dasharray: 4 4; }
+.pg-node.cancelled { color: var(--warn); }
+.pg-node .pg-dot { fill: var(--panel); }
+.pg-node.running .pg-dot { animation: pg-pulse 1.5s ease-in-out infinite; }
+@keyframes pg-pulse { 0%, 100% { fill-opacity: 0.35; } 50% { fill-opacity: 1; } }
+@media (prefers-reduced-motion: reduce) {
+  .pg-node.running .pg-dot { animation: none; }
+}
+.pg-node:focus-visible rect { stroke: var(--accent); stroke-width: 2; }
+.pg-node { outline: none; cursor: pointer; }
+.pg-edge { fill: none; stroke: var(--border-hi); stroke-width: 2; stroke-linecap: round; }
+.pg-dummy { pointer-events: none; }
+.pg-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+.pg-sr li { margin: 0 0 4px; }
 .pipe-a11y { position: absolute; left: -9999px; }

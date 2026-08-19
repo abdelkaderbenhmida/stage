@@ -51,6 +51,12 @@ class SandboxRun:
     workspace_writable: bool = False
     writable_paths: list[str] = field(default_factory=list)
     mounts: list[tuple[Path, str, bool]] = field(default_factory=list)
+    # Docker-managed named volumes, e.g. (volume_name, container_path,
+    # readonly) — for state that must survive across --rm containers but
+    # isn't tied to any one host path (a scanner's cache dir, not a tenant
+    # workspace). Docker creates the volume on first use if it doesn't
+    # already exist, so callers never need their own provisioning step.
+    volume_mounts: list[tuple[str, str, bool]] = field(default_factory=list)
     env: dict[str, str] = field(default_factory=dict)
     # Secrets. Kept apart from `env` because these must never appear in the
     # `docker run` argv — argv is world-readable through /proc, so `-e
@@ -73,6 +79,10 @@ class SandboxRun:
 
 def _mount_flag(host_path: Path, container_path: str, readonly: bool) -> list[str]:
     return ["--mount", f"type=bind,source={host_path},target={container_path},readonly={readonly}"]
+
+
+def _volume_mount_flag(volume_name: str, container_path: str, readonly: bool) -> list[str]:
+    return ["--mount", f"type=volume,source={volume_name},target={container_path},readonly={readonly}"]
 
 
 def _container_image_ref(image: str) -> str:
@@ -101,6 +111,8 @@ def run_sandbox(run: SandboxRun) -> SandboxResult:
                 args += _mount_flag(writable, str(writable), readonly=False)
     for host_path, container_path, readonly in run.mounts:
         args += _mount_flag(host_path.resolve(), container_path, readonly)
+    for volume_name, container_path, readonly in run.volume_mounts:
+        args += _volume_mount_flag(volume_name, container_path, readonly)
     if not run.network_enabled:
         args += ["--network", "none"]
     elif run.network:

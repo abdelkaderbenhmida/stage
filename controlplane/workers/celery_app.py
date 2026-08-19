@@ -32,6 +32,26 @@ celery_app = Celery(
     include=["controlplane.workers.tasks"],
 )
 
+# deploy_task's own worst case, not just provision_task's: clone (300s) +
+# build (provision_timeout_seconds, reused as the build sandbox's own
+# timeout) + push (600s, fixed) + one trivy scan attempt plus its one retry
+# (2 * scan_timeout_seconds + a few seconds) + manifest apply and rollout
+# wait (kubectl calls, capped generously at 600s). Celery's own time limit
+# must never fire before these — a task killed mid database-flush by
+# celery's SoftTimeLimitExceeded signal corrupts the SQLAlchemy connection
+# instead of leaving a clean "job failed" row (observed: raising the scan
+# timeout without raising this budget too got a task soft-killed mid-UPDATE,
+# surfacing "OperationalError: another command is already in progress"
+# instead of the real reason the job failed).
+_DEPLOY_TASK_WORST_CASE_SECONDS = (
+    300
+    + settings.provision_timeout_seconds
+    + 600
+    + 2 * settings.scan_timeout_seconds + 10
+    + 600
+)
+_TASK_BUDGET_SECONDS = max(settings.provision_timeout_seconds, _DEPLOY_TASK_WORST_CASE_SECONDS)
+
 celery_app.conf.update(
     task_serializer="json",
     accept_content=["json"],
@@ -41,8 +61,8 @@ celery_app.conf.update(
     broker_connection_retry_on_startup=True,
     task_track_started=True,
     worker_hijack_root_logger=False,
-    task_time_limit=settings.provision_timeout_seconds + 120,
-    task_soft_time_limit=settings.provision_timeout_seconds + 60,
+    task_time_limit=_TASK_BUDGET_SECONDS + 120,
+    task_soft_time_limit=_TASK_BUDGET_SECONDS + 60,
     beat_schedule={
         "poll-node-health": {
             "task": "controlplane.workers.tasks.poll_nodes",

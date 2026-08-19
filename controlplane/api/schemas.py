@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, model_validator
@@ -359,36 +359,51 @@ class Message(BaseModel):
     message: str
 
 
-class GraphNode(BaseModel):
-    """One box in a pipeline graph. `status` uses the shared six-value
-    vocabulary (queued, running, succeeded, failed, cancelled, skipped)."""
+class GraphFanoutNode(BaseModel):
+    """One expanded leg of a collapsed matrix node."""
 
     id: str
-    name: str
+    label: str
     status: str
+    duration_s: float | None = None
+    url: str | None = None
+
+
+class GraphNode(BaseModel):
+    """One box in a pipeline graph.
+
+    `status` uses the shared six-value vocabulary (pending, running,
+    succeeded, failed, skipped, cancelled). Edges live on the node as
+    `depends_on`, not in a separate list — one source of truth, and the
+    renderer derives edges from it in one line.
+    """
+
+    id: str
+    label: str
+    status: str
+    depends_on: list[str] = []
     started_at: datetime | None = None
     finished_at: datetime | None = None
     duration_s: float | None = None
     detail: str = ""
     url: str | None = None
-
-
-class GraphEdge(BaseModel):
-    """Edge between two graph nodes. Serialized as {"from": ..., "to": ...}
-    so the shared renderer reads e.from / e.to directly."""
-
-    model_config = ConfigDict(populate_by_name=True)
-
-    from_: str = Field(alias="from")
-    to: str
+    fanout: list[GraphFanoutNode] = []
 
 
 class PipelineGraphOut(BaseModel):
-    """A graph: node list + edge list, enough for the shared renderer."""
+    """The normalised pipeline-graph contract shared by every producer.
 
-    source: str
+    Versioned so a renderer can reject or adapt to a changed shape.
+    """
+
+    version: str = "pipeline-graph/1"
+    source: Literal["job", "ci", "service"]
     title: str
+    subtitle: str = ""
     status: str
-    updated_at: datetime | None = None
+    url: str | None = None
+    degraded: bool = False
+    degraded_reason: str = ""
+    generated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    detail: str = ""
     nodes: list[GraphNode] = []
-    edges: list[GraphEdge] = []

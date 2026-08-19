@@ -223,26 +223,32 @@ def test_graph_returns_steps_as_nodes_and_chained_edges(client, deployment, sess
     session.add_all(
         [
             JobStep(
-                job_id=uuid.UUID(job_id), index=1, total=2, name="Create VM",
+                job_id=uuid.UUID(job_id), step_index=1, step_total=7, name="cloning repository",
                 status="succeeded", started_at=now, finished_at=now + timedelta(seconds=12),
             ),
             JobStep(
-                job_id=uuid.UUID(job_id), index=2, total=2, name="Provision k8s",
+                job_id=uuid.UUID(job_id), step_index=2, step_total=7, name="building image",
                 status="running", started_at=now + timedelta(seconds=12),
             ),
         ]
     )
     session.commit()
 
-    resp = client.get(f"/api/v1/projects/{project_id}/jobs/{job_id}/graph", headers=auth)
+    resp = client.get(f"/api/v1/jobs/{job_id}/graph", headers=auth)
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert body["source"] == "deployment"
-    assert "history" in body["title"]
-    assert [n["name"] for n in body["nodes"]] == ["Create VM", "Provision k8s"]
-    assert [n["status"] for n in body["nodes"]] == ["succeeded", "running"]
+    assert body["source"] == "job"
+    assert body["title"] == "api · deploy"
+    # A "deploy" job always fills to its 7-step template; rows 1-2 are
+    # authoritative, the rest come from the template as not-yet-started.
+    labels = [n["label"] for n in body["nodes"]]
+    assert labels[:2] == ["cloning repository", "building image"]
+    assert len(body["nodes"]) == 7
+    assert [n["status"] for n in body["nodes"][:2]] == ["succeeded", "running"]
     assert body["nodes"][0]["duration_s"] == 12.0
-    assert body["edges"] == [{"from": "create-vm", "to": "provision-k8s"}]
+    assert body["nodes"][0]["depends_on"] == []
+    assert body["nodes"][1]["depends_on"] == [body["nodes"][0]["id"]]
+    assert body["nodes"][2]["depends_on"] == [body["nodes"][1]["id"]]
 
 
 def test_graph_has_single_node_fallback_for_step_less_jobs(client, deployment):
@@ -250,33 +256,35 @@ def test_graph_has_single_node_fallback_for_step_less_jobs(client, deployment):
     job itself instead of an empty canvas."""
     project_id, dep_id, auth = deployment
     job_id = _job_id(client, dep_id, auth)
-    resp = client.get(f"/api/v1/projects/{project_id}/jobs/{job_id}/graph", headers=auth)
+    resp = client.get(f"/api/v1/jobs/{job_id}/graph", headers=auth)
     assert resp.status_code == 200, resp.text
     body = resp.json()
+    # A freshly created "deploy" job has no JobStep rows yet and no [n/N] log
+    # markers, so it falls all the way back to a single job-shaped node.
     assert len(body["nodes"]) == 1
     assert body["nodes"][0]["id"] == "job"
-    assert body["nodes"][0]["status"] == "queued"
-    assert body["edges"] == []
+    assert body["nodes"][0]["status"] == "pending"
+    assert body["nodes"][0]["depends_on"] == []
 
 
 def test_graph_of_another_teams_job_is_not_found(client, deployment, auth_headers):
     project_id, dep_id, auth = deployment
     job_id = _job_id(client, dep_id, auth)
     stranger = auth_headers(email="stranger@example.com")
-    resp = client.get(f"/api/v1/projects/{project_id}/jobs/{job_id}/graph", headers=stranger)
+    resp = client.get(f"/api/v1/jobs/{job_id}/graph", headers=stranger)
     assert resp.status_code == 404
 
 
 def test_graph_requires_auth(client, deployment):
     project_id, dep_id, auth = deployment
     job_id = _job_id(client, dep_id, auth)
-    resp = client.get(f"/api/v1/projects/{project_id}/jobs/{job_id}/graph")
+    resp = client.get(f"/api/v1/jobs/{job_id}/graph")
     assert resp.status_code == 401
 
 
 def test_graph_of_unknown_job_is_not_found(client, auth_headers):
     auth = auth_headers()
-    resp = client.get(f"/api/v1/projects/{uuid.uuid4()}/jobs/{uuid.uuid4()}/graph", headers=auth)
+    resp = client.get(f"/api/v1/jobs/{uuid.uuid4()}/graph", headers=auth)
     assert resp.status_code == 404
 
 
@@ -331,16 +339,16 @@ def test_ci_graph_endpoint_returns_dag_shape(client, admin_headers, monkeypatch)
             ],
         },
     )
-    resp = client.get("/api/v1/platform/ci/runs/7/graph", headers=admin_headers)
+    resp = client.get("/api/v1/platform/live/ci/7/graph", headers=admin_headers)
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert body["reachable"] is True
+    assert body["degraded"] is False
     assert body["title"] == "ci: main"
     assert body["nodes"], "DAG must come from the workflow file"
     by_id = {n["id"]: n for n in body["nodes"]}
     assert by_id["discover"]["status"] == "succeeded"
     assert by_id["test"]["status"] == "failed"
-    assert any(e["to"] == "test" for e in body["edges"])
+    assert "lint" in by_id["test"]["depends_on"]
 
 
 def test_ci_graph_endpoint_matrix_rolls_up(client, admin_headers, monkeypatch):
@@ -354,7 +362,7 @@ def test_ci_graph_endpoint_matrix_rolls_up(client, admin_headers, monkeypatch):
             ],
         },
     )
-    resp = client.get("/api/v1/platform/ci/runs/8/graph", headers=admin_headers)
+    resp = client.get("/api/v1/platform/live/ci/8/graph", headers=admin_headers)
     assert resp.status_code == 200, resp.text
     test_node = next(n for n in resp.json()["nodes"] if n["id"] == "test")
     assert test_node["status"] == "failed"
@@ -369,10 +377,12 @@ def test_ci_graph_endpoint_degraded_keeps_shape(client, admin_headers, monkeypat
         platform_ops, "_run",
         lambda cmd, **kw: {"ok": False, "stdout": "", "stderr": "gh not installed", "code": -1},
     )
-    resp = client.get("/api/v1/platform/ci/runs/9/graph", headers=admin_headers)
+    resp = client.get("/api/v1/platform/live/ci/9/graph", headers=admin_headers)
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert body["reachable"] is False
+    assert body["degraded"] is True
+    assert "gh not installed" in body["degraded_reason"]
     assert body["nodes"], "degraded path must keep the DAG shape"
-    assert all(n["status"] == "skipped" for n in body["nodes"])
-    assert any(e["to"] == "test" for e in body["edges"])
+    assert all(n["status"] == "pending" for n in body["nodes"])
+    by_id = {n["id"]: n for n in body["nodes"]}
+    assert "lint" in by_id["test"]["depends_on"]

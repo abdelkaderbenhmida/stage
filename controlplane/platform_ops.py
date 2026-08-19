@@ -19,6 +19,7 @@ import shutil
 import subprocess
 import threading
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -1617,102 +1618,305 @@ def ci_cancel(run_id: str) -> dict[str, Any]:
 
 # ─── CI pipeline graph ───
 
+GRAPH_STATUSES = ("pending", "running", "succeeded", "failed", "skipped", "cancelled")
 
-def _ci_job_status(gj: dict[str, Any]) -> str:
-    """Map a GitHub Actions job (status/conclusion) onto the graph vocabulary."""
+_GH_QUEUED_STATUSES = ("queued", "waiting", "requested", "pending")
+_GH_FAILED_CONCLUSIONS = ("failure", "timed_out", "startup_failure", "stale")
+_ROLLUP_PRECEDENCE = ("failed", "running", "pending", "cancelled", "succeeded", "skipped")
+
+
+def _map_gh_status(gj: dict[str, Any]) -> tuple[str, str | None]:
+    """GitHub job/run status + conclusion → graph vocabulary.
+
+    Returns ``(status, detail)``; detail carries the raw conclusion only for
+    the unknown → skipped case, so the renderer can say *why* a node is grey.
+    """
     status = gj.get("status", "")
-    conclusion = gj.get("conclusion", "")
-    if status == "completed":
-        if conclusion == "success":
-            return "succeeded"
-        if conclusion == "cancelled":
-            return "cancelled"
-        if conclusion == "skipped":
-            return "skipped"
-        # conclusion "interrupted" (cancelled mid-run) or "failure" → failed;
-        # a completed run with no conclusion is a stopped run → failed.
-        return "failed" if conclusion else "skipped"
-    if status == "in_progress":
-        return "running"
-    if status in ("queued", "waiting", "requested", "pending"):
-        return "queued"
-    return "skipped"
+    conclusion = gj.get("conclusion") or ""
+    if status != "completed":
+        if status == "in_progress":
+            return "running", None
+        if status in _GH_QUEUED_STATUSES:
+            return "pending", None
+        # Unknown non-completed status → skipped (safe fallback)
+        return "skipped", f"status: {status}" if status else None
+    if conclusion == "success":
+        return "succeeded", None
+    if conclusion in _GH_FAILED_CONCLUSIONS:
+        return "failed", None
+    if conclusion == "cancelled":
+        return "cancelled", None
+    if conclusion == "skipped":
+        return "skipped", None
+    # neutral / action_required / null / unknown
+    return "skipped", f"conclusion: {conclusion}" if conclusion else None
 
 
 def _rollup_statuses(statuses: list[str]) -> str:
-    """Matrix collapse: any failure→failed, else any running→running,
-    else any queued→queued, else all success→succeeded."""
+    """Matrix collapse. Precedence: failed → running → pending → cancelled
+    → succeeded → skipped."""
     if not statuses:
         return "skipped"
-    if any(s == "failed" for s in statuses):
-        return "failed"
-    if any(s == "running" for s in statuses):
-        return "running"
-    if any(s == "queued" for s in statuses):
-        return "queued"
-    if all(s == "succeeded" for s in statuses):
-        return "succeeded"
-    if any(s == "cancelled" for s in statuses):
-        return "cancelled"
+    for s in _ROLLUP_PRECEDENCE:
+        if s in statuses:
+            return s
     return "skipped"
 
 
-def _degraded_ci_graph(title: str, error: str, nodes: list[dict[str, Any]], edges: list[dict[str, str]]) -> dict[str, Any]:
-    for n in nodes:
-        n["status"] = "skipped"
-        n["detail"] = error[:200]
-    return {"reachable": False, "title": title, "error": error, "nodes": nodes, "edges": edges}
+def _gh_dt(value: Any) -> datetime | None:
+    """Parse a gh timestamp. gh serialises unset times as
+    '0001-01-01T00:00:00Z' rather than null — filter those."""
+    if not value:
+        return None
+    s = str(value)
+    if s.startswith("0001-"):
+        return None
+    try:
+        return datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _span_duration(start: datetime | None, end: datetime | None) -> float | None:
+    """duration_s from start/end. A negative span (observed in live data for
+    skipped jobs: startedAt > completedAt) becomes null, never negative."""
+    if start is None or end is None:
+        return None
+    delta = (end - start).total_seconds()
+    return delta if delta >= 0 else None
+
+
+def _literal(j: dict[str, Any]) -> str:
+    """The workflow job's literal name prefix, cut at ``${{``.
+
+    GitHub reports the *rendered* job name: ``Terraform Validate (v1.5.7)``
+    for a workflow name of ``Terraform Validate (v${{ matrix.version }})``.
+    The literal is what the rendered name must start with."""
+    name = j.get("name") or j.get("id") or ""
+    return name.split("${{")[0].rstrip()
+
+
+def _match_gh_job(
+    wf_jobs: list[dict[str, Any]], gh_name: str
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Join a rendered GitHub job name onto a workflow job.
+
+    1. EXACT: a workflow job whose name (or id) equals the rendered name.
+       Mandatory: ``Deploy (manual)``, ``Secret Scan (Gitleaks)`` contain
+       literal parentheses — a prefix rule would invent phantom matrices.
+    2. LONGEST literal prefix: the workflow job whose ``${{``-cut name is
+       the longest strict prefix of the rendered name → matrix leg, label =
+       the remainder.
+    3. Neither → (None, None): the gh job is not in the workflow file.
+
+    Returns ``(workflow_job, matrix_label | None)``.
+    """
+    for j in wf_jobs:
+        if (j.get("name") or j.get("id")) == gh_name:
+            return j, None
+    best: dict[str, Any] | None = None
+    best_lit = ""
+    for j in wf_jobs:
+        lit = _literal(j)
+        if len(lit) > len(best_lit) and gh_name.startswith(lit):
+            best, best_lit = j, lit
+    if best is None:
+        return None, None
+    label = gh_name[len(best_lit):].strip().strip("()").strip()
+    return best, label or None
+
+
+def _fanout_slug(label: str) -> str:
+    slug = re.sub(r"[^A-Za-z0-9._:@-]+", "-", label.strip()) or "leg"
+    return slug.strip("-")
+
+
+def _pending_ci_node(j: dict[str, Any]) -> dict[str, Any]:
+    """A workflow job with no live data — pending, with its ``if:`` in the
+    detail so "why is deploy grey" answers itself."""
+    return {
+        "id": j["id"],
+        "label": j.get("name") or j["id"],
+        "status": "pending",
+        "depends_on": list(j.get("needs", [])),
+        "started_at": None,
+        "finished_at": None,
+        "duration_s": None,
+        "detail": (j.get("if") or "").strip(),
+        "url": None,
+        "fanout": [],
+    }
+
+
+def _mapped_ci_node(
+    j: dict[str, Any], legs: list[tuple[str | None, dict[str, Any]]]
+) -> dict[str, Any]:
+    """One workflow job with its GitHub job(s) → contract node. Matrix legs
+    roll up: precedence failed→running→pending→cancelled→succeeded→skipped;
+    started = min, finished = max, duration clamped non-negative."""
+    statuses: list[str] = []
+    starts: list[datetime] = []
+    ends: list[datetime] = []
+    fanout: list[dict[str, Any]] = []
+    for label, gj in legs:
+        st, _detail = _map_gh_status(gj)
+        statuses.append(st)
+        start = _gh_dt(gj.get("startedAt"))
+        end = _gh_dt(gj.get("completedAt"))
+        if start:
+            starts.append(start)
+        if end:
+            ends.append(end)
+        if len(legs) >= 1:
+            fanout.append(
+                {
+                    "id": f'{j["id"]}:{_fanout_slug(label or "") or len(fanout) + 1}',
+                    "label": label or gj.get("name") or f"leg {len(fanout) + 1}",
+                    "status": st,
+                    "duration_s": _span_duration(start, end),
+                    "url": gj.get("url"),
+                }
+            )
+    start = min(starts) if starts else None
+    end = max(ends) if ends else None
+    return {
+        "id": j["id"],
+        "label": j.get("name") or j["id"],
+        "status": _rollup_statuses(statuses),
+        "depends_on": list(j.get("needs", [])),
+        "started_at": start,
+        "finished_at": end,
+        "duration_s": _span_duration(start, end),
+        "detail": f"{len(legs)} matrix legs" if len(legs) >= 1 else "",
+        "url": None if len(legs) >= 1 else legs[0][1].get("url"),
+        "fanout": fanout,
+    }
+
+
+def _join_gh_jobs(
+    wf_jobs: list[dict[str, Any]], gh_jobs: list[dict[str, Any]], run_status: str
+) -> list[dict[str, Any]]:
+    """Workflow jobs + their matched GitHub jobs, plus orphan nodes for gh
+    jobs that are not in the workflow file."""
+    legs_by_wf: dict[str, list[tuple[str | None, dict[str, Any]]]] = {}
+    orphans: list[dict[str, Any]] = []
+    for gj in gh_jobs:
+        gname = gj.get("name") or ""
+        if not gname:
+            continue
+        wf, label = _match_gh_job(wf_jobs, gname)
+        if wf is None:
+            orphans.append(gj)
+        else:
+            legs_by_wf.setdefault(wf["id"], []).append((label, gj))
+
+    nodes: list[dict[str, Any]] = []
+    for j in wf_jobs:
+        legs = legs_by_wf.get(j["id"], [])
+        if not legs:
+            # No GitHub counterpart: the job's `if:` excluded it, or the run
+            # predates it. Pending while the run is going, skipped once done.
+            status = "pending" if run_status in ("pending", "running") else "skipped"
+            nodes.append({**_pending_ci_node(j), "status": status})
+            continue
+        nodes.append(_mapped_ci_node(j, legs))
+    for gj in orphans:
+        start = _gh_dt(gj.get("startedAt"))
+        end = _gh_dt(gj.get("completedAt"))
+        nodes.append(
+            {
+                "id": f"gh:{gj.get('databaseId') or len(nodes) + 1}",
+                "label": gj.get("name") or f"job {gj.get('databaseId')}",
+                "status": _map_gh_status(gj)[0],
+                "depends_on": [],
+                "started_at": start,
+                "finished_at": end,
+                "duration_s": _span_duration(start, end),
+                "detail": "not in workflow file",
+                "url": gj.get("url"),
+                "fanout": [],
+            }
+        )
+    return nodes
+
+
+def ci_graph_static(ci: dict[str, Any] | None = None) -> dict[str, Any]:
+    """The file-only DAG: every node pending. Never fails — parse_ci reads a
+    local file. This is the shape degraded runs fall back to."""
+    ci = ci or parse_ci()
+    return {
+        "version": "pipeline-graph/1",
+        "source": "ci",
+        "title": "CI/CD pipeline",
+        "subtitle": "CI/CD Pipeline",
+        "status": "pending",
+        "url": None,
+        "degraded": False,
+        "degraded_reason": "",
+        "generated_at": datetime.now(UTC),
+        "nodes": [_pending_ci_node(j) for j in ci["jobs"]],
+    }
+
+
+def _degraded_ci_graph(ci: dict[str, Any], title: str, reason: str) -> dict[str, Any]:
+    graph = ci_graph_static(ci)
+    graph["title"] = title
+    graph["degraded"] = True
+    graph["degraded_reason"] = reason
+    return graph
 
 
 def ci_run_graph(run_id: str) -> dict[str, Any]:
     """Pipeline graph for a GitHub Actions run.
 
-    DAG (nodes + edges) comes from the workflow file via ``parse_ci()`` —
-    not from GitHub — so the topology is stable. Statuses come from
-    ``gh run view`` jobs, joined to workflow jobs by name (matrix legs roll
-    up into their workflow job). Degraded: when gh is unreachable the shape
-    stays (greyed/skipped nodes) instead of disappearing.
+    DAG (depends_on) comes from the workflow file via ``parse_ci()`` — not
+    from GitHub, which exposes neither job ids nor needs — so the topology
+    is stable. Statuses come from one ``gh run view`` call, joined to
+    workflow jobs by rendered name (matrix legs roll up into their workflow
+    job). Degraded: when gh fails or times out, still return the complete
+    static DAG at HTTP 200 with every node pending and ``degraded: true`` —
+    the graph is fully renderable without gh, and the console's api() throws
+    on any non-2xx, which would destroy that fallback.
     """
     slug = _repo_slug()
     ci = parse_ci()
-    nodes = [
-        {"id": j["id"], "name": j["name"], "status": "queued", "detail": "", "index": i}
-        for i, j in enumerate(ci["jobs"])
-    ]
-    edges = [{"from": e["from"], "to": e["to"]} for e in ci["edges"]]
     title = f"run {run_id}"
 
-    res = _run(["gh", "run", "view", run_id, "--repo", slug, "--json", "jobs,displayTitle"], timeout=GH_TIMEOUT)
+    res = _run(
+        [
+            "gh", "run", "view", run_id, "--repo", slug, "--json",
+            "jobs,status,conclusion,displayTitle,headBranch,event,url,createdAt", "--",
+        ],
+        timeout=GH_TIMEOUT,
+    )
     if not res["ok"]:
-        return _degraded_ci_graph(title, res["stderr"] or "gh CLI unavailable", nodes, edges)
+        return _degraded_ci_graph(ci, title, res["stderr"] or "gh CLI unavailable")
     try:
         data = json.loads(res["stdout"])
     except json.JSONDecodeError:
-        return _degraded_ci_graph(title, "could not parse gh run view output", nodes, edges)
+        return _degraded_ci_graph(ci, title, "could not parse gh run view output")
 
-    title = data.get("displayTitle") or title
-    by_name: dict[str, list[dict[str, Any]]] = {}
-    for gj in data.get("jobs", []):
-        by_name.setdefault(gj.get("name") or "", []).append(gj)
+    run_status = _map_gh_status(data)[0]
+    nodes = _join_gh_jobs(ci["jobs"], data.get("jobs", []), run_status)
 
-    for n in nodes:
-        # Join on display name first (GitHub job names carry the workflow
-        # `name:`), fall back to the workflow job id for jobs without one.
-        # Matrix legs arrive suffixed " (v1, v2)" — prefix-match those so the
-        # legs roll up into their workflow job instead of going unmatched.
-        legs = by_name.get(n["name"]) or by_name.get(n["id"])
-        if not legs:
-            prefix = n["name"] + " ("
-            legs = [gj for gj in data.get("jobs", []) if (gj.get("name") or "").startswith(prefix)]
-        if not legs:
-            n["status"] = "skipped"
-            n["detail"] = "no matching job in run"
-            continue
-        n["status"] = _rollup_statuses([_ci_job_status(gj) for gj in legs])
-        if len(legs) > 1:
-            n["detail"] = f"{len(legs)} matrix legs"
+    branch = data.get("headBranch") or ""
+    event = data.get("event") or ""
+    subtitle = "CI/CD Pipeline"
+    if branch or event:
+        subtitle += " · " + " · ".join(x for x in (branch, event) if x)
 
-    return {"reachable": True, "repo": slug, "title": title, "nodes": nodes, "edges": edges}
+    return {
+        "version": "pipeline-graph/1",
+        "source": "ci",
+        "title": data.get("displayTitle") or title,
+        "subtitle": subtitle,
+        "status": run_status,
+        "url": data.get("url"),
+        "degraded": False,
+        "degraded_reason": "",
+        "generated_at": datetime.now(UTC),
+        "nodes": nodes,
+    }
 
 
 # ─── Kubernetes cluster reachability ───

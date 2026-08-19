@@ -24,6 +24,44 @@ function pill(status) {
   return `<span class="pill ${esc(status)}">${esc(status)}</span>`;
 }
 
+/** Mark an input invalid and show an inline message under it. */
+function setFieldError(input, message) {
+  if (!input) return;
+  input.setAttribute("aria-invalid", "true");
+  let err = input.parentElement?.querySelector(".field-error");
+  if (!err && input.parentElement) {
+    err = document.createElement("p");
+    err.className = "field-error";
+    err.id = `${input.id}-error`;
+    input.setAttribute("aria-describedby", err.id);
+    input.parentElement.appendChild(err);
+  }
+  if (err) err.textContent = message;
+}
+
+/** Clear the inline error (and aria state) of an input. */
+function clearFieldError(input) {
+  if (!input) return;
+  input.removeAttribute("aria-invalid");
+  input.removeAttribute("aria-describedby");
+  const err = input.parentElement?.querySelector(".field-error");
+  if (err) err.remove();
+}
+
+/** Map a server-side validation message to the field it names, falling back
+ *  to a top-level error when the message names no known field. */
+function applyServerError(form, message, fields = {}) {
+  const first = Object.entries(fields).find(([, value]) =>
+    message.toLowerCase().includes(value.toLowerCase()));
+  if (first) {
+    const input = form.querySelector(`#${first[0]}`);
+    setFieldError(input, message);
+  } else if (form) {
+    const top = form.querySelector(".error");
+    if (top) top.textContent = message;
+  }
+}
+
 function fmtDate(iso) {
   if (!iso) return "—";
   const d = new Date(iso);
@@ -339,7 +377,9 @@ function renderAuth() {
 
   $("#auth-form").onsubmit = async (e) => {
     e.preventDefault();
-    const typed = $("#email").value.trim();
+    const emailInput = $("#email");
+    clearFieldError(emailInput);
+    const typed = emailInput.value.trim();
     const email = typed.includes("@") ? typed : `${typed}@${DEFAULT_DOMAIN}`;
     $("#auth-error").textContent = "";
     $("#submit-btn").disabled = true;
@@ -360,7 +400,8 @@ function renderAuth() {
       refreshWhoami();
       location.hash = "#/projects";
     } catch (err) {
-      $("#auth-error").textContent = err.message;
+      applyServerError($("#auth-form"), err.message, { email: "email" });
+      if (!emailInput.hasAttribute("aria-invalid")) $("#auth-error").textContent = err.message;
     } finally {
       $("#submit-btn").disabled = false;
     }
@@ -590,8 +631,10 @@ function renderNewProject() {
   $("#project-form").onsubmit = async (e) => {
     e.preventDefault();
     $("#form-error").textContent = "";
+    const nameInput = $("#p-name");
+    clearFieldError(nameInput);
     $("#create-btn").disabled = true;
-    const name = $("#p-name").value.trim();
+    const name = nameInput.value.trim();
 
     // The API takes exactly one of preset / infra_spec.
     const body = {
@@ -624,7 +667,8 @@ function renderNewProject() {
       toast("Environment created.");
       location.hash = `#/projects/${project.id}`;
     } catch (err) {
-      $("#form-error").textContent = err.message;
+      applyServerError($("#project-form"), err.message, { "p-name": "name" });
+      if (!nameInput.hasAttribute("aria-invalid")) $("#form-error").textContent = err.message;
     } finally {
       $("#create-btn").disabled = false;
     }
@@ -1023,12 +1067,14 @@ function renderDeployForm(project) {
   $("#deploy-form").onsubmit = async (e) => {
     e.preventDefault();
     $("#deploy-error").textContent = "";
+    const repoInput = $("#d-repo");
+    clearFieldError(repoInput);
     try {
       await api(`/projects/${project.id}/deployments`, {
         method: "POST",
         body: {
           service_name: $("#d-name").value.trim(),
-          repo_url: $("#d-repo").value.trim(),
+          repo_url: repoInput.value.trim(),
           branch: $("#d-branch").value.trim(),
           port: Number($("#d-port").value),
           replicas: Number($("#d-replicas").value),
@@ -1040,7 +1086,8 @@ function renderDeployForm(project) {
       toast("Deployment queued.");
       renderProject(project.id);
     } catch (err) {
-      $("#deploy-error").textContent = err.message;
+      applyServerError($("#deploy-form"), err.message, { "d-repo": "url" });
+      if (!repoInput.hasAttribute("aria-invalid")) $("#deploy-error").textContent = err.message;
     }
   };
 }
@@ -1609,6 +1656,9 @@ function stageTracker(log, jobStatus) {
     </div>`;
 }
 
+// Module-local currentGraph for live applyLogProgress updates.
+let currentGraph = null;
+
 async function renderJob(jobId) {
   setNav("jobs");
   loading();
@@ -1625,7 +1675,7 @@ async function renderJob(jobId) {
         <button class="danger" id="cancel-job">Cancel job</button>
       </div>
       ${job.error_message ? `<div class="panel"><p class="error">${esc(job.error_message)}</p></div>` : ""}
-      <div class="panel" id="pipeline-graph">Loading graph…</div>
+      <div class="panel" id="pg-job">Loading graph…</div>
       ${stageTracker(job.log, job.status)}
       <div class="panel">
         <div class="between" style="margin-bottom:.6rem">
@@ -1642,16 +1692,17 @@ async function renderJob(jobId) {
       } catch (err) { toast(err.message, true); }
     };
 
-    // Fetch and render pipeline graph
+    // Fetch and render pipeline graph — Promise.all per spec
     async function renderGraph() {
       try {
-        const graph = await api(`/projects/${job.project_id}/jobs/${jobId}/graph`);
+        const [jobData, graph] = await Promise.all([
+          api(`/jobs/${jobId}`),
+          api(`/jobs/${jobId}/graph`),
+        ]);
+        currentGraph = graph;
         if (window.PipelineGraph) {
-          const container = window.PipelineGraph.render(graph);
-          const target = $("#pipeline-graph");
-          if (target) target.replaceWith(container);
-        } else {
-          // Fallback: keep stageTracker (already in DOM)
+          const target = $("#pg-job");
+          if (target) target.outerHTML = window.PipelineGraph.render(graph);
         }
       } catch (e) {
         // Fallback: stageTracker already rendered
@@ -1661,7 +1712,7 @@ async function renderJob(jobId) {
 
     // Only stream while the job can still produce output.
     if (job.status === "queued" || job.status === "running") {
-      streamJobLog(jobId);
+      streamJobLog(jobId, job.status);
     } else {
       $("#stream-state").textContent = "finished";
     }
@@ -1669,27 +1720,11 @@ async function renderJob(jobId) {
     showError(err, route);
   }
 }
-function streamJobLog(jobId) {
+
+function streamJobLog(jobId, jobStatus) {
   const logEl = $("#log");
   const stateEl = $("#stream-state");
   stateEl.textContent = "streaming…";
-
-  let lastGraphFetch = 0;
-  async function maybeRefetchGraph() {
-    const now = Date.now();
-    if (now - lastGraphFetch >= 2000) {
-      lastGraphFetch = now;
-      try {
-        const job = await api(`/jobs/${jobId}`);
-        const graph = await api(`/projects/${job.project_id}/jobs/${jobId}/graph`);
-        if (window.PipelineGraph) {
-          const container = window.PipelineGraph.render(graph);
-          const target = $("#pipeline-graph");
-          if (target) target.replaceWith(container);
-        }
-      } catch (e) { /* ignore */ }
-    }
-  }
 
   // EventSource cannot send an Authorization header, so the log stream uses a
   // short-lived stream token minted server-side instead of the access token
@@ -1703,7 +1738,7 @@ function streamJobLog(jobId) {
       const stream = new EventSource(`${API}/jobs/${jobId}/logs?stream_token=${encodeURIComponent(body.message)}`);
       activeStream = stream;
 
-      // The server emits named "log" events carrying {"delta": "..."} — the
+      // The server emits named "log" events carrying {"delta": "..."} -- the
       // incremental tail of the job log since the last send.
       stream.addEventListener("log", (event) => {
         let delta = "";
@@ -1713,23 +1748,29 @@ function streamJobLog(jobId) {
         logEl.textContent += delta;
 
         logEl.scrollTop = logEl.scrollHeight;
+
+        // Live graph rebuild from log markers -- no extra HTTP, ~1s liveness.
+        // stageTracker stays as fallback if applyLogProgress unavailable.
+        if (window.PipelineGraph && window.PipelineGraph.applyLogProgress && currentGraph) {
+          const next = window.PipelineGraph.applyLogProgress(currentGraph, logEl.textContent, jobStatus);
+          const target = document.getElementById("pg-job");
+          if (target) target.outerHTML = window.PipelineGraph.render(next);
+        }
+
         // Keep the step tracker in step with the log it is derived from.
         const stagesEl = $("#stages");
-        const markup = stageTracker(logEl.textContent, "running");
+        const markup = stageTracker(logEl.textContent, jobStatus);
         if (markup) {
           if (stagesEl) stagesEl.outerHTML = markup;
           else logEl.closest(".panel").insertAdjacentHTML("beforebegin", markup);
         }
-        // Re-fetch graph (throttled 2s)
-        maybeRefetchGraph();
       });
 
       stream.addEventListener("done", () => {
         stateEl.textContent = "finished";
         stream.close();
         if (activeStream === stream) activeStream = null;
-        // Final graph fetch on done
-        maybeRefetchGraph();
+        // Final authoritative graph fetch on done
         renderJob(jobId);
       });
 

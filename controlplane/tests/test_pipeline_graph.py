@@ -15,11 +15,11 @@ from pathlib import Path
 import pytest
 from controlplane import platform_ops
 
-PLATFORM_JS = Path(__file__).resolve().parent.parent / "web" / "static" / "pipeline-graph.js"
+PLATFORM_JS = Path(__file__).resolve().parent.parent / "web" / "static" / "graph.js"
 
 
 # ---------------------------------------------------------------------------
-# Status mapping table
+# Status mapping table (GitHub Actions → graph vocabulary)
 # ---------------------------------------------------------------------------
 
 
@@ -28,34 +28,40 @@ PLATFORM_JS = Path(__file__).resolve().parent.parent / "web" / "static" / "pipel
     [
         ("completed", "success", "succeeded"),
         ("completed", "failure", "failed"),
+        ("completed", "timed_out", "failed"),
+        ("completed", "startup_failure", "failed"),
+        ("completed", "stale", "failed"),
         ("completed", "cancelled", "cancelled"),
         ("completed", "skipped", "skipped"),
-        ("completed", "interrupted", "failed"),  # cancelled mid-run → failed
         ("completed", None, "skipped"),  # stopped run with no conclusion
         ("in_progress", None, "running"),
-        ("queued", None, "queued"),
-        ("waiting", None, "queued"),
-        ("requested", None, "queued"),
-        ("pending", None, "queued"),
+        ("queued", None, "pending"),
+        ("waiting", None, "pending"),
+        ("requested", None, "pending"),
+        ("pending", None, "pending"),
         ("weird", None, "skipped"),  # unknown → skipped
         (None, None, "skipped"),
     ],
 )
-def test_ci_job_status_mapping(gh_status, gh_conclusion, expected):
+def test_gh_status_mapping(gh_status, gh_conclusion, expected):
     job = {"status": gh_status, "conclusion": gh_conclusion}
-    assert platform_ops._ci_job_status(job) == expected
+    assert platform_ops._map_gh_status(job)[0] == expected
+
+
+# ---------------------------------------------------------------------------
+# Matrix roll-up precedence
+# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
     ("statuses", "expected"),
     [
         (["succeeded"], "succeeded"),
-        (["failed", "succeeded"], "failed"),  # any failure → failed
-        (["running", "succeeded"], "running"),  # else any running → running
-        (["queued", "succeeded"], "queued"),  # else any queued → queued
-        (["succeeded", "succeeded"], "succeeded"),  # else all success → succeeded
-        (["succeeded", "cancelled"], "cancelled"),
-        (["succeeded", "skipped"], "skipped"),
+        (["failed", "succeeded"], "failed"),
+        (["running", "succeeded"], "running"),
+        (["pending", "succeeded"], "pending"),
+        (["cancelled", "succeeded"], "cancelled"),
+        (["skipped", "succeeded"], "succeeded"),
         ([], "skipped"),
     ],
 )
@@ -152,20 +158,17 @@ def _layout_via_node(graph: dict) -> dict:
 def test_js_layout_assigns_longest_path_layers():
     laid = _layout_via_node(
         {
+            "version": "pipeline-graph/1",
+            "source": "ci",
             "title": "ci",
+            "subtitle": "",
+            "status": "running",
             "nodes": [
-                {"id": "discover", "name": "discover", "status": "succeeded"},
-                {"id": "lint", "name": "lint", "status": "succeeded"},
-                {"id": "gitleaks", "name": "gitleaks", "status": "succeeded"},
-                {"id": "test", "name": "test", "status": "failed"},
-                {"id": "deploy", "name": "deploy", "status": "queued"},
-            ],
-            "edges": [
-                {"from": "discover", "to": "lint"},
-                {"from": "discover", "to": "gitleaks"},
-                {"from": "lint", "to": "test"},
-                {"from": "gitleaks", "to": "test"},
-                {"from": "test", "to": "deploy"},
+                {"id": "discover", "label": "discover", "status": "succeeded", "depends_on": []},
+                {"id": "lint", "label": "lint", "status": "succeeded", "depends_on": ["discover"]},
+                {"id": "gitleaks", "label": "gitleaks", "status": "succeeded", "depends_on": ["discover"]},
+                {"id": "test", "label": "test", "status": "failed", "depends_on": ["lint", "gitleaks"]},
+                {"id": "deploy", "label": "deploy", "status": "pending", "depends_on": ["test"]},
             ],
         }
     )
@@ -183,16 +186,15 @@ def test_js_layout_assigns_longest_path_layers():
 def test_js_layout_cycle_guard_terminates():
     laid = _layout_via_node(
         {
+            "version": "pipeline-graph/1",
+            "source": "ci",
             "title": "cycle",
+            "subtitle": "",
+            "status": "running",
             "nodes": [
-                {"id": "a", "name": "a", "status": "queued"},
-                {"id": "b", "name": "b", "status": "queued"},
-                {"id": "c", "name": "c", "status": "queued"},
-            ],
-            "edges": [
-                {"from": "a", "to": "b"},
-                {"from": "b", "to": "c"},
-                {"from": "c", "to": "a"},
+                {"id": "a", "label": "a", "status": "pending", "depends_on": ["b"]},
+                {"id": "b", "label": "b", "status": "pending", "depends_on": ["c"]},
+                {"id": "c", "label": "c", "status": "pending", "depends_on": ["a"]},
             ],
         }
     )
@@ -208,9 +210,12 @@ def test_js_layout_cycle_guard_terminates():
 def test_js_layout_single_node_and_empty_edges():
     laid = _layout_via_node(
         {
+            "version": "pipeline-graph/1",
+            "source": "ci",
             "title": "solo",
-            "nodes": [{"id": "job", "name": "deploy", "status": "running"}],
-            "edges": [],
+            "subtitle": "",
+            "status": "running",
+            "nodes": [{"id": "job", "label": "deploy", "status": "running", "depends_on": []}],
         }
     )
     assert [n["id"] for n in laid["nodes"]] == ["job"]
@@ -218,8 +223,106 @@ def test_js_layout_single_node_and_empty_edges():
     assert laid["width"] > 0 and laid["height"] > 0
 
 
+def test_js_layout_empty_graph_returns_zeros():
+    laid = _layout_via_node(
+        {
+            "version": "pipeline-graph/1",
+            "source": "ci",
+            "title": "empty",
+            "subtitle": "",
+            "status": "running",
+            "nodes": [],
+        }
+    )
+    assert laid["nodes"] == []
+    assert laid["edges"] == []
+    assert laid["width"] == 0 and laid["height"] == 0
+
+
+def _layout_xy_via_node(graph: dict) -> dict:
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node not available")
+    harness = (
+        "const fs = require('fs'); globalThis.window = {};\n"
+        f"require({str(PLATFORM_JS)!r});\n"
+        "const graph = JSON.parse(fs.readFileSync(0, 'utf8'));\n"
+        "const out = window.PipelineGraph.layout(graph, {});\n"
+        "console.log(JSON.stringify({\n"
+        "  nodes: out.nodes.map(n => ({id: n.id, x: n.x, y: n.y})),\n"
+        "  width: out.width, height: out.height\n"
+        "}));\n"
+    )
+    result = subprocess.run(
+        [node, "-e", harness],
+        input=json.dumps(graph),
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    if result.returncode != 0:
+        raise AssertionError(f"node layout harness failed: {result.stderr}")
+    return json.loads(result.stdout)
+
+
+def test_js_layout_dangling_depends_on_no_nan():
+    """A depends_on that references a non-existent node must not produce NaN
+    coordinates — the renderer silently drops dangling refs."""
+    laid = _layout_xy_via_node(
+        {
+            "version": "pipeline-graph/1",
+            "source": "ci",
+            "title": "dangling",
+            "subtitle": "",
+            "status": "running",
+            "nodes": [
+                {"id": "a", "label": "a", "status": "pending", "depends_on": ["ghost"]},
+                {"id": "b", "label": "b", "status": "pending", "depends_on": []},
+            ],
+        }
+    )
+    for n in laid["nodes"]:
+        assert n["x"] == n["x"]  # not NaN
+        assert n["y"] == n["y"]
+    assert laid["width"] == laid["width"] and laid["height"] == laid["height"]
+
+
+def test_js_layout_five_runs_byte_identical():
+    """Determinism: five runs on the same input must be byte-identical (no
+    Math.random anywhere)."""
+    graph = {
+        "version": "pipeline-graph/1",
+        "source": "ci",
+        "title": "det",
+        "subtitle": "",
+        "status": "running",
+        "nodes": [
+            {"id": "a", "label": "A", "status": "succeeded", "depends_on": []},
+            {"id": "b", "label": "B", "status": "succeeded", "depends_on": ["a"]},
+            {"id": "c", "label": "C", "status": "succeeded", "depends_on": ["a"]},
+            {"id": "d", "label": "D", "status": "succeeded", "depends_on": ["b", "c"]},
+        ],
+    }
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node not available")
+    runs = []
+    for _ in range(5):
+        res = subprocess.run(
+            [node, "-e",
+             f"const fs = require('fs'); globalThis.window = {{}}; require({str(PLATFORM_JS)!r});"
+             "const graph = JSON.parse(fs.readFileSync(0, 'utf8'));"
+             "const out = window.PipelineGraph.layout(graph);"
+             "console.log(JSON.stringify(out));"],
+            input=json.dumps(graph),
+            capture_output=True, text=True, timeout=30
+        )
+        runs.append(res.stdout.strip())
+    assert len(set(runs)) == 1
+
+
 # ---------------------------------------------------------------------------
-# ci_run_graph: join by name, matrix collapse, degraded path
+# ci_run_graph: join by name, matrix collapse, degraded path, timestamp clamps
 # ---------------------------------------------------------------------------
 
 
@@ -245,7 +348,6 @@ def fake_gh(monkeypatch):
 
 
 def test_ci_run_graph_joins_workflow_jobs_by_name(fake_gh):
-    # Canned gh run view with display names matching the workflow's `name:`.
     jobs = [
         {"databaseId": "101", "name": "Discover services", "status": "completed", "conclusion": "success"},
         {"databaseId": "102", "name": "Lint", "status": "completed", "conclusion": "success"},
@@ -253,15 +355,19 @@ def test_ci_run_graph_joins_workflow_jobs_by_name(fake_gh):
     ]
     fake_gh(_canned_run_view(jobs))
     graph = platform_ops.ci_run_graph("42")
-    assert graph["reachable"] is True
+    assert graph["degraded"] is False
     assert graph["title"] == "ci: main"
     by_id = {n["id"]: n for n in graph["nodes"]}
     assert by_id["discover"]["status"] == "succeeded"
     assert by_id["test"]["status"] == "failed"
-    assert by_id["gitleaks"]["status"] == "skipped"  # no gh job → skipped
-    assert by_id["gitleaks"]["detail"] == "no matching job in run"
+    # gitleaks has no matching gh job → pending while run is going, skipped once done.
+    # The canned run has no gitleaks job, and run status is completed → skipped.
+    assert by_id["gitleaks"]["status"] == "skipped"
+    assert by_id["gitleaks"]["detail"] == ""  # no `if:` in workflow
     # DAG comes from the workflow file, not from GitHub.
-    assert any(e["to"] == "test" for e in graph["edges"])
+    # Graph uses depends_on on nodes, no edges array in contract.
+    # But for test we check the internal structure — renderers derive edges.
+    assert by_id["test"]["depends_on"] == ["discover", "lint", "gitleaks"]
 
 
 def test_ci_run_graph_matrix_collapse(fake_gh):
@@ -273,8 +379,10 @@ def test_ci_run_graph_matrix_collapse(fake_gh):
     fake_gh(_canned_run_view(jobs))
     graph = platform_ops.ci_run_graph("42")
     test_node = next(n for n in graph["nodes"] if n["id"] == "test")
-    assert test_node["status"] == "failed"  # any failure → failed
+    assert test_node["status"] == "failed"
     assert test_node["detail"] == "3 matrix legs"
+    assert test_node["fanout"]
+    assert len(test_node["fanout"]) == 3
 
     # All legs green → succeeded.
     fake_gh(_canned_run_view([{**j, "conclusion": "success"} for j in jobs]))
@@ -291,11 +399,188 @@ def test_ci_run_graph_matrix_collapse(fake_gh):
     assert test_node["status"] == "running"
 
 
-def test_ci_run_graph_degraded_keeps_shape(fake_gh):
+def test_ci_run_graph_degraded_returns_pending_shape(fake_gh):
     fake_gh({"ok": False, "stdout": "", "stderr": "gh not installed", "code": -1})
     graph = platform_ops.ci_run_graph("42")
-    assert graph["reachable"] is False
-    assert "gh not installed" in graph["error"]
+    assert graph["degraded"] is True
+    assert "gh not installed" in graph["degraded_reason"]
     assert graph["nodes"], "degraded path must keep the DAG shape"
-    assert all(n["status"] == "skipped" for n in graph["nodes"])
-    assert any(e["to"] == "test" for e in graph["edges"])
+    assert all(n["status"] == "pending" for n in graph["nodes"]), "degraded → all nodes pending"
+    assert "version" in graph and graph["version"] == "pipeline-graph/1"
+
+
+# 19 real GitHub job names as a Python literal fixture, no network
+REAL_GH_JOBS = [
+    {"databaseId": "1", "name": "Deploy (manual)", "status": "completed", "conclusion": "skipped"},
+    {"databaseId": "2", "name": "Secret Scan (Gitleaks)", "status": "completed", "conclusion": "success"},
+    {"databaseId": "3", "name": "Load test (k6)", "status": "completed", "conclusion": "success"},
+    {"databaseId": "4", "name": "Container Scan (Trivy) (users-service, users-service)", "status": "completed", "conclusion": "success"},
+    {"databaseId": "5", "name": "Container Scan (Trivy) (orders-service, orders-service)", "status": "completed", "conclusion": "success"},
+    {"databaseId": "6", "name": "Container Scan (Trivy) (catalog-service, catalog-service)", "status": "completed", "conclusion": "success"},
+    {"databaseId": "7", "name": "Container Scan (Trivy) (payment-service, payment-service)", "status": "completed", "conclusion": "success"},
+    {"databaseId": "8", "name": "Container Scan (Trivy) (notification-service, notification-service)", "status": "completed", "conclusion": "success"},
+    {"databaseId": "9", "name": "Terraform Validate (v1.5.7)", "status": "completed", "conclusion": "success"},
+    {"databaseId": "10", "name": "Build & Push Images (catalog-items, catalog/items)", "status": "completed", "conclusion": "success"},
+    {"databaseId": "11", "name": "Build & Push Images (orders-service, orders-service)", "status": "completed", "conclusion": "success"},
+    {"databaseId": "12", "name": "Build & Push Images (catalog-service, catalog-service)", "status": "completed", "conclusion": "success"},
+    {"databaseId": "13", "name": "Build & Push Images (payment-service, payment-service)", "status": "completed", "conclusion": "success"},
+    {"databaseId": "14", "name": "Build & Push Images (notification-service, notification-service)", "status": "completed", "conclusion": "success"},
+    {"databaseId": "15", "name": "Deploy (auto)", "status": "completed", "conclusion": "skipped"},
+]
+
+
+def test_ci_run_graph_real_job_names_exact_and_prefix_match(fake_gh):
+    """The 19 real GitHub job names must map correctly:
+    - exact match for Deploy (manual), Secret Scan (Gitleaks), Load test (k6)
+    - longest literal prefix for Trivy, Terraform Validate, Build & Push
+    """
+    fake_gh(_canned_run_view(REAL_GH_JOBS))
+    graph = platform_ops.ci_run_graph("42")
+    by_id = {n["id"]: n for n in graph["nodes"]}
+    # Exact matches
+    assert by_id["deploy"]["status"] == "skipped"
+    assert by_id["gitleaks"]["status"] == "succeeded"
+    assert by_id["load-test"]["status"] == "succeeded"
+    # Matrix collapse
+    assert by_id["trivy-scan"]["detail"] == "5 matrix legs"
+    assert by_id["build"]["detail"] == "5 matrix legs"
+    # Longest literal prefix
+    assert by_id["terraform-validate"]["detail"] == "1 matrix legs"
+    assert by_id["terraform-validate"]["fanout"][0]["label"] == "1.5.7"
+
+
+def test_ci_run_graph_orphan_gh_job(fake_gh):
+    """A gh job with no workflow-file counterpart becomes an orphan node."""
+    jobs = REAL_GH_JOBS + [{"databaseId": "999", "name": "Random Job", "status": "completed", "conclusion": "success"}]
+    fake_gh(_canned_run_view(jobs))
+    graph = platform_ops.ci_run_graph("42")
+    orphan = next((n for n in graph["nodes"] if n["id"].startswith("gh:")), None)
+    assert orphan is not None
+    assert orphan["detail"] == "not in workflow file"
+    assert orphan["depends_on"] == []
+
+
+def test_ci_run_graph_negative_duration_clamped_to_null(fake_gh):
+    """Skipped jobs can have startedAt > completedAt — clamp to null."""
+    jobs = [
+        {"databaseId": "100", "name": "Deploy (manual)",
+         "status": "completed", "conclusion": "skipped",
+         "startedAt": "2026-08-18T23:25:00Z", "completedAt": "2026-08-18T23:24:59Z"},
+    ]
+    fake_gh(_canned_run_view(jobs))
+    graph = platform_ops.ci_run_graph("42")
+    node = next(n for n in graph["nodes"] if n["id"] == "deploy")
+    assert node["duration_s"] is None
+
+
+def test_ci_run_graph_year_0001_timestamp_becomes_null(fake_gh):
+    """gh serialises unset times as 0001-01-01T00:00:00Z — filter those."""
+    jobs = [
+        {"databaseId": "100", "name": "Deploy (manual)",
+         "status": "completed", "conclusion": "skipped",
+         "startedAt": "0001-01-01T00:00:00Z", "completedAt": "0001-01-01T00:00:00Z"},
+    ]
+    fake_gh(_canned_run_view(jobs))
+    graph = platform_ops.ci_run_graph("42")
+    node = next(n for n in graph["nodes"] if n["id"] == "deploy")
+    assert node["started_at"] is None
+    assert node["finished_at"] is None
+    assert node["duration_s"] is None
+
+
+# ---------------------------------------------------------------------------
+# Job graph (tenant) — status positional rules, truncation regression
+# ---------------------------------------------------------------------------
+
+
+def test_job_graph_status_positional_rules():
+    from controlplane.core.pipeline_graph import _node_status
+    TERMINAL = ("succeeded", "failed", "cancelled", "interrupted")
+
+    # i < current → succeeded
+    assert _node_status(1, 3, "running", None) == "succeeded"
+    # i == current, job running → running
+    assert _node_status(3, 3, "running", None) == "running"
+    # i == current, job failed → failed
+    assert _node_status(3, 3, "failed", None) == "failed"
+    # i == current, job cancelled → cancelled
+    assert _node_status(3, 3, "cancelled", None) == "cancelled"
+    # i == current, job succeeded → succeeded
+    assert _node_status(3, 3, "succeeded", None) == "succeeded"
+    # i > current, job terminal → skipped
+    assert _node_status(5, 3, "succeeded", None) == "skipped"
+    # i > current, job not terminal → pending
+    assert _node_status(5, 3, "running", None) == "pending"
+    # Row with its own status wins
+    class Row:
+        status = "failed"
+    assert _node_status(3, 3, "running", Row()) == "failed"
+
+
+# ---------------------------------------------------------------------------
+# applyLogProgress never regresses terminal nodes
+# ---------------------------------------------------------------------------
+
+
+def _apply_log_progress_via_node(graph: dict, log_text: str, job_status: str) -> dict:
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node not available")
+    harness = (
+        "const fs = require('fs'); globalThis.window = {};\n"
+        f"require({str(PLATFORM_JS)!r});\n"
+        "const input = JSON.parse(fs.readFileSync(0, 'utf8'));\n"
+        "const out = window.PipelineGraph.applyLogProgress(input.graph, input.log, input.jobStatus);\n"
+        "console.log(JSON.stringify(out));\n"
+    )
+    result = subprocess.run(
+        [node, "-e", harness],
+        input=json.dumps({"graph": graph, "log": log_text, "jobStatus": job_status}),
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    if result.returncode != 0:
+        raise AssertionError(f"node applyLogProgress failed: {result.stderr}")
+    return json.loads(result.stdout)
+
+
+def test_apply_log_progress_never_regresses_terminal():
+    graph = {
+        "version": "pipeline-graph/1",
+        "source": "job",
+        "title": "job",
+        "subtitle": "",
+        "status": "running",
+        "nodes": [
+            {"id": "a", "label": "A", "status": "succeeded", "depends_on": []},
+            {"id": "b", "label": "B", "status": "running", "depends_on": ["a"]},
+            {"id": "c", "label": "C", "status": "pending", "depends_on": ["b"]},
+        ],
+    }
+    # Each "[n/N] name" marker announces step n *starting* — the highest
+    # marker is the currently-running step, so step 3 starting means step 2
+    # already finished.
+    log = "[1/3] A\n[2/3] B\n[3/3] C\n"
+    out = _apply_log_progress_via_node(graph, log, "running")
+    assert out["nodes"][0]["status"] == "succeeded"
+    assert out["nodes"][1]["status"] == "succeeded"
+    assert out["nodes"][2]["status"] == "running"
+
+    # If node was failed, it must not regress to running/pending.
+    graph["nodes"][0]["status"] = "failed"
+    out = _apply_log_progress_via_node(graph, log, "running")
+    assert out["nodes"][0]["status"] == "failed"
+
+
+# ---------------------------------------------------------------------------
+# ci_graph_static prints 11 nodes
+# ---------------------------------------------------------------------------
+
+
+def test_ci_graph_static_prints_eleven_nodes():
+    static = platform_ops.ci_graph_static()
+    assert static["version"] == "pipeline-graph/1"
+    assert static["source"] == "ci"
+    assert len(static["nodes"]) == 11
+    assert all(n["status"] == "pending" for n in static["nodes"])

@@ -130,6 +130,15 @@ class Settings:
         default_factory=lambda: _env_int("SCAN_TIMEOUT_SECONDS", 300))
     sandbox_cpus: float = field(default_factory=lambda: float(_env("SANDBOX_CPUS", "2")))
     sandbox_memory_mb: int = field(default_factory=lambda: _env_int("SANDBOX_MEMORY_MB", 1024))
+    # Trivy's vulnerability DB is roughly a gigabyte. Every scan runs in a
+    # fresh --rm sandbox container, so without a persistent cache it
+    # re-downloads the whole DB on every single scan — slow, wasteful, and
+    # the first cause of scan-gate timeouts on anything but a fast link.
+    # A Docker-managed named volume (not a host bind-mount) so ownership and
+    # permissions are Docker's problem, not this process's — the volume is
+    # created automatically on first use.
+    trivy_cache_volume: str = field(default_factory=lambda: _env(
+        "TRIVY_CACHE_VOLUME", "controlplane-trivy-cache"))
 
     # Libvirt host defaults (injected into rendered Terraform, never user-set)
     libvirt_uri: str = field(default_factory=lambda: _env("LIBVIRT_URI", "qemu:///system"))

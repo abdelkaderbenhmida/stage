@@ -105,13 +105,13 @@ def _mark_job(db: Session, job_id: uuid.UUID, status: str, error: str | None = N
     step = db.execute(
         select(JobStep)
         .where(JobStep.job_id == job_id, JobStep.finished_at.is_(None))
-        .order_by(JobStep.index.desc())
+        .order_by(JobStep.step_index.desc())
     ).scalar_one_or_none()
     if step:
         step.finished_at = datetime.now(UTC)
         step.status = "succeeded" if status == "succeeded" else "failed"
         if error and status != "succeeded":
-            step.detail = error[:500]
+            step.error_message = error[:500]
     db.commit()
 
 
@@ -147,7 +147,7 @@ def _step(job_id: uuid.UUID, index: int, total: int, name: str) -> None:
         prev = db.execute(
             select(JobStep)
             .where(JobStep.job_id == job_id, JobStep.finished_at.is_(None))
-            .order_by(JobStep.index.desc())
+            .order_by(JobStep.step_index.desc())
         ).scalar_one_or_none()
         if prev:
             prev.finished_at = datetime.now(UTC)
@@ -155,8 +155,8 @@ def _step(job_id: uuid.UUID, index: int, total: int, name: str) -> None:
         # Insert the new step
         step = JobStep(
             job_id=job_id,
-            index=index,
-            total=total,
+            step_index=index,
+            step_total=total,
             name=name,
             status="running",
             started_at=datetime.now(UTC),
@@ -1328,6 +1328,7 @@ def kubectl(args: list[str], project: Project | None, on_line=None) -> SandboxRe
                 mounts=mounts,
                 env={"KUBECONFIG": "/kube/config"},
                 network_enabled=True,
+                network=settings.registry_network,
                 timeout_seconds=300,
                 on_line=on_line,
             )
@@ -1345,6 +1346,7 @@ def kubectl_apply(manifest_paths: list[Path], project: Project, on_line=None) ->
                 mounts=kubeconfig_mounts,
                 env={"KUBECONFIG": "/kube/config"},
                 network_enabled=True,
+                network=settings.registry_network,
                 timeout_seconds=120,
             )
         )
@@ -1361,6 +1363,7 @@ def kubectl_apply(manifest_paths: list[Path], project: Project, on_line=None) ->
                     mounts=[*kubeconfig_mounts, (manifest, str(manifest), True)],
                     env={"KUBECONFIG": "/kube/config"},
                     network_enabled=True,
+                    network=settings.registry_network,
                     timeout_seconds=300,
                     on_line=on_line,
                 )

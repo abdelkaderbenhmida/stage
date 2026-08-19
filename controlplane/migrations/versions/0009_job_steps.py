@@ -1,8 +1,8 @@
 """Job steps table for pipeline graph progress tracking.
 
-Creates job_steps table with columns per job_step model + FK CASCADE + unique
-constraint + index. Each job can have multiple sequential steps (1-based index)
-that represent stages in a deployment/provision pipeline.
+Creates job_steps with per-step timestamps so the pipeline graph survives
+log truncation (the log is capped head-first at 200 kB and the early
+"[n/N]" markers vanish on long builds; a row does not).
 """
 
 from __future__ import annotations
@@ -31,18 +31,18 @@ def upgrade() -> None:
             sa.ForeignKey("jobs.id", ondelete="CASCADE"),
             nullable=False,
         ),
-        sa.Column("index", sa.Integer(), nullable=False),
-        sa.Column("total", sa.Integer(), nullable=False),
+        sa.Column("step_index", sa.Integer(), nullable=False),
+        sa.Column("step_total", sa.Integer(), nullable=False),
         sa.Column("name", sa.String(length=120), nullable=False),
         sa.Column(
             "status",
             sa.String(length=20),
-            server_default="queued",
+            server_default="running",
             nullable=False,
         ),
         sa.Column("started_at", sa.DateTime(timezone=True)),
         sa.Column("finished_at", sa.DateTime(timezone=True)),
-        sa.Column("detail", sa.Text()),
+        sa.Column("error_message", sa.Text()),
         sa.Column(
             "created_at",
             sa.DateTime(timezone=True),
@@ -57,12 +57,14 @@ def upgrade() -> None:
         ),
     )
     op.create_unique_constraint(
-        "uq_job_steps_job_index", "job_steps", ["job_id", "index"]
+        "uq_job_steps_job_id_step_index", "job_steps", ["job_id", "step_index"]
     )
     op.create_index("ix_job_steps_job_id", "job_steps", ["job_id"])
 
 
 def downgrade() -> None:
     op.drop_index("ix_job_steps_job_id", table_name="job_steps")
-    op.drop_constraint("uq_job_steps_job_index", "job_steps", type_="unique")
+    op.drop_constraint(
+        "uq_job_steps_job_id_step_index", "job_steps", type_="unique"
+    )
     op.drop_table("job_steps")

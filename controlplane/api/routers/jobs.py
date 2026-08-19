@@ -16,9 +16,10 @@ from controlplane.api.deps import (
     get_db,
     get_scope,
 )
-from controlplane.api.schemas import JobOut, Message, PipelineGraphOut, GraphNode, GraphEdge
+from controlplane.api.schemas import JobOut, Message, PipelineGraphOut
+from controlplane.core.pipeline_graph import job_graph as build_job_graph
 from controlplane.db import SessionLocal
-from controlplane.models import Deployment, Job, Project, User, JobStep
+from controlplane.models import Job, User
 from controlplane.repositories.base import NotFoundError, Scope
 from controlplane.repositories.jobs import JobRepository
 from controlplane.workers.tasks import revoke_job
@@ -126,76 +127,18 @@ def cancel_job(
     return Message(message="Cancellation requested.")
 
 
-@router.get("/projects/{project_id}/jobs/{job_id}/graph", response_model=PipelineGraphOut)
+@router.get("/jobs/{job_id}/graph", response_model=PipelineGraphOut)
 def job_graph(
-    project_id: uuid.UUID,
     job_id: uuid.UUID,
     db: Session = Depends(get_db),
     scope: Scope = Depends(get_scope),
 ):
     """Return a pipeline graph for the given job.
 
-    Nodes are built from job_steps ordered by index; edges chain consecutive steps.
-    If the job has no steps (scan, destroy, undeploy), a single node is returned
-    from the job itself.
+    Built by ``core.pipeline_graph.job_graph`` from job_steps rows unioned
+    with the declared step template, falling back to [n/N] log parsing for
+    jobs that predate the table. Only errors with 404 (this team's job, or
+    not found — never 403).
     """
     job = _get(db, scope, job_id)
-    project = db.get(Project, job.project_id) if job.project_id else None
-    deployment = db.get(Deployment, job.deployment_id) if job.deployment_id else None
-
-    # Build nodes from job_steps
-    steps = (
-        db.query(JobStep)
-        .filter(JobStep.job_id == job.id)
-        .order_by(JobStep.index)
-        .all()
-    )
-
-    if steps:
-        nodes = []
-        for step in steps:
-            duration_s = None
-            if step.started_at and step.finished_at:
-                duration_s = (step.finished_at - step.started_at).total_seconds()
-            nodes.append(
-                GraphNode(
-                    id=step.name.lower().replace(" ", "-"),
-                    name=step.name,
-                    status=step.status,
-                    started_at=step.started_at,
-                    finished_at=step.finished_at,
-                    duration_s=duration_s,
-                    detail=step.detail or "",
-                )
-            )
-        edges = [
-            GraphEdge(from_=nodes[i].id, to=nodes[i + 1].id)
-            for i in range(len(nodes) - 1)
-        ]
-    else:
-        # Fallback for jobs without steps (scan, destroy, undeploy)
-        duration_s = None
-        if job.started_at and job.finished_at:
-            duration_s = (job.finished_at - job.started_at).total_seconds()
-        nodes = [
-            GraphNode(
-                id="job",
-                name=deployment.service_name if deployment else job.type,
-                status=job.status,
-                started_at=job.started_at,
-                finished_at=job.finished_at,
-                duration_s=duration_s,
-                detail=job.error_message or "",
-            )
-        ]
-        edges = []
-
-    updated_at = job.updated_at or job.finished_at or job.started_at or job.created_at
-    return PipelineGraphOut(
-        source="deployment",
-        title=f"{project.name if project else 'unknown'} · {deployment.service_name if deployment else job.type}",
-        status=job.status,
-        updated_at=updated_at,
-        nodes=nodes,
-        edges=edges,
-    )
+    return PipelineGraphOut(**build_job_graph(db, job))

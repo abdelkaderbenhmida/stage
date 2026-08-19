@@ -518,10 +518,10 @@ def test_step_records_rows_with_indexes_totals_and_timestamps(session, project, 
 
     session.expire_all()
     steps = session.scalars(
-        sa.select(JobStep).where(JobStep.job_id == job.id).order_by(JobStep.index)
+        sa.select(JobStep).where(JobStep.job_id == job.id).order_by(JobStep.step_index)
     ).all()
-    assert [s.index for s in steps] == [1, 2, 3, 4]
-    assert all(s.total == 4 for s in steps)
+    assert [s.step_index for s in steps] == [1, 2, 3, 4]
+    assert all(s.step_total == 4 for s in steps)
     assert [s.name for s in steps] == [
         "terraform init", "terraform apply", "capturing node IPs", "ansible-playbook configure",
     ]
@@ -557,11 +557,11 @@ def test_failed_job_carries_error_into_the_final_step_detail(session, project, u
     assert job.status == "failed"
     assert job.error_message == "docker build failed: OOM"
     steps = session.scalars(
-        sa.select(JobStep).where(JobStep.job_id == job.id).order_by(JobStep.index)
+        sa.select(JobStep).where(JobStep.job_id == job.id).order_by(JobStep.step_index)
     ).all()
     assert steps[0].status == "succeeded"
     assert steps[1].status == "failed"
-    assert steps[1].detail == "docker build failed: OOM"
+    assert steps[1].error_message == "docker build failed: OOM"
     assert steps[1].finished_at is not None
 
 
@@ -574,10 +574,10 @@ def test_failed_job_truncates_error_detail_at_500_chars(session, project, user):
 
     session.expire_all()
     steps = session.scalars(
-        sa.select(JobStep).where(JobStep.job_id == job.id).order_by(JobStep.index)
+        sa.select(JobStep).where(JobStep.job_id == job.id).order_by(JobStep.step_index)
     ).all()
     assert len(steps) == 1
-    assert len(steps[0].detail) == 500
+    assert len(steps[0].error_message) == 500
 
 
 def test_log_truncation_keeps_all_seven_steps(session, project, user):
@@ -600,8 +600,8 @@ def test_log_truncation_keeps_all_seven_steps(session, project, user):
     job = session.get(Job, job.id)
     assert len(job.log) <= _LOG_CAP
     steps = session.scalars(
-        sa.select(JobStep).where(JobStep.job_id == job.id).order_by(JobStep.index)
+        sa.select(JobStep).where(JobStep.job_id == job.id).order_by(JobStep.step_index)
     ).all()
     assert len(steps) == 7
-    assert [s.index for s in steps] == [1, 2, 3, 4, 5, 6, 7]
+    assert [s.step_index for s in steps] == [1, 2, 3, 4, 5, 6, 7]
     assert steps[6].status == "succeeded"

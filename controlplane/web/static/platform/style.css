@@ -7,13 +7,13 @@
 #platform-root .layout { display: flex; min-height: 100vh; }
 /* ─────────── Sidebar ─────────── */
 #platform-root .sidebar {
-  width: 228px; flex-shrink: 0;
+  width: var(--sidebar-width); flex-shrink: 0;
   padding: 22px 14px;
   background: linear-gradient(180deg, rgba(19,27,41,.9), rgba(10,14,22,.9));
   border-right: 1px solid var(--border);
   position: sticky; top: 0; height: 100vh;
   display: flex; flex-direction: column; gap: 4px;
-  backdrop-filter: blur(8px);
+  backdrop-filter: var(--glass-blur);
 }
 
 #platform-root .brand { display: flex; align-items: center; gap: 11px; padding: 0 8px 20px; }
@@ -35,17 +35,25 @@
   padding: 10px 12px; border-radius: 10px; cursor: pointer;
   color: var(--muted); font-weight: 600; font-size: 13.5px;
   user-select: none; border: 1px solid transparent;
-  transition: background .15s, color .15s, border-color .15s, transform .1s;
+  transition: background var(--duration-fast) var(--easing-standard),
+              color var(--duration-fast) var(--easing-standard),
+              border-color var(--duration-fast) var(--easing-standard),
+              transform .1s;
 }
 
 #platform-root .nav-item:hover { background: var(--panel2); color: var(--text); }
 
+#platform-root .nav-item:active { transform: translateY(1px); }
+
 #platform-root .nav-item.active {
   background: linear-gradient(90deg, rgba(76,194,255,.14), rgba(122,92,255,.08));
   color: var(--accent); border-color: var(--border-hi);
+  box-shadow: inset 0 0 0 1px rgba(76,194,255,.12);
 }
 
-#platform-root .nav-item .ico { width: 16px; text-align: center; opacity: .9; }
+#platform-root .nav-item .ico { width: 16px; text-align: center; opacity: .9; display: flex; justify-content: center; }
+
+#platform-root .nav-item .ico svg { width: 16px; height: 16px; display: block; flex-shrink: 0; }
 
 #platform-root .nav-item .badge {
   margin-left: auto; background: rgba(76,194,255,.16); color: var(--accent);
@@ -59,7 +67,7 @@
    child — one long repository URL in a scan table was enough to push the
    whole page past the viewport and scroll it sideways under the fixed
    sidebar. With it, the inner .table-wrap overflow-x:auto can do its job. */
-#platform-root .content { flex: 1; min-width: 0; padding: 26px 32px 80px; max-width: 1360px; }
+#platform-root .content { flex: 1; min-width: 0; padding: 26px 32px 80px; max-width: var(--content-max); }
 
 #platform-root .topbar {
   display: flex; align-items: center; gap: 12px; margin-bottom: 20px; flex-wrap: wrap;
@@ -68,7 +76,7 @@
 #platform-root .repo-badge {
   font-family: var(--mono); font-size: 12px; color: var(--muted);
   background: var(--panel); border: 1px solid var(--border);
-  padding: 6px 12px; border-radius: 8px;
+  padding: 6px 12px; border-radius: var(--radius-sm);
   display: flex; align-items: center; gap: 8px;
 }
 
@@ -85,7 +93,7 @@
 
 #platform-root .view { display: none; }
 
-#platform-root .view.active { display: block; animation: fadeIn .25s ease; }
+#platform-root .view.active { display: block; animation: fadeIn .25s var(--easing-standard); }
 @keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
 
 #platform-root h1 { font-size: 22px; font-weight: 800; margin-bottom: 3px; letter-spacing: -.2px; }
@@ -119,14 +127,18 @@
 #platform-root .grid.two { grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); }
 
 #platform-root .card {
-  background: var(--panel);
+  background: var(--glass-bg);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 18px;
   box-shadow: var(--shadow);
-  backdrop-filter: blur(6px);
+  backdrop-filter: var(--glass-blur);
   position: relative;
+  transition: border-color var(--duration-fast) var(--easing-standard),
+              transform var(--duration-fast) var(--easing-standard);
 }
+
+#platform-root .card:hover { border-color: var(--border-hi); }
 
 #platform-root .card h3, #platform-root .kpi .k, #platform-root .card-title {
   font-size: 11px; font-weight: 700; color: var(--muted);
@@ -136,9 +148,13 @@
 #platform-root .card-title { display: flex; align-items: center; gap: 8px; }
 
 #platform-root .kpi {
-  background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--glass-bg); border: 1px solid var(--border); border-radius: var(--radius);
   padding: 16px 16px 12px; position: relative; overflow: hidden;
+  backdrop-filter: var(--glass-blur);
+  transition: border-color var(--duration-fast), transform var(--duration-fast);
 }
+
+#platform-root .kpi:hover { border-color: var(--border-hi); }
 
 #platform-root .kpi .k { margin-bottom: 6px; display: flex; align-items: center; justify-content: space-between; }
 
@@ -160,6 +176,8 @@
 
 #platform-root tr:last-child td { border-bottom: none; }
 
+#platform-root tbody tr { transition: background var(--duration-fast); }
+
 #platform-root tbody tr:hover td { background: rgba(76,194,255,.03); }
 /* ─────────── Pills / chips ─────────── */
 #platform-root .pill {
@@ -167,17 +185,17 @@
   font-size: 10.5px; font-weight: 700; letter-spacing: .2px;
 }
 
-#platform-root .pill.green { background: rgba(52,211,153,.14); color: var(--green); }
+#platform-root .pill.green { background: var(--green-bg); color: var(--green); border: 1px solid var(--green-border); }
 
-#platform-root .pill.red { background: rgba(248,113,113,.14); color: var(--red); }
+#platform-root .pill.red { background: var(--red-bg); color: var(--red); border: 1px solid var(--red-border); }
 
-#platform-root .pill.amber { background: rgba(251,191,36,.14); color: var(--amber); }
+#platform-root .pill.amber { background: var(--amber-bg); color: var(--amber); border: 1px solid var(--amber-border); }
 
-#platform-root .pill.accent { background: rgba(76,194,255,.14); color: var(--accent); }
+#platform-root .pill.accent { background: rgba(76,194,255,.14); color: var(--accent); border: 1px solid rgba(76,194,255,.25); }
 
-#platform-root .pill.violet { background: rgba(167,139,250,.14); color: var(--violet); }
+#platform-root .pill.violet { background: var(--violet-bg); color: var(--violet); border: 1px solid var(--violet-border); }
 
-#platform-root .pill.muted { background: rgba(120,140,170,.12); color: var(--muted); }
+#platform-root .pill.muted { background: rgba(120,140,170,.12); color: var(--muted); border: 1px solid transparent; }
 
 #platform-root .chips { display: flex; flex-wrap: wrap; gap: 6px; }
 
@@ -218,6 +236,12 @@
 #platform-root .search {
   display: flex; align-items: center; gap: 8px; background: var(--panel);
   border: 1px solid var(--border); border-radius: 9px; padding: 6px 12px;
+  transition: border-color var(--duration-fast), box-shadow var(--duration-fast);
+}
+
+#platform-root .search:focus-within {
+  border-color: var(--border-focus);
+  box-shadow: 0 0 0 3px rgba(76,194,255,.15);
 }
 
 #platform-root .search input { background: none; border: none; outline: none; color: var(--text); font-size: 13px; font-family: var(--mono); width: 200px; }
@@ -244,7 +268,7 @@
 
 #platform-root .bar-track { flex: 1; height: 9px; background: var(--panel2); border-radius: 5px; overflow: hidden; }
 
-#platform-root .bar-fill { height: 100%; border-radius: 5px; background: linear-gradient(90deg, var(--accent), var(--accent2)); transition: width .5s; }
+#platform-root .bar-fill { height: 100%; border-radius: 5px; background: linear-gradient(90deg, var(--accent), var(--accent2)); transition: width .5s var(--easing-standard); }
 
 #platform-root .header-actions { display: flex; align-items: center; gap: 10px; margin-left: auto; }
 
@@ -324,7 +348,10 @@
   display: flex; align-items: center; gap: 10px;
   background: var(--panel2); border: 1px solid var(--border);
   border-radius: 9px; padding: 8px 12px;
+  transition: border-color var(--duration-fast);
 }
+
+#platform-root .svc-row:hover { border-color: var(--border-hi); }
 
 #platform-root .svc-row .svc-name { font-family: var(--mono); font-weight: 700; font-size: 13px; }
 
@@ -338,9 +365,10 @@
   flex: 1; background: var(--panel2); border: 1px solid var(--border);
   border-radius: 8px; padding: 7px 12px; color: var(--text); font-family: var(--mono);
   font-size: 12.5px; outline: none;
+  transition: border-color var(--duration-fast), box-shadow var(--duration-fast);
 }
 
-#platform-root .add-svc input:focus { border-color: var(--border-hi); }
+#platform-root .add-svc input:focus { border-color: var(--border-focus); box-shadow: 0 0 0 3px rgba(76,194,255,.15); }
 
 #platform-root .add-svc-panel {
   margin-top: 14px; padding: 12px; background: rgba(76,194,255,.05);
@@ -509,7 +537,10 @@
   display: flex; align-items: center; gap: 14px; padding: 12px 14px;
   background: var(--panel2); border: 1px solid var(--border); border-radius: 10px;
   flex-wrap: wrap;
+  transition: border-color var(--duration-fast), background var(--duration-fast);
 }
+
+#platform-root .run-row:hover, #platform-root .app-row:hover { border-color: var(--border-hi); }
 
 #platform-root .run-main, #platform-root .app-row-main { display: flex; align-items: center; gap: 12px; flex: 1; min-width: 200px; }
 
@@ -592,13 +623,13 @@
 }
 
 @media (max-width: 900px) {
+  #platform-root .layout { flex-direction: column; }
 
-#platform-root .layout { flex-direction: column; }
+  #platform-root .sidebar { width: 100%; height: auto; position: static; flex-direction: row; flex-wrap: wrap; }
 
-#platform-root .sidebar { width: 100%; height: auto; position: static; flex-direction: row; flex-wrap: wrap; }
+  #platform-root .content { padding: 18px; }
 
-#platform-root .content { padding: 18px; }
+  #platform-root .search input { width: 120px; }
 
-#platform-root .search input { width: 120px; }
-
-#platform-root .detail-panel { width: 100%; }}
+  #platform-root .detail-panel { width: 100%; }
+}

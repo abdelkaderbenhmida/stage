@@ -6,6 +6,8 @@ from controlplane.core.config import settings
 from controlplane.runners.sandbox import SandboxRun, run_sandbox
 from controlplane.runners.scanners.base import SANDBOX_IMAGE, RawResult
 
+_CACHE_CONTAINER_PATH = "/root/.cache/trivy"
+
 
 def run_trivy(
     image_ref: str,
@@ -27,13 +29,34 @@ def run_trivy(
     ``from_registry`` scans the pushed image over the registry API instead,
     which needs no socket. ``network`` joins the docker network the registry
     is on, and ``insecure`` allows a plain-HTTP local registry.
+
+    The vulnerability DB is roughly a gigabyte. Every scan runs in a fresh
+    ``--rm`` sandbox container, so without a persistent cache Trivy
+    re-downloads the whole DB on every single scan — the first thing to blow
+    the scan-gate timeout on anything but a fast link.
+    ``settings.trivy_cache_volume`` — a Docker-managed named volume, created
+    automatically on first use — is mounted read-write across every run so
+    the DB is fetched once and reused. A named volume rather than a host
+    bind-mount so nothing here has to create the directory or worry about
+    the uid the sandbox's root user leaves files owned by.
+
+    Trivy has its own internal --timeout (default 5m) wrapping the whole run
+    including the DB download, independent of the sandbox's own
+    timeout_seconds. Left at its default, Trivy cuts itself off long before
+    a slow DB pull can finish even when the sandbox was given more room — so
+    it must be told the same budget explicitly, a few seconds under the
+    outer limit so Trivy reports a clean timeout instead of the sandbox
+    killing it mid-write.
     """
+    trivy_timeout = max(timeout - 10, 30)
     command = [
         "trivy", "image",
         "--format", "json",
         "--no-progress",
         "--ignore-unfixed",
         "--quiet",
+        "--cache-dir", _CACHE_CONTAINER_PATH,
+        "--timeout", f"{trivy_timeout}s",
     ]
     if from_registry:
         command += ["--image-src", "remote"]
@@ -45,6 +68,7 @@ def run_trivy(
         SandboxRun(
             command=command,
             image=SANDBOX_IMAGE,
+            volume_mounts=[(settings.trivy_cache_volume, _CACHE_CONTAINER_PATH, False)],
             network_enabled=True,
             network=network,
             timeout_seconds=timeout,
