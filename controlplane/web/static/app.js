@@ -815,6 +815,24 @@ async function renderProject(id) {
               </tbody></table>`}
       </div>
 
+      <div class="between"><h2>Running workloads</h2>
+        <button class="small" id="workloads-btn">Refresh</button></div>
+      <div class="panel" id="project-workloads">
+        <div class="empty">Loading what is running in this environment…</div>
+      </div>
+
+      <div class="between"><h2>CI — your repositories</h2>
+        <button class="small" id="ci-btn">Refresh</button></div>
+      <div class="panel" id="project-ci">
+        <div class="empty">Loading GitHub Actions runs for this project's repositories…</div>
+      </div>
+
+      <div class="between"><h2>Configuration &amp; secrets</h2>
+        <button class="small" id="secrets-btn">Refresh</button></div>
+      <div class="panel" id="project-secrets">
+        <div class="empty">Loading configuration…</div>
+      </div>
+
       <div class="between"><h2>Monitoring</h2>
         <div class="row">
           <select id="metrics-window">
@@ -836,6 +854,141 @@ async function renderProject(id) {
       <div class="panel" id="project-logs">
         <div class="empty">Fetch recent log lines from Loki for this project's namespace.</div>
       </div>`;
+
+    /* ------------------------------------------- running workloads panel */
+
+    /* What is actually running in this project's namespace. The operator
+       console answers this for the platform's own services via ArgoCD;
+       tenant apps are applied with plain kubectl, so their answer comes
+       from the namespace itself. */
+    const loadWorkloads = async () => {
+      const box = $("#project-workloads");
+      if (!box) return;
+      box.innerHTML = `<div class="empty">Loading…</div>`;
+      try {
+        const data = await api(`/projects/${id}/workloads`);
+        if (!data.reachable) {
+          box.innerHTML = `<div class="empty">Cluster unreachable: ${esc(data.error || "unknown error")}</div>`;
+          return;
+        }
+        if (!data.deployments.length && !data.pods.length) {
+          box.innerHTML = `<div class="empty">Nothing running yet in <span class="mono">${esc(data.namespace)}</span> — deploy a service to see it here.</div>`;
+          return;
+        }
+        const deployRows = data.deployments.map((d) => `
+          <tr>
+            <td class="mono">${esc(d.name)}</td>
+            <td>${pill(d.healthy ? "healthy" : "degraded")}</td>
+            <td>${d.ready}/${d.desired} ready</td>
+            <td class="mono small">${esc((d.images[0] || "").split("/").pop())}</td>
+          </tr>`).join("");
+        const podRows = data.pods.map((p) => `
+          <tr>
+            <td class="mono">${esc(p.name)}</td>
+            <td>${pill(p.ready ? "running" : (p.waiting_reason || p.phase || "pending"))}</td>
+            <td>${p.restarts} restarts</td>
+          </tr>`).join("");
+        box.innerHTML = `
+          <table class="table"><thead><tr>
+            <th>Deployment</th><th>Health</th><th>Replicas</th><th>Image</th>
+          </tr></thead><tbody>${deployRows}</tbody></table>
+          <h3 style="margin-top:1rem">Pods</h3>
+          <table class="table"><thead><tr>
+            <th>Pod</th><th>State</th><th>Restarts</th>
+          </tr></thead><tbody>${podRows}</tbody></table>
+          ${data.services.length ? `<h3 style="margin-top:1rem">Services</h3>
+          <table class="table"><thead><tr><th>Service</th><th>Type</th><th>Cluster IP</th><th>Ports</th></tr></thead>
+          <tbody>${data.services.map((s) => `<tr>
+            <td class="mono">${esc(s.name)}</td><td>${esc(s.type)}</td>
+            <td class="mono">${esc(s.cluster_ip)}</td>
+            <td class="mono">${esc(s.ports.map((p) => p.port).join(", "))}</td>
+          </tr>`).join("")}</tbody></table>` : ""}
+          <div class="muted small" style="margin-top:.6rem">namespace <span class="mono">${esc(data.namespace)}</span></div>`;
+      } catch (err) {
+        box.innerHTML = `<div class="empty">${esc(err.message)}</div>`;
+      }
+    };
+    $("#workloads-btn").onclick = loadWorkloads;
+    loadWorkloads();
+
+    /* ----------------------------------------------------------- CI panel */
+
+    /* GitHub Actions for the repositories THIS project deploys — not the
+       platform's own pipeline, which is what the operator console shows. */
+    const loadCi = async () => {
+      const box = $("#project-ci");
+      if (!box) return;
+      box.innerHTML = `<div class="empty">Loading…</div>`;
+      try {
+        const data = await api(`/projects/${id}/ci`);
+        if (!data.repos.length) {
+          box.innerHTML = `<div class="empty">No repositories yet — add a deployment to track its CI.</div>`;
+          return;
+        }
+        box.innerHTML = data.repos.map((r) => {
+          if (!r.reachable) {
+            return `<div style="margin-bottom:1rem">
+              <div class="mono">${esc(r.repo)}</div>
+              <div class="empty">CI unavailable: ${esc(r.error || "unknown error")}</div></div>`;
+          }
+          if (!r.runs.length) {
+            return `<div style="margin-bottom:1rem">
+              <div class="mono">${esc(r.repo)}</div>
+              <div class="empty">No workflow runs — this repository has no GitHub Actions workflows.</div></div>`;
+          }
+          const rows = r.runs.map((run) => `
+            <tr>
+              <td>${pill(run.conclusion || run.status || "unknown")}</td>
+              <td>${esc(run.displayTitle || run.name || "")}</td>
+              <td class="mono small">${esc(run.headBranch || "")}</td>
+              <td class="muted small">${fmtDate(run.createdAt)}</td>
+            </tr>`).join("");
+          return `<div style="margin-bottom:1rem">
+            <div class="mono">${esc(r.repo)} <span class="muted small">· ${esc(r.services.join(", "))}</span></div>
+            <table class="table"><thead><tr>
+              <th>Result</th><th>Run</th><th>Branch</th><th>When</th>
+            </tr></thead><tbody>${rows}</tbody></table></div>`;
+        }).join("");
+      } catch (err) {
+        box.innerHTML = `<div class="empty">${esc(err.message)}</div>`;
+      }
+    };
+    $("#ci-btn").onclick = loadCi;
+    loadCi();
+
+    /* ------------------------------------------------------ secrets panel */
+
+    /* Names only — values live in the secret store and no endpoint returns
+       them, so this can show what a service carries without exposing it. */
+    const loadSecrets = async () => {
+      const box = $("#project-secrets");
+      if (!box) return;
+      box.innerHTML = `<div class="empty">Loading…</div>`;
+      try {
+        const data = await api(`/projects/${id}/secrets`);
+        if (!data.deployments.length) {
+          box.innerHTML = `<div class="empty">No deployments yet.</div>`;
+          return;
+        }
+        box.innerHTML = `<table class="table"><thead><tr>
+            <th>Service</th><th>Secrets</th><th>Environment</th>
+          </tr></thead><tbody>${data.deployments.map((d) => `
+            <tr>
+              <td class="mono">${esc(d.service_name)}</td>
+              <td>${d.secret_keys.length
+                    ? d.secret_keys.map((k) => `<span class="pill">${esc(k)}</span>`).join(" ")
+                    : `<span class="muted small">none</span>`}</td>
+              <td>${d.env_keys.length
+                    ? d.env_keys.map((k) => `<span class="pill">${esc(k)}</span>`).join(" ")
+                    : `<span class="muted small">none</span>`}</td>
+            </tr>`).join("")}</tbody></table>
+          <div class="muted small" style="margin-top:.6rem">Names only — secret values are never returned by the API.</div>`;
+      } catch (err) {
+        box.innerHTML = `<div class="empty">${esc(err.message)}</div>`;
+      }
+    };
+    $("#secrets-btn").onclick = loadSecrets;
+    loadSecrets();
 
     /* ---------------------------------------------------- monitoring panel */
 

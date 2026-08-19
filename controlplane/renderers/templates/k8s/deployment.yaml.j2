@@ -34,18 +34,34 @@ spec:
             - secretRef:
                 name: {{ name }}-env
 {% endif %}
+          {# An HTTP probe is only meaningful when the app actually serves the
+             path. `/livez` is THIS platform's own internal service contract —
+             a tenant deploying their own app has no reason to implement it,
+             and probing it anyway 404s, fails liveness and CrashLoops an app
+             that is running perfectly well. So an empty health_path means
+             "just check the port is accepting connections". #}
           readinessProbe:
+{% if health_path %}
             httpGet:
               path: {{ health_path }}
               port: {{ port }}
+{% else %}
+            tcpSocket:
+              port: {{ port }}
+{% endif %}
             initialDelaySeconds: 5
             periodSeconds: 10
           {# Readiness alone only removes a wedged pod from the Service; it
              never restarts it, so a hung process stays hung forever. #}
           livenessProbe:
+{% if health_path %}
             httpGet:
               path: {{ health_path }}
               port: {{ port }}
+{% else %}
+            tcpSocket:
+              port: {{ port }}
+{% endif %}
             initialDelaySeconds: 15
             periodSeconds: 20
             failureThreshold: 3

@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response,
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from controlplane import platform_ops
 from controlplane.api.deps import audit, get_current_user, get_db, get_scope, pagination_headers
 from controlplane.api.rbac import require_deployment_action, require_project_action
 from controlplane.api.schemas import (
@@ -26,6 +27,7 @@ from controlplane.core.app_config import (
     validate_env,
 )
 from controlplane.core.repo_url import InvalidRepoUrl, validate_repo_url
+from controlplane.core.validation import k8s_namespace
 from controlplane.models import Deployment, Project, User, WebhookSubscription
 from controlplane.repositories.base import NotFoundError, Scope
 from controlplane.repositories.deployments import DeploymentRepository
@@ -57,6 +59,103 @@ def list_deployments(
     items, total = DeploymentRepository(db, scope).list(project_id, page, page_size)
     response.headers.update(pagination_headers(request, total, page, page_size))
     return items
+
+
+@router.get("/projects/{project_id}/ci")
+def project_ci(
+    project_id: uuid.UUID,
+    limit: int = Query(default=10, ge=1, le=30),
+    db: Session = Depends(get_db),
+    scope: Scope = Depends(get_scope),
+):
+    """GitHub Actions runs for the repositories *this project* deploys.
+
+    Tenant-facing counterpart to the admin console's CI tab. That one reads
+    this control plane's own git remote and shows the platform's pipeline —
+    correct for an operator, useless (and cross-tenant) for a user asking
+    "what did CI do with *my* app". Here the repositories come from the
+    caller's own deployments, and `_require_project` 404s a project the
+    caller cannot see, so one user can never read another's CI.
+
+    Fails soft per repository: a repo whose runs cannot be read (no gh, no
+    workflows, private without a credential) reports its own error instead
+    of failing the whole response.
+    """
+    _require_project(db, scope, project_id)
+    deployments = db.scalars(
+        select(Deployment).where(Deployment.project_id == project_id)
+    ).all()
+
+    seen: dict[str, list[str]] = {}
+    for deployment in deployments:
+        try:
+            slug = platform_ops.repo_slug_from_url(deployment.repo_url)
+        except platform_ops.ServiceError:
+            continue
+        seen.setdefault(slug, []).append(deployment.service_name)
+
+    repos = []
+    for slug, services in sorted(seen.items()):
+        result = platform_ops.ci_runs_for_repo(slug, limit)
+        repos.append({**result, "services": sorted(services)})
+    return {"repos": repos}
+
+
+@router.get("/projects/{project_id}/workloads")
+def project_workloads(
+    project_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    scope: Scope = Depends(get_scope),
+):
+    """What is actually running in *this project's* namespace, plus its pods.
+
+    The tenant-facing equivalent of the admin console's ArgoCD tab: ArgoCD
+    only manages the platform's own services, while a tenant's app is applied
+    with plain kubectl into its own namespace, so "my app's rollout status"
+    has to come from the namespace itself. The namespace is derived from the
+    project id server-side — never from the client — so this cannot be
+    pointed at another tenant's namespace, and `_require_project` 404s a
+    project the caller cannot see.
+    """
+    project = _require_project(db, scope, project_id)
+    namespace = k8s_namespace(project.id)
+    workloads = platform_ops.namespace_workloads(namespace)
+    pods = platform_ops.pods_status(namespace)
+    return {
+        **workloads,
+        "pods": pods.get("pods", []),
+        "pods_reachable": pods.get("reachable", False),
+    }
+
+
+@router.get("/projects/{project_id}/secrets")
+def project_secrets(
+    project_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    scope: Scope = Depends(get_scope),
+):
+    """Secret NAMES held for each of this project's deployments.
+
+    Names only, never values: the console needs to show which secrets a
+    deployment carries without ever putting them on the wire (the same rule
+    the seeding path follows). Values live in the secret store keyed by team,
+    so a caller who cannot see the project cannot reach them either.
+    """
+    project = _require_project(db, scope, project_id)
+    deployments = db.scalars(
+        select(Deployment).where(Deployment.project_id == project_id)
+    ).all()
+    return {
+        "deployments": [
+            {
+                "id": str(d.id),
+                "service_name": d.service_name,
+                "secret_keys": sorted(d.secret_keys or []),
+                "env_keys": sorted((d.env_vars or {}).keys()),
+            }
+            for d in sorted(deployments, key=lambda d: d.service_name)
+        ]
+    }
 
 
 @router.post("/projects/{project_id}/deployments", response_model=DeploymentOut, status_code=status.HTTP_201_CREATED)

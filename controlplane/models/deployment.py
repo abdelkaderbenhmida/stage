@@ -51,4 +51,7 @@ class Deployment(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # Probe path. This was hardcoded to /livez, so every tenant application
     # was required to implement that exact endpoint or fail to become ready
     # with nothing explaining why.
-    health_path: Mapped[str] = mapped_column(String(200), default="/livez", nullable=False, server_default="/livez")
+    # Empty means "probe the port, not a path" — see DeploymentCreate.
+    # /livez is this platform's own internal contract, not something a
+    # tenant's app can be assumed to serve.
+    health_path: Mapped[str] = mapped_column(String(200), default="", nullable=False, server_default="")

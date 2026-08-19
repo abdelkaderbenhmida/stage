@@ -248,8 +248,11 @@ class DeploymentCreate(BaseModel):
     secrets: dict[str, str] = Field(default_factory=dict)
     # The path the readiness and liveness probes call. It was hardcoded to
     # /livez, which quietly required every application to implement that
-    # exact endpoint.
-    health_path: str = Field(default="/livez", pattern=r"^/[A-Za-z0-9\-._~/]{0,190}$")
+    # exact endpoint — /livez is this platform's OWN service contract, and a
+    # tenant's app has no reason to serve it, so probing it 404s and
+    # CrashLoops a healthy app. Empty (the default) means "probe the port,
+    # not a path"; set a path only when the app really serves one.
+    health_path: str = Field(default="", pattern=r"^$|^/[A-Za-z0-9\-._~/]{0,190}$")
 
 
 class DeploymentOut(BaseModel):
@@ -268,7 +271,7 @@ class DeploymentOut(BaseModel):
     # Names only — the values are in the secret store and no endpoint returns
     # them.
     secret_keys: list = Field(default_factory=list)
-    health_path: str = "/livez"
+    health_path: str = ""
     replicas: int
     strategy: str = "deployment"
     created_at: datetime

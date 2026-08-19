@@ -20,10 +20,19 @@ spec:
           image: {{ image }}
           ports:
             - containerPort: {{ port }}
+          {# Same reasoning as deployment.yaml.j2: /livez is this platform's
+             own service contract, not a tenant app's. Hardcoding it here
+             404s a healthy app and stalls the rollout, so an empty
+             health_path probes the port instead of a path. #}
           readinessProbe:
+{% if health_path %}
             httpGet:
-              path: /livez
+              path: {{ health_path }}
               port: {{ port }}
+{% else %}
+            tcpSocket:
+              port: {{ port }}
+{% endif %}
             initialDelaySeconds: 5
             periodSeconds: 10
           resources:

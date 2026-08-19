@@ -1576,6 +1576,43 @@ def _repo_slug() -> str:
     return "/".join(url.split("/")[-2:])
 
 
+def repo_slug_from_url(repo_url: str) -> str:
+    """``https://github.com/owner/repo.git`` → ``owner/repo``.
+
+    The tenant-facing CI views resolve the slug from the *deployment's own*
+    repo_url, never from ``_repo_slug()`` — that one reads this control
+    plane's own git remote, so using it for a tenant view would show every
+    user the platform's pipeline instead of their own app's.
+    """
+    url = (repo_url or "").strip().removesuffix(".git")
+    if url.startswith("git@"):
+        url = url.split(":", 1)[-1]
+    parts = [p for p in url.split("/") if p]
+    if len(parts) < 2:
+        raise ServiceError(f"cannot derive a repository from {repo_url!r}")
+    return "/".join(parts[-2:])
+
+
+def ci_runs_for_repo(slug: str, limit: int = 10) -> dict[str, Any]:
+    """GitHub Actions runs for an arbitrary repo slug (a tenant's own app).
+
+    Same shape and same fail-soft contract as ``ci_runs()``, but the caller
+    supplies the repository instead of it being this platform's own.
+    """
+    fields = "databaseId,name,displayTitle,status,conclusion,workflowName,headBranch,event,createdAt,url,headSha"
+    res = _run(
+        ["gh", "run", "list", "--repo", slug, "--limit", str(limit), "--json", fields],
+        timeout=GH_TIMEOUT,
+    )
+    if not res["ok"]:
+        return {"reachable": False, "error": res["stderr"] or "gh CLI unavailable", "repo": slug, "runs": []}
+    try:
+        runs = json.loads(res["stdout"])
+    except json.JSONDecodeError:
+        return {"reachable": False, "error": "could not parse gh output", "repo": slug, "runs": []}
+    return {"reachable": True, "repo": slug, "runs": runs}
+
+
 # ─── GitHub Actions (real, works without cluster) ───
 
 def ci_runs(limit: int = 15) -> dict[str, Any]:
@@ -1943,6 +1980,75 @@ def cluster_status() -> dict[str, Any]:
 def _kube_context() -> str:
     res = _run(["kubectl", "config", "current-context"], timeout=3)
     return res["stdout"].strip() if res["ok"] else ""
+
+
+def namespace_workloads(namespace: str) -> dict[str, Any]:
+    """Deployments + services running in ONE namespace.
+
+    The tenant-facing answer to "what is actually running for my app". The
+    admin console's ArgoCD tab cannot answer this for a tenant: ArgoCD only
+    manages this platform's own services, while tenant apps are applied with
+    plain kubectl into their project's namespace. Callers must derive
+    ``namespace`` from the project id server-side (``k8s_namespace``), never
+    from anything the client sent, or this becomes a cross-tenant read.
+    """
+    dep_res = _run(
+        ["kubectl", "get", "deployments", "-n", namespace, "-o", "json"],
+        timeout=KUBECTL_TIMEOUT,
+    )
+    if not dep_res["ok"]:
+        return {"reachable": False, "error": dep_res["stderr"], "namespace": namespace,
+                "deployments": [], "services": []}
+    try:
+        dep_data = json.loads(dep_res["stdout"])
+    except json.JSONDecodeError:
+        return {"reachable": False, "error": "could not parse kubectl output",
+                "namespace": namespace, "deployments": [], "services": []}
+
+    deployments = []
+    for d in dep_data.get("items", []):
+        spec, status = d.get("spec", {}), d.get("status", {})
+        desired = spec.get("replicas", 0)
+        ready = status.get("readyReplicas", 0) or 0
+        containers = spec.get("template", {}).get("spec", {}).get("containers", [])
+        deployments.append({
+            "name": d["metadata"]["name"],
+            "desired": desired,
+            "ready": ready,
+            "available": status.get("availableReplicas", 0) or 0,
+            "updated": status.get("updatedReplicas", 0) or 0,
+            "healthy": bool(desired) and ready == desired,
+            "images": [c.get("image", "") for c in containers],
+            "created_at": d["metadata"].get("creationTimestamp"),
+        })
+
+    services = []
+    svc_res = _run(
+        ["kubectl", "get", "services", "-n", namespace, "-o", "json"],
+        timeout=KUBECTL_TIMEOUT,
+    )
+    if svc_res["ok"]:
+        try:
+            for s in json.loads(svc_res["stdout"]).get("items", []):
+                spec = s.get("spec", {})
+                services.append({
+                    "name": s["metadata"]["name"],
+                    "type": spec.get("type", ""),
+                    "cluster_ip": spec.get("clusterIP", ""),
+                    "ports": [
+                        {"port": p.get("port"), "target_port": p.get("targetPort"), "protocol": p.get("protocol")}
+                        for p in spec.get("ports", [])
+                    ],
+                })
+        except json.JSONDecodeError:
+            pass
+
+    return {
+        "reachable": True,
+        "namespace": namespace,
+        "deployments": deployments,
+        "services": services,
+    }
 
 
 def pods_status(namespace: str | None = None) -> dict[str, Any]:
