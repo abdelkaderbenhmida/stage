@@ -140,6 +140,36 @@ class Settings:
     trivy_cache_volume: str = field(default_factory=lambda: _env(
         "TRIVY_CACHE_VOLUME", "controlplane-trivy-cache"))
 
+    # DNS suffix the tenant live URL and ingress host are built from. Not a
+    # constant: it is whatever the cluster's ingress actually answers on, so
+    # it has to move with the environment rather than be baked into the code.
+    cluster_domain: str = field(default_factory=lambda: _env("CLUSTER_DOMAIN", "devops.local"))
+    # Where the filebeat sidecar rendered into a tenant namespace ships logs.
+    # Same reasoning as loki_url/prometheus_url: an in-cluster address that is
+    # only right for one deployment of this platform.
+    elasticsearch_url: str = field(default_factory=lambda: _env(
+        "ELASTICSEARCH_URL", "http://elasticsearch.monitoring.svc.cluster.local:9200"))
+
+    # Auto-generated Dockerfile (repositories that ship none of their own).
+    # The base image and the pinned upgrades belong in config because they
+    # are exactly what has to change when a new CVE lands: the pre-deploy
+    # Trivy gate blocks on HIGH, so a stale base image here silently blocks
+    # every auto-built deployment until someone can bump it without a
+    # release.
+    autobuild_base_image: str = field(default_factory=lambda: _env(
+        "AUTOBUILD_BASE_IMAGE", "python:3.11-slim"))
+    # Applied on top of the base image to clear the fixable HIGHs it ships
+    # (wheel and jaraco.context are vendored inside setuptools, so the
+    # standalone upgrade alone does not settle them).
+    autobuild_pip_hardening: str = field(default_factory=lambda: _env(
+        "AUTOBUILD_PIP_HARDENING", "wheel>=0.46.2 jaraco.context>=6.1.0 setuptools>=84"))
+    autobuild_server_package: str = field(default_factory=lambda: _env(
+        "AUTOBUILD_SERVER_PACKAGE", "uvicorn[standard]>=0.24.0"))
+    # Non-root uid the generated image runs as. Configurable because a
+    # cluster with a restrictive PodSecurity range will reject a uid outside
+    # it, and that is an environment fact, not a code one.
+    autobuild_run_uid: int = field(default_factory=lambda: _env_int("AUTOBUILD_RUN_UID", 10001))
+
     # Libvirt host defaults (injected into rendered Terraform, never user-set)
     libvirt_uri: str = field(default_factory=lambda: _env("LIBVIRT_URI", "qemu:///system"))
     storage_pool: str = field(default_factory=lambda: _env("STORAGE_POOL", "default"))

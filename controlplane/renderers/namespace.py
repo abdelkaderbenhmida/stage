@@ -16,6 +16,7 @@ from pathlib import Path
 
 import yaml
 
+from controlplane.core.config import settings
 from controlplane.schemas.spec import InfraSpec
 
 # Namespace mode has no VMs, so the spec's per-node sizing is reinterpreted as
@@ -274,7 +275,7 @@ def _full_tier_manifests(namespace: str, labels: dict) -> list[dict]:
                     "  - add_kubernetes_metadata:\n"
                     "      host: ${NODE_NAME}\n"
                     "output.elasticsearch:\n"
-                    "  hosts: ['http://elasticsearch.monitoring.svc.cluster.local:9200']\n"
+                    f"  hosts: ['{settings.elasticsearch_url}']\n"
                 ),
             },
         },

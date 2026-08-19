@@ -812,7 +812,7 @@ _AUTO_DOCKERFILE_TEMPLATE = """\
 # an `app = FastAPI(...)` assignment), so this builds it directly instead of
 # failing closed. Assumes the FastAPI instance is named `app` in {entrypoint}.py
 # and that requirements.txt lists everything the app needs besides uvicorn.
-FROM python:3.11-slim
+FROM {base_image}
 WORKDIR /app
 # The stock base image ships fixable HIGH vulnerabilities (the util-linux
 # family, plus wheel and jaraco.context vendored inside setuptools). The
@@ -822,14 +822,13 @@ WORKDIR /app
 RUN apt-get update \\
     && apt-get upgrade -y \\
     && rm -rf /var/lib/apt/lists/*
-RUN pip install --no-cache-dir --upgrade \\
-        "wheel>=0.46.2" "jaraco.context>=6.1.0" "setuptools>=84"
+RUN pip install --no-cache-dir --upgrade {pip_hardening}
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt "uvicorn[standard]>=0.24.0"
+RUN pip install --no-cache-dir -r requirements.txt "{server_package}"
 COPY . .
 # Non-root: nothing in a tenant's app needs to run privileged, and the
 # platform must not be the reason it does.
-RUN useradd --create-home --uid 10001 appuser && chown -R appuser:appuser /app
+RUN useradd --create-home --uid {run_uid} appuser && chown -R appuser:appuser /app
 USER appuser
 EXPOSE {port}
 CMD ["python", "-m", "uvicorn", "{entrypoint}:app", "--host", "0.0.0.0", "--port", "{port}"]
@@ -862,7 +861,18 @@ def _try_autogenerate_dockerfile(repo_dir: Path, port: int) -> str | None:
     if entrypoint is None:
         return None
     (repo_dir / "Dockerfile").write_text(
-        _AUTO_DOCKERFILE_TEMPLATE.format(entrypoint=entrypoint, port=port)
+        _AUTO_DOCKERFILE_TEMPLATE.format(
+            entrypoint=entrypoint,
+            port=port,
+            base_image=settings.autobuild_base_image,
+            # Quoted per requirement so a version specifier's `>` is never
+            # read by the shell as a redirect.
+            pip_hardening=" ".join(
+                f'"{req}"' for req in settings.autobuild_pip_hardening.split()
+            ),
+            server_package=settings.autobuild_server_package,
+            run_uid=settings.autobuild_run_uid,
+        )
     )
     return entrypoint
 
@@ -1310,7 +1320,7 @@ def _deployment_name(deployment: Deployment) -> str:
 
 
 def _cluster_domain() -> str:
-    return "devops.local"
+    return settings.cluster_domain
 
 
 def _render_manifests(project: Project, deployment: Deployment, image_ref: str) -> list[Path]:
