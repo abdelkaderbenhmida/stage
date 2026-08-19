@@ -485,3 +485,50 @@ def test_rollout_undo_rejects_invalid_deployment_names():
             assert False, f"expected ServiceError for {bad!r}"
         except introspect.ServiceError:
             pass
+
+
+def test_graph_js_script_tag_present_and_first():
+    """graph.js must be loaded before platform/app.js and app.js, since it
+    defines window.PipelineGraph that both consumers call."""
+    src = open(os.path.join(CONSOLE_STATIC, "index.html")).read()
+    scripts = re.findall(r'<script src="([^"]+)"></script>', src)
+    assert "/static/graph.js" in scripts
+    assert scripts.index("/static/graph.js") < scripts.index("/static/platform/app.js")
+    assert scripts.index("/static/graph.js") < scripts.index("/static/app.js")
+
+
+def test_graph_js_assigns_exactly_one_global():
+    src = open(os.path.join(CONSOLE_STATIC, "graph.js")).read()
+    assigns = re.findall(r"window\.PipelineGraph\s*=", src)
+    assert len(assigns) == 1
+    assert "window.PipelineGraph" in src
+    # No stray globals leaking: every bare window.X assignment is the one export.
+    others = re.findall(r"window\.([A-Za-z_$][\w$]*)\s*=", src)
+    assert set(others) == {"PipelineGraph"}
+
+
+def test_every_pg_class_used_in_graph_js_has_a_rule_in_shell_css():
+    js = open(os.path.join(CONSOLE_STATIC, "graph.js")).read()
+    css = open(os.path.join(CONSOLE_STATIC, "shell.css")).read()
+    js_classes = set(re.findall(r"pg-[a-zA-Z0-9-]+", js))
+    # ID prefixes "pg-t-" / "pg-d-" are aria id targets, not classes.
+    js_classes -= {"pg-t-", "pg-d-"}
+    css_classes = set(re.findall(r"\.(pg-[a-zA-Z0-9-]+)", css))
+    missing = js_classes - css_classes
+    assert not missing, f"classes used in graph.js without a rule in shell.css: {sorted(missing)}"
+
+
+def test_pg_classes_do_not_leak_into_scoped_stylesheets():
+    for path in ["style.css", os.path.join("platform", "style.css")]:
+        css = open(os.path.join(CONSOLE_STATIC, path)).read()
+        assert ".pg-" not in css, f"{path} must not define .pg-* classes"
+
+
+def test_graph_data_acts_exist_in_actions():
+    """Every data-act emitted by the graph/CI rendering code must be a real
+    ACTIONS key, or clicks die silently on the Operations view."""
+    src = open(os.path.join(CONSOLE_STATIC, "platform", "app.js")).read()
+    actions_block = src[src.index("const ACTIONS = {"):]
+    acts = {"showCiGraph", "refreshConfigTab", "ciTrigger"}
+    missing = [a for a in acts if re.search(rf"^\s*{a}:", actions_block, re.M) is None]
+    assert not missing, f"data-act used by graph tab not wired in ACTIONS: {missing}"

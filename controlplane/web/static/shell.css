@@ -442,6 +442,10 @@ label {
   padding: var(--space-4);
   max-width: 100%;
 }
+.pg-edges,
+.pg-nodes {
+  display: contents;
+}
 .pg-svg {
   display: block;
   width: 100%;
