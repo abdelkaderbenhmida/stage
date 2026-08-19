@@ -1322,6 +1322,13 @@ async function renderSecurity(projectId) {
         ).join("")}
       </div>
 
+      ${(summary.failed_tools || []).length
+        ? `<div class="panel"><p class="error">The latest
+             ${esc((summary.failed_tools || []).join(", "))} scan
+             ${summary.failed_tools.length === 1 ? "did" : "did"} not complete, so the counts above
+             cover only the tools that did run. Zero here does not mean this target is clean.</p></div>`
+        : ""}
+
       ${sparkline(summary.trend)}
 
       <h2>Top issues</h2>
@@ -1367,6 +1374,12 @@ async function renderSecurity(projectId) {
       if (severityFilter) query.set("severity", severityFilter);
       const result = await api(`/scans/${scanId}/findings?${query}`);
       const pages = Math.max(1, Math.ceil(result.total / 50));
+      // A scan that never produced a report has zero findings for the same
+      // reason a spotless one does, and calling that "clean" is the exact
+      // false negative the server-side gate refuses to make: an image whose
+      // vulnerabilities are unknown is not an image known to be safe.
+      const scan = scans.find((s) => s.id === scanId);
+      const scanFailed = scan ? scan.status !== "completed" : false;
 
       $("#findings").innerHTML = `
         <div class="between">
@@ -1380,7 +1393,9 @@ async function renderSecurity(projectId) {
         </div>
         <div class="panel table-wrap">
           ${result.items.length === 0
-            ? `<div class="empty">Nothing found${severityFilter ? ` at severity “${esc(severityFilter)}”` : " — this target is clean"}.</div>`
+            ? (scanFailed
+                ? `<div class="empty error">This scan ${esc(scan.status)} — it produced no report, so nothing is known about this target. It is <b>not</b> clean; re-run the scan.</div>`
+                : `<div class="empty">Nothing found${severityFilter ? ` at severity “${esc(severityFilter)}”` : " — this target is clean"}.</div>`)
             : `<table>
                 <thead><tr><th>Severity</th><th>Identifier</th><th>Package</th><th>Installed</th><th>Fixed in</th><th>Location</th></tr></thead>
                 <tbody>${result.items.map((f) => `

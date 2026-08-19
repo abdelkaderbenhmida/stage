@@ -322,6 +322,11 @@ class SecuritySummaryOut(BaseModel):
     current: dict
     trend: list[dict]
     top_issues: list[dict]
+    # Tools whose most recent scan did not complete. `current` only counts
+    # completed scans, so without this a project where every scan failed
+    # reports zero of everything — indistinguishable from a clean one, which
+    # is the false negative the scan gate itself refuses to make.
+    failed_tools: list[str] = Field(default_factory=list)
 
 
 class JobOut(BaseModel):

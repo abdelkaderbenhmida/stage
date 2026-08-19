@@ -124,12 +124,24 @@ def security_summary(
 
     current = {"critical": 0, "high": 0, "medium": 0, "low": 0, "unknown": 0}
     latest_by_tool: dict[str, object] = {}
+    # Most recent scan per tool regardless of outcome, so a tool whose latest
+    # run failed can be reported as such rather than silently contributing
+    # nothing to `current` and reading as clean.
+    latest_attempt_by_tool: dict[str, object] = {}
+    # `list_all` returns newest first, so the FIRST scan seen for a tool is
+    # its latest. Assigning unconditionally would keep overwriting until the
+    # oldest one won, which is how "current findings" came to report the
+    # first scan a project ever ran instead of the most recent.
     for scan in scans:
+        latest_attempt_by_tool.setdefault(scan.tool, scan)
         if scan.status == "completed" and scan.summary:
-            latest_by_tool[scan.tool] = scan
+            latest_by_tool.setdefault(scan.tool, scan)
     for scan in latest_by_tool.values():
         for key in current:
             current[key] += (scan.summary or {}).get(key, 0)
+    failed_tools = sorted(
+        tool for tool, scan in latest_attempt_by_tool.items() if scan.status != "completed"
+    )
 
     now = datetime.now(UTC)
     start = now - timedelta(days=30)
@@ -160,4 +172,10 @@ def security_summary(
         key=lambda item: (severity_rank.get(item["severity"], 9), -item["count"]),
     )[:10]
 
-    return SecuritySummaryOut(project_id=project_id, current=current, trend=trend, top_issues=top)
+    return SecuritySummaryOut(
+        project_id=project_id,
+        current=current,
+        trend=trend,
+        top_issues=top,
+        failed_tools=failed_tools,
+    )
