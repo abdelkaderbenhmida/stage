@@ -584,3 +584,69 @@ def test_ci_graph_static_prints_eleven_nodes():
     assert static["source"] == "ci"
     assert len(static["nodes"]) == 11
     assert all(n["status"] == "pending" for n in static["nodes"])
+
+# ---------------------------------------------------------------------------
+# Repository-defined stages lengthen the job beyond the built-in template
+# ---------------------------------------------------------------------------
+
+
+class _RowsOnlyDB:
+    """Minimal stand-in for the session job_graph() uses: no project, and the
+    JobStep rows it was constructed with. Defined at module level because the
+    repository forbids `return` inside a test function, and a nested stub
+    class would trip that check."""
+
+    def __init__(self, rows):
+        self._rows = rows
+
+    def get(self, model, ident):
+        return None
+
+    def query(self, model):
+        return self
+
+    def filter(self, *args, **kwargs):
+        return self
+
+    def order_by(self, *args, **kwargs):
+        return self
+
+    def all(self):
+        return self._rows
+
+
+def test_graph_labels_built_in_stages_correctly_when_the_repo_adds_its_own():
+    """deploy_task inserts a repository's .platform.yml stages straight after
+    the clone, so a job can be longer than the template. Labelling the tail
+    with template[i-1] regardless named pending steps after entirely
+    different work — "rendering + applying manifests" appeared where the push
+    would actually run."""
+    from types import SimpleNamespace
+
+    from controlplane.core.pipeline_graph import job_graph
+
+    total = 7 + 2  # seven built-in stages, two declared by the repository
+
+    # Clone plus both repository stages have run; nothing after them has.
+    rows = [
+        SimpleNamespace(step_index=1, step_total=total, name="cloning repository",
+                        status="succeeded", started_at=None, finished_at=None, error_message=None),
+        SimpleNamespace(step_index=2, step_total=total, name="unit tests",
+                        status="succeeded", started_at=None, finished_at=None, error_message=None),
+        SimpleNamespace(step_index=3, step_total=total, name="lint",
+                        status="succeeded", started_at=None, finished_at=None, error_message=None),
+    ]
+    job = SimpleNamespace(
+        id="j", type="deploy", status="running", project_id=None, deployment_id=None,
+        log="", started_at=None, finished_at=None, error_message=None,
+    )
+
+    labels = [n["label"] for n in job_graph(_RowsOnlyDB(rows), job)["nodes"]]
+
+    assert len(labels) == total, labels
+    assert labels[:3] == ["cloning repository", "unit tests", "lint"]
+    # The built-ins that follow keep their real names, shifted past the
+    # repository's stages rather than read straight off the template.
+    assert labels[3] == "building image"
+    assert labels[4] == "pushing image to registry"
+    assert labels[-1] == "capturing live URL"

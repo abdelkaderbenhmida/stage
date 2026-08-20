@@ -450,10 +450,39 @@ node*, so a registry the host can reach is otherwise invisible to the kubelet.
 1. Log in, create a project, press **Provision** and wait for `ready`.
 2. **Deploy an app** with a repository URL (`https://`, GitHub or GitLab), a branch that
    exists, and the port your container listens on.
-3. The repository needs a **`Dockerfile` at its root**, and the built image must be free
-   of CRITICAL and HIGH vulnerabilities or the gate will block it.
-4. For a private repository, first store a read-only token under
+3. The repository normally needs a **`Dockerfile` at its root**. A plain FastAPI app
+   (a `requirements.txt` beside a `main.py`/`app.py` that assigns `app = FastAPI(...)`)
+   is detected and built without one.
+4. The built image must be free of CRITICAL and HIGH vulnerabilities or the gate will
+   block it.
+5. For a private repository, first store a read-only token under
    **Teams → Private repository access**.
+
+#### Adding your own pipeline stages
+
+The seven built-in stages — clone, build, push, scan, render, roll out, publish the
+URL — are the platform's contract, not a description of what your application needs
+doing. A repository can declare stages of its own in **`.platform.yml`** at its root,
+and they run on the checkout before an image is built, so a failing test stops the
+pipeline before it spends a build slot:
+
+```yaml
+stages:
+  - name: unit tests
+    image: python:3.11-slim      # the default sandbox has the platform's tooling,
+    run: pip install -r requirements.txt && pytest -q   # not your dependencies
+  - name: lint
+    image: python:3.11-slim
+    run: ruff check .
+```
+
+Each stage becomes a step in the job's pipeline graph and log, exactly like a built-in
+one. Stages run in the same sandbox as everything else: an ephemeral container with CPU,
+memory and wall-clock limits and no docker socket.
+
+There is no setting to skip the vulnerability gate — it applies to every build whatever
+this file says. A malformed `.platform.yml` fails the deployment with the reason rather
+than being ignored, since ignoring it would run a pipeline you did not ask for.
 
 ---
 

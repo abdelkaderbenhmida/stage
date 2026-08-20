@@ -113,13 +113,36 @@ def job_graph(db, job: Job) -> dict:
         by_index = {r.step_index: r for r in rows}
         template = _pick_template(job, rows, project)
         current = max(by_index)
-        total = max(len(template), max(r.step_total for r in rows))
+        declared_total = max(r.step_total for r in rows)
+        total = max(len(template), declared_total)
+        # The template describes the built-in pipeline only. A repository that
+        # declares its own stages in .platform.yml makes the job longer than
+        # the template, and from the first extra stage onwards the template's
+        # labels no longer line up with the step numbers — using them anyway
+        # named the pending steps after entirely different work ("building
+        # image" shown where "pushing image" would run). When the job is
+        # longer than the template, only rows can be trusted for a label.
+        # deploy_task inserts a repository's own stages directly after the
+        # clone, so when the job is longer than the template the offset is
+        # known: the first step is still the clone, the next `extra` are the
+        # repository's, and the remaining built-ins follow, shifted by that
+        # many. Labelling the tail with `template[i - 1]` regardless — as
+        # this did — named pending steps after entirely different work.
+        extra = max(0, declared_total - len(template))
         taken: set[str] = set()
         for i in range(1, total + 1):
             row = by_index.get(i)
-            if row is None and i > len(template):
-                break
-            label = row.name if row else template[i - 1]
+            if row is not None:
+                label = row.name
+            else:
+                template_index = i - 1 if i == 1 or extra == 0 else i - 1 - extra
+                if not 0 <= template_index < len(template):
+                    # Inside the repository's own stages, which have no
+                    # declared names until they run. Still shown, so the graph
+                    # reflects how many stages remain.
+                    label = f"step {i} of {declared_total}"
+                else:
+                    label = template[template_index]
             status = _node_status(i, current, job.status, row)
             detail = ""
             if row is not None and status == "failed" and row.error_message:

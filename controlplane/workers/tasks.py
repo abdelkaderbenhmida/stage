@@ -26,6 +26,11 @@ from controlplane.core.app_config import load_secrets
 from controlplane.core.git_credentials import ASKPASS_SCRIPT, credential_for_repo
 from controlplane.core.kubeconfigs import get_kubeconfig, store_kubeconfig, transfer_kubeconfig
 from controlplane.core.logging import request_id_var
+from controlplane.core.pipeline_config import (
+    CONFIG_FILENAME,
+    InvalidPipelineConfig,
+    load_stages as load_pipeline_stages,
+)
 from controlplane.core.pool import claim_cluster
 from controlplane.core.redaction import scrub_line
 from controlplane.core.repo_url import validate_repo_url
@@ -1113,11 +1118,59 @@ def deploy_task(job_id: str, deployment_id: str, project_id: str, user_id: str) 
         # removal must not depend on the build, scan and push all succeeding.
         cloned: Path | None = None
         try:
-            _step(job_id, 1, 7, "cloning repository")
+            # The seven built-in stages are fixed, but a repository may add
+            # its own (tests, linters, migrations) via .platform.yml. They
+            # are only known after the clone, so the total is provisional
+            # until then — hence _step calls below take `total` rather than a
+            # literal 7.
+            total = 7
+            user_stages: list = []
+
+            _step(job_id, 1, total, "cloning repository")
             cloned = _clone_repo(
                 deployment.repo_url, job_id, on_line,
                 branch=deployment.branch, team_id=project.team_id,
             )
+
+            try:
+                user_stages = load_pipeline_stages(cloned)
+            except InvalidPipelineConfig as exc:
+                # Fail closed and say why: silently ignoring a malformed file
+                # would run a pipeline its author did not ask for.
+                raise RuntimeError(str(exc)) from exc
+            total = 7 + len(user_stages)
+            if user_stages:
+                _append_log(
+                    job_id,
+                    f"{CONFIG_FILENAME} declares {len(user_stages)} extra stage(s): "
+                    + ", ".join(stage.name for stage in user_stages),
+                )
+
+            # Tenant-declared stages run on the checkout, before an image is
+            # built from it: a failing test should stop the pipeline before
+            # it spends a build slot, not after.
+            for offset, stage in enumerate(user_stages, start=1):
+                _step(job_id, 1 + offset, total, stage.name)
+                result = run_sandbox(
+                    SandboxRun(
+                        # These are commands out of a tenant's repository, so
+                        # they run where every other tenant command runs: an
+                        # ephemeral container with CPU, memory and wall-clock
+                        # limits and no docker socket. Never on the host.
+                        command=["sh", "-c", stage.run],
+                        image=stage.image or settings.sandbox_image,
+                        workspace=cloned,
+                        timeout_seconds=settings.scan_timeout_seconds,
+                        on_line=on_line,
+                    )
+                )
+                if result.timed_out:
+                    raise RuntimeError(f"stage {stage.name!r} timed out")
+                if result.exit_code != 0:
+                    raise RuntimeError(
+                        f"stage {stage.name!r} failed (exit {result.exit_code}): "
+                        f"{(result.output or '')[-400:]}"
+                    )
 
             # Check this before spending a build slot on it. docker's own
             # complaint ("unable to evaluate symlinks in Dockerfile path:
@@ -1141,7 +1194,7 @@ def deploy_task(job_id: str, deployment_id: str, project_id: str, user_id: str) 
             repo.set_status(deployment, "building")
             db.commit()
 
-            _step(job_id, 2, 7, "building image")
+            _step(job_id, len(user_stages) + 2, total, "building image")
             build = run_sandbox(
                 SandboxRun(
                     command=["docker", "build", "-t", image_ref, "."],
@@ -1153,7 +1206,7 @@ def deploy_task(job_id: str, deployment_id: str, project_id: str, user_id: str) 
             )
             _check(build)
 
-            _step(job_id, 3, 7, "pushing image to registry")
+            _step(job_id, len(user_stages) + 3, total, "pushing image to registry")
             push = run_sandbox(
                 SandboxRun(
                     command=["docker", "push", image_ref],
@@ -1166,7 +1219,7 @@ def deploy_task(job_id: str, deployment_id: str, project_id: str, user_id: str) 
             )
             _check(push)
 
-            _step(job_id, 4, 7, "trivy scan + gate")
+            _step(job_id, len(user_stages) + 4, total, "trivy scan + gate")
             repo.set_status(deployment, "scanning")
             db.commit()
             # Scan the image that was just pushed, addressed the way a
@@ -1174,9 +1227,14 @@ def deploy_task(job_id: str, deployment_id: str, project_id: str, user_id: str) 
             # settings.registry (published on the host), which resolves to the
             # sandbox container itself from inside one.
             scan_ref = _registry_scan_ref(image_ref)
+            # Deliberately NOT streamed to the job log. Trivy's report is the
+            # JSON document itself — hundreds of kilobytes of SBOM — and the
+            # log is truncated head-first at 200 kB, so streaming it evicted
+            # everything the user actually wanted to read: their own stage
+            # output, the build, the push. The findings are parsed below and
+            # summarised in one line instead.
             trivy = run_trivy(
                 scan_ref,
-                on_line=on_line,
                 from_registry=True,
                 network=settings.registry_network,
                 insecure=settings.registry_insecure,
@@ -1204,7 +1262,6 @@ def deploy_task(job_id: str, deployment_id: str, project_id: str, user_id: str) 
                 time.sleep(5)
                 trivy = run_trivy(
                     scan_ref,
-                    on_line=on_line,
                     from_registry=True,
                     network=settings.registry_network,
                     insecure=settings.registry_insecure,
@@ -1232,6 +1289,14 @@ def deploy_task(job_id: str, deployment_id: str, project_id: str, user_id: str) 
 
             parsed = parse_trivy(trivy.stdout)
             gate = parsed.summary.get("critical", 0) + parsed.summary.get("high", 0)
+            _append_log(
+                job_id,
+                "trivy: "
+                + ", ".join(
+                    f"{parsed.summary.get(level, 0)} {level}"
+                    for level in ("critical", "high", "medium", "low")
+                ),
+            )
             if gate > 0:
                 repo.set_status(deployment, "blocked", image_ref=image_ref)
                 db.commit()
@@ -1240,7 +1305,7 @@ def deploy_task(job_id: str, deployment_id: str, project_id: str, user_id: str) 
                     f"{parsed.summary['high']} high. Gate on CRITICAL/HIGH."
                 )
 
-            _step(job_id, 5, 7, "rendering + applying manifests")
+            _step(job_id, len(user_stages) + 5, total, "rendering + applying manifests")
             repo.set_status(deployment, "deploying", image_ref=image_ref)
             db.commit()
             manifests = _render_manifests(project, deployment, image_ref)
@@ -1253,7 +1318,7 @@ def deploy_task(job_id: str, deployment_id: str, project_id: str, user_id: str) 
                     if path.name == "secret.yaml":
                         path.unlink(missing_ok=True)
 
-            _step(job_id, 6, 7, "waiting for rollout")
+            _step(job_id, len(user_stages) + 6, total, "waiting for rollout")
             resource = "rollout" if deployment.strategy != "deployment" else "deployment"
             ns = k8s_namespace(project.id)
             rollout = kubectl(
@@ -1265,7 +1330,7 @@ def deploy_task(job_id: str, deployment_id: str, project_id: str, user_id: str) 
                 kubectl(["rollout", "undo", f"{resource}/{_deployment_name(deployment)}", f"--namespace={ns}"], project, on_line=on_line)
                 raise RuntimeError(f"rollout failed: {rollout.output[-500:]}")
 
-            _step(job_id, 7, 7, "capturing live URL")
+            _step(job_id, len(user_stages) + 7, total, "capturing live URL")
             live_url = f"http://{_deployment_name(deployment)}.{ns}.{_cluster_domain()}"
             repo.set_status(deployment, "live", image_ref=image_ref, live_url=live_url)
             db.commit()
