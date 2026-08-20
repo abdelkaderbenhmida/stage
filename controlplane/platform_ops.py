@@ -19,6 +19,7 @@ import shutil
 import subprocess
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -30,6 +31,10 @@ APP_DIR = ROOT / "app"
 SERVICE_MARKER = "main.py"
 DEFAULT_APP = "default"
 SLUG_RE = re.compile(r"^[a-z][a-z0-9-]{0,39}$")
+# Ceiling on concurrent service_pipeline() computations. Each one spawns
+# several short-lived subprocesses, so this bounds how many git/gh/kubectl
+# processes the console can have in flight at once on a large monorepo.
+_PIPELINE_MAX_WORKERS = 8
 
 # ── Personal / host-specific config — from .env, never hardcoded here.
 # Loaded once at import so every module reads the same values. Missing .env
@@ -1506,6 +1511,35 @@ def node_preflight(disk_gb: int | None = None, mem_mb: int | None = None) -> dic
     }
 
 
+def _service_pipelines(services: list[str]) -> dict[str, Any]:
+    """``{service: service_pipeline(service)}``, computed in parallel.
+
+    Kept synchronous so every existing caller is unaffected; the concurrency
+    is threads rather than asyncio because the work is subprocesses, which
+    release the GIL while they run. Bounded so a large monorepo cannot spawn
+    an unbounded pile of git/gh/kubectl processes at once. A service whose
+    pipeline raises is reported as blocked rather than taking the whole
+    overview down with it.
+    """
+    if not services:
+        return {}
+
+    def _one(service: str) -> tuple[str, dict[str, Any]]:
+        try:
+            return service, service_pipeline(service)
+        except Exception as exc:  # noqa: BLE001 - one bad service must not blank the console
+            return service, {
+                "service": service,
+                "stages": [],
+                "all_ok": False,
+                "blocking": "pipeline",
+                "blocking_detail": f"could not read pipeline: {exc}",
+            }
+
+    with ThreadPoolExecutor(max_workers=min(len(services), _PIPELINE_MAX_WORKERS)) as pool:
+        return dict(pool.map(_one, services))
+
+
 def platform_overview(services: list[str]) -> dict[str, Any]:
     base = {
         "revision": git_info(),
@@ -1525,7 +1559,14 @@ def platform_overview(services: list[str]) -> dict[str, Any]:
     # Honest status: outcome roll-up over the per-service pipeline, not
     # file-existence booleans. "healthy" only when every service reaches
     # pods-ready; otherwise "degraded" naming the first blocking stage.
-    pipelines = {s: service_pipeline(s) for s in services}
+    # One service_pipeline() is roughly seven external calls (git, gh, vault,
+    # ArgoCD, kubectl), each with its own timeout. Serially that made this
+    # function — and every console view built on it — cost the sum over all
+    # services: 26-36s for five, and worse whenever one of those systems was
+    # slow, which is exactly when an operator most wants the page. The calls
+    # are subprocess-bound, so threads parallelise them well and the cost
+    # collapses to roughly one service's worth.
+    pipelines = _service_pipelines(services)
     healthy = bool(services) and all(p["all_ok"] for p in pipelines.values())
     blockers = [
         {"service": s, "stage": p["blocking"], "detail": p["blocking_detail"]}
