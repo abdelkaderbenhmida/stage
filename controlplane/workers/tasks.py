@@ -1160,6 +1160,15 @@ def deploy_task(job_id: str, deployment_id: str, project_id: str, user_id: str) 
                         command=["sh", "-c", stage.run],
                         image=stage.image or settings.sandbox_image,
                         workspace=cloned,
+                        # A CI workspace has to be writable. Test runners
+                        # write caches and coverage data next to the code —
+                        # `pytest --cov` dies with "Read-only file system:
+                        # /w/.coverage" — and any stage that generates a
+                        # file (a migration, a build artifact, codegen)
+                        # cannot run at all without it. The checkout is a
+                        # throwaway clone that is purged when the job ends,
+                        # so nothing outside this job can be affected.
+                        workspace_writable=True,
                         timeout_seconds=settings.scan_timeout_seconds,
                         on_line=on_line,
                     )

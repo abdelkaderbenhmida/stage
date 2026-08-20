@@ -134,15 +134,22 @@ def job_graph(db, job: Job) -> dict:
             row = by_index.get(i)
             if row is not None:
                 label = row.name
+            elif extra and 2 <= i <= 1 + extra:
+                # One of the repository's own stages, not yet started, so its
+                # name is not knowable — the template has no entry for it.
+                # Reading the template here anyway produced a second
+                # "cloning repository" node sitting where the repository's
+                # stage belongs.
+                label = f"step {i} of {declared_total}"
             else:
-                template_index = i - 1 if i == 1 or extra == 0 else i - 1 - extra
-                if not 0 <= template_index < len(template):
-                    # Inside the repository's own stages, which have no
-                    # declared names until they run. Still shown, so the graph
-                    # reflects how many stages remain.
-                    label = f"step {i} of {declared_total}"
-                else:
-                    label = template[template_index]
+                # Built-in stage: the first is the clone, the rest sit after
+                # the repository's stages and are shifted by that many.
+                template_index = i - 1 if i == 1 else i - 1 - extra
+                label = (
+                    template[template_index]
+                    if 0 <= template_index < len(template)
+                    else f"step {i} of {declared_total}"
+                )
             status = _node_status(i, current, job.status, row)
             detail = ""
             if row is not None and status == "failed" and row.error_message:

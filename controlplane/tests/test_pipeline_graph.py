@@ -650,3 +650,32 @@ def test_graph_labels_built_in_stages_correctly_when_the_repo_adds_its_own():
     assert labels[3] == "building image"
     assert labels[4] == "pushing image to registry"
     assert labels[-1] == "capturing live URL"
+
+
+def test_graph_does_not_reuse_a_built_in_label_for_a_pending_repo_stage():
+    """Observed live: with two declared stages and only the first started,
+    node 3 came back labelled "cloning repository" — the template was read at
+    an index that belongs to the repository's own stage, so the clone's name
+    appeared twice and the reader could not tell which stage was pending."""
+    from types import SimpleNamespace
+
+    from controlplane.core.pipeline_graph import job_graph
+
+    total = 7 + 2
+    rows = [
+        SimpleNamespace(step_index=1, step_total=total, name="cloning repository",
+                        status="succeeded", started_at=None, finished_at=None, error_message=None),
+        SimpleNamespace(step_index=2, step_total=total, name="unit tests with coverage",
+                        status="running", started_at=None, finished_at=None, error_message=None),
+    ]
+    job = SimpleNamespace(
+        id="j", type="deploy", status="running", project_id=None, deployment_id=None,
+        log="", started_at=None, finished_at=None, error_message=None,
+    )
+
+    labels = [n["label"] for n in job_graph(_RowsOnlyDB(rows), job)["nodes"]]
+
+    assert len(labels) == total, labels
+    assert labels.count("cloning repository") == 1, labels
+    assert labels[3] == "building image", labels
+    assert labels[-1] == "capturing live URL", labels
