@@ -23,7 +23,7 @@ from collections.abc import Callable
 from fastapi import Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
-from controlplane.api.deps import get_current_user
+from controlplane.api.deps import get_current_user, get_current_user_sse
 
 # Re-exported so callers keep a single import point. The mapping itself lives
 # in core/ so the repository layer can enforce the same table.
@@ -73,6 +73,20 @@ def require_platform_admin(user: User = Depends(get_current_user)) -> User:
     it's ``User.role``, a global column OIDC already populates. A caller who
     fails this is not a member of anything special; they're just not an
     operator, so 404 (not 403) to avoid confirming the console exists.
+    """
+    if user.role != PLATFORM_ADMIN_ROLE:
+        raise HTTPException(status_code=404, detail="Not found.")
+    return user
+
+
+def require_platform_admin_sse(user: User = Depends(get_current_user_sse)) -> User:
+    """``require_platform_admin`` for an EventSource stream.
+
+    Identical rule (global ``User.role``, 404 rather than 403), but resolves
+    the caller through ``get_current_user_sse`` so the token may arrive as a
+    query parameter — the browser's EventSource API cannot set an
+    Authorization header, which is the same constraint the job log stream
+    already works around.
     """
     if user.role != PLATFORM_ADMIN_ROLE:
         raise HTTPException(status_code=404, detail="Not found.")

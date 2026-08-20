@@ -25,9 +25,17 @@ from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
 from controlplane import platform_ops
-from controlplane.api.rbac import require_platform_admin
+from controlplane.api.rbac import require_platform_admin, require_platform_admin_sse
 
 router = APIRouter(prefix="/platform", tags=["platform"], dependencies=[Depends(require_platform_admin)])
+
+# The SSE stream needs its own router: the gate above resolves the caller from
+# the Authorization header, which EventSource cannot set. Same rule, same 404
+# for a non-operator — only the place the token is read from differs.
+stream_router = APIRouter(
+    prefix="/platform", tags=["platform"],
+    dependencies=[Depends(require_platform_admin_sse)],
+)
 
 START_TIME = time.time()
 
@@ -107,35 +115,63 @@ def api_platform() -> dict:
 # directly per tick: N connected admins, or just a tight loop, would replay
 # that full cost every couple of seconds — worse than the 30s client poll it
 # replaces, and hardest hit exactly when those systems are already unhappy.
-# Cache the computed snapshot for `_SUMMARY_TTL_S` and serve every tick from
-# it; the real work happens at most once per TTL no matter how many clients
-# are connected or how tight the stream's own sleep is. TTL is generous
-# because the computation itself can legitimately take longer than a short
-# TTL would allow (each unreachable live check burns its own timeout) — a
-# TTL shorter than the compute time means every tick sees a cache that is
-# already "expired" the moment it's written, and never actually caches
-# anything. The timestamp is stamped *after* the compute finishes, not
-# before it starts, for the same reason.
-_SUMMARY_TTL_S = 20.0
+# Cache the computed snapshot and serve every tick from it, so the real work
+# happens at most once per refresh no matter how many admins are connected or
+# how tight the stream's own sleep is.
+#
+# Serve-stale-while-revalidate, not plain expiry. The computation regularly
+# takes LONGER than any refresh interval worth having (measured 26-36s when
+# the live checks it fans out to are slow or unreachable). Under plain
+# expiry that is pathological: the entry is already stale by the time it is
+# written, so every caller recomputes, every caller blocks for half a minute,
+# and the cache never serves anybody — which is exactly how the "live" stream
+# came to emit nothing at all for 25s at a stretch. Returning the stale
+# snapshot immediately and refreshing in the background keeps the stream
+# actually live; the only caller that ever waits is the first one, when there
+# is no snapshot to serve yet.
+_SUMMARY_REFRESH_S = 20.0
 _summary_cache: dict[str, Any] = {"data": None, "at": 0.0}
 _summary_lock = asyncio.Lock()
+_summary_refresh_task: asyncio.Task | None = None
 
 
-async def _cached_platform_summary() -> dict:
-    now = time.monotonic()
-    if _summary_cache["data"] is not None and now - _summary_cache["at"] < _SUMMARY_TTL_S:
-        return _summary_cache["data"]
+async def _refresh_platform_summary() -> dict:
+    """Recompute the snapshot under the lock, so N concurrent callers trigger
+    one computation rather than N."""
     async with _summary_lock:
-        now = time.monotonic()
-        if _summary_cache["data"] is not None and now - _summary_cache["at"] < _SUMMARY_TTL_S:
+        # Someone else may have refreshed it while this call waited.
+        if _summary_cache["data"] is not None and (
+            time.monotonic() - _summary_cache["at"] < _SUMMARY_REFRESH_S
+        ):
             return _summary_cache["data"]
         data = await asyncio.to_thread(api_platform)
         _summary_cache["data"] = data
+        # Stamped after the work finishes, not before it starts: stamping the
+        # start would count the computation's own duration against the
+        # interval and expire the entry the moment it was written.
         _summary_cache["at"] = time.monotonic()
         return data
 
 
-@router.get("/live/stream")
+def _schedule_summary_refresh() -> None:
+    global _summary_refresh_task
+    if _summary_refresh_task is not None and not _summary_refresh_task.done():
+        return  # one in flight is enough
+    _summary_refresh_task = asyncio.create_task(_refresh_platform_summary())
+
+
+async def _cached_platform_summary() -> dict:
+    cached = _summary_cache["data"]
+    if cached is None:
+        # Nothing to serve yet — this one caller has to wait for the first
+        # computation. Every caller after it is served from cache.
+        return await _refresh_platform_summary()
+    if time.monotonic() - _summary_cache["at"] >= _SUMMARY_REFRESH_S:
+        _schedule_summary_refresh()  # refresh behind the response, never in front of it
+    return cached
+
+
+@stream_router.get("/live/stream")
 async def platform_live_stream():
     """Push the console's summary payload (same shape as ``GET /platform``)
     the moment a fresh one is computed, instead of every client polling on
@@ -147,15 +183,27 @@ async def platform_live_stream():
     """
 
     async def events():
+        # Only push when the snapshot has actually been recomputed. The
+        # payload is ~20 kB and only changes once per refresh interval, so
+        # re-sending it on every tick would ship the same bytes to every
+        # connected admin once a second for no new information. The cache
+        # stamp moves only when a refresh completes, which makes it the
+        # cheapest possible "has this changed" check.
+        last_sent_at: float | None = None
         while True:
             try:
                 snapshot = await _cached_platform_summary()
-                yield {"event": "update", "data": json.dumps(snapshot, default=str)}
+                current_at = _summary_cache["at"]
+                if current_at != last_sent_at:
+                    last_sent_at = current_at
+                    yield {"event": "update", "data": json.dumps(snapshot, default=str)}
             except Exception as exc:  # noqa: BLE001 - keep the stream alive on a bad read
                 yield {"event": "error", "data": json.dumps({"error": str(exc)})}
             await asyncio.sleep(1)
 
-    return EventSourceResponse(events())
+    # ping keeps the connection (and any proxy in front of it) from being
+    # reaped while the snapshot is unchanged and nothing is being pushed.
+    return EventSourceResponse(events(), ping=15)
 
 
 @router.get("/overview")

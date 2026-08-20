@@ -157,6 +157,10 @@ def create_app() -> FastAPI:
         logs.router,
         monitoring.router,
         platform.router,
+        # Separate router: same platform-admin rule, but resolves the caller
+        # from a query-parameter token because EventSource cannot send a
+        # header. Must be registered alongside, not inside, platform.router.
+        platform.stream_router,
     ):
         app.include_router(router, prefix="/api/v1")
 

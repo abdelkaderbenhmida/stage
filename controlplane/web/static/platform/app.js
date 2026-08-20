@@ -1763,53 +1763,46 @@ function switchView(name) {
  * `EventSource` can't send an Authorization header, so this reads the same
  * `text/event-stream` body by hand through `fetch()`, which can.
  */
-async function startLiveStream() {
+function startLiveStream() {
   stopLiveStream();
   const box = $("autorefresh");
   if (box && !box.checked) return;
-  const controller = new AbortController();
-  state.liveAbort = controller;
-  try {
-    const res = await fetch("/api/v1/platform/live/stream", {
-      headers: authHeaders(),
-      signal: controller.signal,
-    });
-    if (res.status === 401) { location.href = "/"; return; }
-    if (!res.ok || !res.body) throw new Error(`live stream HTTP ${res.status}`);
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buf = "";
-    while (state.mounted) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      buf += decoder.decode(value, { stream: true });
-      let sep;
-      while ((sep = buf.indexOf("\n\n")) !== -1) {
-        const frame = buf.slice(0, sep);
-        buf = buf.slice(sep + 2);
-        const dataLine = frame.split("\n").find((l) => l.startsWith("data:"));
-        if (!dataLine) continue;
-        const isError = frame.split("\n").some((l) => l.startsWith("event:") && l.slice(6).trim() === "error");
-        if (isError) continue; // transient server-side read failure — keep last good data
-        try {
-          state.data = JSON.parse(dataLine.slice(5).trim());
-          render();
-        } catch (e) { console.error("[live/stream] frame handling failed:", e); }
-      }
+  // Native EventSource rather than a hand-rolled fetch reader: it handles
+  // frame parsing and reconnection itself, and it is the transport the job
+  // log stream already uses successfully. It cannot send an Authorization
+  // header, so — exactly as that stream does — the token travels as a query
+  // parameter, and the endpoint accepts it through get_current_user_sse.
+  const token = localStorage.getItem(TOKEN_KEY);
+  const source = new EventSource(
+    `/api/v1/platform/live/stream?token=${encodeURIComponent(token || "")}`
+  );
+  state.liveSource = source;
+
+  source.addEventListener("update", (event) => {
+    try {
+      state.data = JSON.parse(event.data);
+      render();
+    } catch (e) {
+      console.error("[live/stream] frame handling failed:", e);
     }
-  } catch (e) {
-    if (e.name === "AbortError") return; // intentional: unmount() / checkbox off
-    console.error("[live/stream] connection failed:", e);
-    // Connection dropped (network blip, worker restart) — reconnect rather
-    // than leaving the console stuck on a stale snapshot.
-    if (state.mounted && (!box || box.checked)) setTimeout(startLiveStream, 3000);
-    return;
-  }
-  if (state.mounted && (!box || box.checked)) setTimeout(startLiveStream, 500);
+  });
+
+  // A server-side read failure arrives as its own event; keep the last good
+  // snapshot on screen rather than blanking the console.
+  source.addEventListener("error", () => { /* keep last good data */ });
+
+  source.onerror = () => {
+    // EventSource reconnects on its own, but not after the server closes the
+    // stream deliberately; recreate it in that case so "live updates" stays
+    // live rather than silently stopping.
+    if (source.readyState === EventSource.CLOSED && state.mounted && (!box || box.checked)) {
+      setTimeout(startLiveStream, 3000);
+    }
+  };
 }
 
 function stopLiveStream() {
-  if (state.liveAbort) { state.liveAbort.abort(); state.liveAbort = null; }
+  if (state.liveSource) { state.liveSource.close(); state.liveSource = null; }
 }
 
 let booted = false;
@@ -1818,7 +1811,16 @@ let booted = false;
 async function mount(view) {
   state.mounted = true;
   switchView(VIEWS.includes(view) ? view : state.view);
-  if (booted) return;
+  if (booted) {
+    // Returning to the console after unmount(), which aborted the stream.
+    // Restarting here is what keeps "live updates" live across a round trip
+    // through a control-plane route — without it the console came back
+    // frozen on whatever snapshot it held when the user left, until a full
+    // page reload. startLiveStream() aborts any existing reader first, so
+    // calling it again cannot stack two streams on one console.
+    startLiveStream();
+    return;
+  }
   booted = true;
   bindDispatch($("platform-root"));
   try {
