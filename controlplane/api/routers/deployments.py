@@ -1,5 +1,6 @@
 """Deployment pipeline endpoints (docs/PLATFORM_SPEC.md §8 Deployments)."""
 
+import asyncio
 import secrets
 import uuid
 
@@ -62,7 +63,7 @@ def list_deployments(
 
 
 @router.get("/projects/{project_id}/ci")
-def project_ci(
+async def project_ci(
     project_id: uuid.UUID,
     limit: int = Query(default=10, ge=1, le=30),
     db: Session = Depends(get_db),
@@ -94,10 +95,20 @@ def project_ci(
             continue
         seen.setdefault(slug, []).append(deployment.service_name)
 
-    repos = []
-    for slug, services in sorted(seen.items()):
-        result = platform_ops.ci_runs_for_repo(slug, limit)
-        repos.append({**result, "services": sorted(services)})
+    # One `gh` subprocess per repository, fanned out rather than run in
+    # sequence: each call has its own 25s timeout, so a project with a
+    # handful of repositories would otherwise add those timeouts together
+    # and hold a worker for minutes when GitHub is slow or unreachable.
+    # Concurrently the whole endpoint costs about as much as its slowest
+    # repository instead of the sum of all of them.
+    ordered = sorted(seen.items())
+    results = await asyncio.gather(
+        *(asyncio.to_thread(platform_ops.ci_runs_for_repo, slug, limit) for slug, _ in ordered)
+    )
+    repos = [
+        {**result, "services": sorted(services)}
+        for (_, services), result in zip(ordered, results, strict=True)
+    ]
     return {"repos": repos}
 
 
