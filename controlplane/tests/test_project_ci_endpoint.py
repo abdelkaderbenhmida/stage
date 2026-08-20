@@ -144,3 +144,25 @@ def test_ci_requires_authentication(client, project_with_repos):
     project_id, _ = project_with_repos
 
     assert client.get(f"/api/v1/projects/{project_id}/ci").status_code == 401
+
+
+def test_ci_reports_the_platforms_own_runs_not_just_github(client, project_with_repos, monkeypatch):
+    """A tenant repository normally has no GitHub Actions at all — the only
+    workflow in this organisation builds the platform itself. The pipeline
+    that actually built, scanned and deployed the tenant's app is this
+    platform's own deploy job, so that is what the view has to report."""
+    project_id, auth = project_with_repos
+
+    monkeypatch.setattr(
+        platform_ops, "ci_runs_for_repo",
+        lambda slug, limit: {"reachable": True, "repo": slug, "runs": []},
+    )
+
+    body = client.get(f"/api/v1/projects/{project_id}/ci", headers=auth).json()
+
+    # Every deployment is represented even before it has run, so the view
+    # never looks empty just because GitHub has nothing to say.
+    assert {p["service_name"] for p in body["pipelines"]} == {"svc-1", "svc-2", "svc-3"}
+    for pipeline in body["pipelines"]:
+        assert "repo_url" in pipeline and "branch" in pipeline
+        assert isinstance(pipeline["runs"], list)

@@ -69,18 +69,20 @@ async def project_ci(
     db: Session = Depends(get_db),
     scope: Scope = Depends(get_scope),
 ):
-    """GitHub Actions runs for the repositories *this project* deploys.
+    """This project's pipeline history — the platform's own runs first.
 
-    Tenant-facing counterpart to the admin console's CI tab. That one reads
-    this control plane's own git remote and shows the platform's pipeline —
-    correct for an operator, useless (and cross-tenant) for a user asking
-    "what did CI do with *my* app". Here the repositories come from the
-    caller's own deployments, and `_require_project` 404s a project the
-    caller cannot see, so one user can never read another's CI.
+    A tenant's repository usually has no GitHub Actions workflows at all;
+    the only workflow in this organisation is the one that builds the
+    platform itself. Reporting only GitHub Actions therefore showed most
+    users an empty CI tab while the pipeline that actually built, scanned
+    and deployed their app — this platform's own deploy job, with its clone
+    / build / push / Trivy gate / rollout stages — went unmentioned.
 
-    Fails soft per repository: a repo whose runs cannot be read (no gh, no
-    workflows, private without a credential) reports its own error instead
-    of failing the whole response.
+    So `pipelines` carries the runs the platform executed for each of this
+    project's deployments, and `repos` keeps GitHub Actions alongside it for
+    the repositories that do have workflows. `_require_project` 404s a
+    project the caller cannot see, so one user can never read another's
+    history, and the GitHub half still fails soft per repository.
     """
     _require_project(db, scope, project_id)
     deployments = db.scalars(
@@ -109,7 +111,33 @@ async def project_ci(
         {**result, "services": sorted(services)}
         for (_, services), result in zip(ordered, results, strict=True)
     ]
-    return {"repos": repos}
+
+    # The platform's own runs for this project: this IS the tenant's CI/CD,
+    # whether or not their repository also has GitHub Actions.
+    job_repo = JobRepository(db, scope)
+    pipelines = []
+    for deployment in sorted(deployments, key=lambda d: d.service_name):
+        runs, _ = job_repo.list_for_deployment(deployment.id, 1, limit)
+        pipelines.append({
+            "deployment_id": str(deployment.id),
+            "service_name": deployment.service_name,
+            "repo_url": deployment.repo_url,
+            "branch": deployment.branch,
+            "runs": [
+                {
+                    "job_id": str(job.id),
+                    "type": job.type,
+                    "status": job.status,
+                    "created_at": job.created_at,
+                    "started_at": job.started_at,
+                    "finished_at": job.finished_at,
+                    "error_message": job.error_message,
+                }
+                for job in runs
+            ],
+        })
+
+    return {"pipelines": pipelines, "repos": repos}
 
 
 @router.get("/projects/{project_id}/workloads")

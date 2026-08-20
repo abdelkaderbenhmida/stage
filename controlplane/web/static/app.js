@@ -921,20 +921,47 @@ async function renderProject(id) {
       box.innerHTML = `<div class="empty">Loading…</div>`;
       try {
         const data = await api(`/projects/${id}/ci`);
-        if (!data.repos.length) {
-          box.innerHTML = `<div class="empty">No repositories yet — add a deployment to track its CI.</div>`;
+        const pipelines = data.pipelines || [];
+        if (!pipelines.length && !data.repos.length) {
+          box.innerHTML = `<div class="empty">No deployments yet — deploy a service to see its pipeline.</div>`;
           return;
         }
-        box.innerHTML = data.repos.map((r) => {
+
+        // The platform's own runs come first: for most tenants this is the
+        // only pipeline that exists, since their repository has no GitHub
+        // Actions workflows of its own.
+        const platformHtml = pipelines.map((p) => {
+          if (!p.runs.length) {
+            return `<div style="margin-bottom:1rem">
+              <div><b>${esc(p.service_name)}</b> <span class="muted small mono">${esc(p.repo_url)} · ${esc(p.branch)}</span></div>
+              <div class="empty">No runs yet — deploy this service to start its pipeline.</div></div>`;
+          }
+          const rows = p.runs.map((run) => `
+            <tr>
+              <td>${pill(run.status)}</td>
+              <td class="mono small">${esc(run.type)}</td>
+              <td class="muted small">${fmtDate(run.created_at)}</td>
+              <td class="muted small">${esc(run.error_message || "")}</td>
+              <td><a href="#/jobs/${esc(run.job_id)}">view pipeline</a></td>
+            </tr>`).join("");
+          return `<div style="margin-bottom:1rem">
+            <div><b>${esc(p.service_name)}</b> <span class="muted small mono">${esc(p.repo_url)} · ${esc(p.branch)}</span></div>
+            <table class="table"><thead><tr>
+              <th>Result</th><th>Stage set</th><th>When</th><th>Detail</th><th></th>
+            </tr></thead><tbody>${rows}</tbody></table></div>`;
+        }).join("");
+
+        // GitHub Actions is supplementary — only worth a section when a
+        // repository actually has workflows, otherwise it is noise saying
+        // "nothing here" about something the tenant never set up.
+        const withRuns = data.repos.filter((r) => r.reachable && r.runs.length);
+        const unreachable = data.repos.filter((r) => !r.reachable);
+        const githubHtml = (withRuns.length || unreachable.length)
+          ? `<h3 style="margin-top:1.2rem">GitHub Actions</h3>` + [...withRuns, ...unreachable].map((r) => {
           if (!r.reachable) {
             return `<div style="margin-bottom:1rem">
               <div class="mono">${esc(r.repo)}</div>
               <div class="empty">CI unavailable: ${esc(r.error || "unknown error")}</div></div>`;
-          }
-          if (!r.runs.length) {
-            return `<div style="margin-bottom:1rem">
-              <div class="mono">${esc(r.repo)}</div>
-              <div class="empty">No workflow runs — this repository has no GitHub Actions workflows.</div></div>`;
           }
           const rows = r.runs.map((run) => `
             <tr>
@@ -948,7 +975,10 @@ async function renderProject(id) {
             <table class="table"><thead><tr>
               <th>Result</th><th>Run</th><th>Branch</th><th>When</th>
             </tr></thead><tbody>${rows}</tbody></table></div>`;
-        }).join("");
+        }).join("")
+          : "";
+
+        box.innerHTML = platformHtml + githubHtml;
       } catch (err) {
         box.innerHTML = `<div class="empty">${esc(err.message)}</div>`;
       }
