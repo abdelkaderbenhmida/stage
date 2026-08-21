@@ -94,6 +94,24 @@ data:
       if "/livez" in [app][event] or "/readyz" in [app][event] {
         drop {}
       }
+
+      # Route to a per-tenant index. Computed into @metadata rather than a
+      # real field so it is not stored on every document.
+      #
+      # The namespace is matched against the platform's own derivation rule
+      # rather than "anything that is not devops-platform": a log line whose
+      # namespace field is missing or malformed must not be able to invent an
+      # index name, so anything unrecognised goes to the platform index where
+      # only operators can read it.
+      if [namespace] =~ /^p-[0-9a-f]{20}$/ {
+        mutate {
+          add_field => { "[@metadata][target_index]" => "tenant-%{namespace}-%{+YYYY.MM.dd}" }
+        }
+      } else {
+        mutate {
+          add_field => { "[@metadata][target_index]" => "devops-platform-%{+YYYY.MM.dd}" }
+        }
+      }
     }
 
     output {
@@ -101,7 +119,19 @@ data:
         hosts => ["http://elasticsearch.monitoring.svc.cluster.local:9200"]
         user => "elastic"
         password => "${ELASTIC_PASSWORD}"
-        index => "devops-platform-%{+YYYY.MM.dd}"
+        # One index per tenant namespace, not one shared index.
+        #
+        # This is what makes per-tenant Elasticsearch roles possible on the
+        # basic licence: index-pattern privileges are basic, but filtering
+        # rows *within* a shared index needs document-level security, which is
+        # Platinum. With everything in `devops-platform-*` the only options
+        # were "every tenant sees every tenant's logs" or "no tenant sees
+        # anything".
+        #
+        # Tenant namespaces are `p-<20 hex>` (core/validation.k8s_namespace);
+        # the platform's own workloads keep the original index name so the
+        # operator dashboards and their saved searches keep working.
+        index => "%{[@metadata][target_index]}"
         ilm_enabled => false
         manage_template => false
       }
