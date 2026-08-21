@@ -48,9 +48,14 @@ class GitOpsConfig:
 
 
 def _git(args: list[str], workspace: Path, config: GitOpsConfig, askpass: Path, on_line=None) -> SandboxResult:
+    # The sandbox mounts a workspace at its own host path, not at a fixed
+    # /workspace (runners/sandbox.py mounts `str(workspace)` and sets -w to
+    # it). Hardcoding /workspace made every git call fail with "cannot change
+    # to '/workspace/repo'" — after the clone had already succeeded, so the
+    # error pointed at the commit rather than at the path.
     return run_sandbox(
         SandboxRun(
-            command=["git", "-C", "/workspace/repo", *args],
+            command=["git", "-C", str(workspace / "repo"), *args],
             workspace=workspace,
             writable_paths=["repo"],
             network_enabled=True,
@@ -60,6 +65,15 @@ def _git(args: list[str], workspace: Path, config: GitOpsConfig, askpass: Path, 
             env={
                 "GIT_TERMINAL_PROMPT": "0",
                 "GIT_ASKPASS": str(askpass),
+                # The checkout is owned by the host user that created it, and
+                # git inside the sandbox runs as a different UID — so git
+                # refuses every command with "detected dubious ownership",
+                # after the clone has already succeeded. Declared through
+                # GIT_CONFIG_* rather than `git config --global` so nothing is
+                # written to a config file that outlives the run.
+                "GIT_CONFIG_COUNT": "1",
+                "GIT_CONFIG_KEY_0": "safe.directory",
+                "GIT_CONFIG_VALUE_0": str(workspace / "repo"),
                 # A commit needs an identity, and git refuses rather than
                 # inventing one. Attributing it to the platform (not to the
                 # tenant) is accurate: the platform rendered these files.
@@ -104,7 +118,7 @@ def publish_manifests(
             SandboxRun(
                 command=[
                     "git", "clone", "--depth", "1", "--branch", config.branch,
-                    config.repo_url, "/workspace/repo",
+                    config.repo_url, str(root / "repo"),
                 ],
                 workspace=root,
                 writable_paths=["repo"],

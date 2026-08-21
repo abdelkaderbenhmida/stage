@@ -114,7 +114,7 @@ def test_secrets_are_never_committed_to_the_manifest_repository(tmp_path, monkey
 
     def fake_sandbox(run):
         # Snapshot what is on disk at the moment git is asked to stage it.
-        if run.command[:4] == ["git", "-C", "/workspace/repo", "add"]:
+        if run.command[0] == "git" and run.command[1] == "-C" and run.command[3] == "add":
             target = run.workspace / "repo" / gitops.manifest_path(project_id, "api")
             staged.append(sorted(child.name for child in target.iterdir()))
         return gitops.SandboxResult(exit_code=0, output="abc123def456", duration_seconds=0.0)
@@ -162,7 +162,7 @@ def test_publish_replaces_the_previous_render_rather_than_merging(tmp_path, monk
             # Simulate the previous render already present in the repository.
             target.mkdir(parents=True, exist_ok=True)
             (target / "rollout.yaml").write_text("# stale\n")
-        if run.command[:4] == ["git", "-C", "/workspace/repo", "add"]:
+        if run.command[0] == "git" and run.command[1] == "-C" and run.command[3] == "add":
             staged.append(sorted(child.name for child in target.iterdir()))
         return gitops.SandboxResult(exit_code=0, output="sha", duration_seconds=0.0)
 
@@ -225,3 +225,54 @@ def test_argocd_url_falls_back_to_the_worker_url_but_not_the_reverse():
     ):
         assert settings.gitops_repo_url_for_argocd == "git://svc:9418/tenants.git"
         assert settings.gitops_repo_url == "git://node:30418/tenants.git"
+
+
+def test_git_runs_against_the_sandbox_workspace_path(tmp_path, monkeypatch):
+    """The sandbox mounts a workspace at its own host path, not at a fixed
+    /workspace. Hardcoding one made every git call fail with "cannot change to
+    '/workspace/repo'" — after the clone succeeded, so the error pointed at the
+    commit rather than at the path."""
+    from controlplane.runners import gitops
+
+    seen: list[list[str]] = []
+
+    def fake_sandbox(run):
+        seen.append(run.command)
+        return gitops.SandboxResult(exit_code=0, output="sha", duration_seconds=0.0)
+
+    monkeypatch.setattr(gitops, "run_sandbox", fake_sandbox)
+    gitops.publish_manifests(
+        uuid.uuid4(), "api", [], message="m",
+        config=gitops.GitOpsConfig(repo_url="http://h/r.git", branch="main", username="u", password="p"),
+    )
+
+    for command in seen:
+        for token in command:
+            assert not token.startswith("/workspace"), command
+    clone = seen[0]
+    assert clone[:2] == ["git", "clone"]
+    assert clone[-1].endswith("/repo")
+
+
+def test_git_declares_the_checkout_as_a_safe_directory(tmp_path, monkeypatch):
+    """The checkout is owned by the host user that created it and git inside
+    the sandbox runs as a different UID, so git refuses every command with
+    "detected dubious ownership" — after the clone has already succeeded."""
+    from controlplane.runners import gitops
+
+    envs: list[dict] = []
+
+    def fake_sandbox(run):
+        envs.append(run.env)
+        return gitops.SandboxResult(exit_code=0, output="sha", duration_seconds=0.0)
+
+    monkeypatch.setattr(gitops, "run_sandbox", fake_sandbox)
+    gitops.publish_manifests(
+        uuid.uuid4(), "api", [], message="m",
+        config=gitops.GitOpsConfig(repo_url="http://h/r.git", branch="main", username="u", password="p"),
+    )
+
+    # Every git call after the clone, not just one of them.
+    for env in envs[1:]:
+        assert env["GIT_CONFIG_KEY_0"] == "safe.directory"
+        assert env["GIT_CONFIG_VALUE_0"].endswith("/repo")

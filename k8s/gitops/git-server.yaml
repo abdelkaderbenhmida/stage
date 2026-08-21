@@ -121,10 +121,112 @@ spec:
     spec:
       securityContext:
         fsGroup: 1000
+      initContainers:
+        # Creates the first admin account.
+        #
+        # It has to be the CLI, and it has to be here. Gitea's
+        # POST /api/v1/admin/users requires authenticating as an existing
+        # admin, so it cannot create the *first* one — a bootstrap Job calling
+        # it gets "user does not exist" and the repository is never created.
+        # `gitea admin user create` needs no auth but does need the data
+        # volume, which only this pod has.
+        #
+        # Idempotent: on every restart after the first the account exists and
+        # the command fails, which is the expected path, not an error.
+        - name: create-admin
+          image: gitea/gitea:1.22.6-rootless
+          env:
+            - name: GITEA_WORK_DIR
+              value: /var/lib/gitea
+            - name: GITEA__database__DB_TYPE
+              value: sqlite3
+            - name: GITEA__security__INSTALL_LOCK
+              value: "true"
+            - name: GIT_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: git-server-admin
+                  key: username
+            - name: GIT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: git-server-admin
+                  key: password
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -eu
+              CONF=/var/lib/gitea/custom/conf/app.ini
+
+              # Gitea only writes app.ini on its first web start, and the CLI
+              # refuses to run without one ("Unable to load config file for an
+              # installed Gitea instance"). Writing it here is what lets the
+              # account exist BEFORE the server first serves a request — the
+              # order the bootstrap Job depends on.
+              #
+              # Configuration lives in this file rather than in GITEA__*
+              # environment variables so that the CLI and the server read the
+              # same settings; env vars only reach the server process.
+              if [ ! -f "$CONF" ]; then
+                mkdir -p "$(dirname "$CONF")" /var/lib/gitea/data
+                cat > "$CONF" <<INI
+              APP_NAME = platform manifests
+              RUN_MODE = prod
+              WORK_PATH = /var/lib/gitea
+
+              [server]
+              HTTP_PORT = 3000
+              ROOT_URL  = http://git-server.gitops.svc.cluster.local:3000/
+
+              [database]
+              DB_TYPE = sqlite3
+              PATH    = /var/lib/gitea/data/gitea.db
+
+              [repository]
+              ROOT            = /var/lib/gitea/data/repositories
+              DEFAULT_PRIVATE = private
+
+              [security]
+              INSTALL_LOCK = true
+              SECRET_KEY   = ${GIT_PASSWORD}
+
+              [service]
+              DISABLE_REGISTRATION = true
+              REQUIRE_SIGNIN_VIEW  = true
+
+              [actions]
+              ENABLED = false
+              INI
+              fi
+
+              # Creates the schema. Without it `admin user create` has no
+              # tables to write into.
+              gitea --config "$CONF" migrate
+
+              # Idempotent: on every restart after the first the account
+              # exists and this fails, which is the expected path. The output
+              # is filtered because Gitea echoes the password back.
+              gitea --config "$CONF" admin user create \
+                --admin \
+                --username "$GIT_USERNAME" \
+                --password "$GIT_PASSWORD" \
+                --email controlplane@platform.local \
+                --must-change-password=false \
+                2>&1 | grep -vF "$GIT_PASSWORD" || true
+              echo "admin account present"
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/gitea
       containers:
         - name: gitea
           image: gitea/gitea:1.22.6-rootless
           env:
+            # The file the init container wrote. Same settings for the CLI and
+            # the server; GITEA__* env vars would only reach this process.
+            - name: GITEA_APP_INI
+              value: /var/lib/gitea/custom/conf/app.ini
+            - name: GITEA_WORK_DIR
+              value: /var/lib/gitea
             # Skip the interactive installer: an unconfigured Gitea serves a
             # setup page instead of the git endpoints, so the first push would
             # fetch HTML and fail with a git error naming neither cause.
@@ -227,22 +329,24 @@ spec:
                 sleep 5
               done
 
-              # Idempotent: a 422 means the user already exists, which is the
-              # normal case on every sync after the first.
-              curl -s -o /dev/null -w '%{http_code}\n' -X POST "$BASE/api/v1/admin/users" \
-                -H 'Content-Type: application/json' \
-                -u "$GIT_USERNAME:$GIT_PASSWORD" \
-                -d "{\"username\":\"$GIT_USERNAME\",\"password\":\"$GIT_PASSWORD\",\"email\":\"controlplane@platform.local\",\"must_change_password\":false}" || true
-
+              # The admin account is created by the server pod's init
+              # container, not here — the API cannot create the first admin.
+              #
               # auto_init, so `main` exists. Cloning a bare repository with
               # --branch main fails with "Remote branch main not found", which
               # is what every deploy would hit on a fresh install.
-              curl -s -o /dev/null -w '%{http_code}\n' -X POST "$BASE/api/v1/user/repos" \
+              CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/api/v1/user/repos" \
                 -H 'Content-Type: application/json' \
                 -u "$GIT_USERNAME:$GIT_PASSWORD" \
-                -d '{"name":"tenants","private":true,"auto_init":true,"default_branch":"main"}' || true
+                -d '{"name":"tenants","private":true,"auto_init":true,"default_branch":"main"}')
 
-              echo "bootstrap complete"
+              # 201 created, 409 already there. Anything else — 401 above all —
+              # means the repository the whole GitOps path depends on does not
+              # exist, and failing loudly beats a deploy that discovers it.
+              case "$CODE" in
+                201|409) echo "tenants repository present ($CODE)" ;;
+                *) echo "could not create the tenants repository: HTTP $CODE"; exit 1 ;;
+              esac
           resources:
             requests:
               cpu: 50m
