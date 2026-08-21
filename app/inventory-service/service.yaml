@@ -4,4 +4,4 @@
 # successful build; the default `secondary` is the floating branch tag).
 # main.py remains the discovery contract for CI and introspect.py.
 name: inventory-service
-tag: commit-73fa2d2
+tag: commit-48d007b
