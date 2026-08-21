@@ -208,6 +208,50 @@ class Settings:
     # Cluster kubeconfig path mounted for deployment runs
     kubeconfig_path: str = field(default_factory=lambda: _env("KUBECONFIG_PATH", "/kube/config"))
 
+    # GitOps: tenant workloads reconciled by ArgoCD instead of applied once.
+    #
+    # Off by default, and the deploy path still does a direct `kubectl apply`
+    # when it is off. Turning it on without a reachable manifest repository
+    # would fail every deployment at the publish step, so this stays opt-in
+    # rather than defaulting to a mode that needs infrastructure to exist.
+    gitops_enabled: bool = field(default_factory=lambda: _env("GITOPS_ENABLED", "false").lower() == "true")
+    # The platform's OWN manifest repository — never a tenant's. Only rendered
+    # manifests are committed here; tenant source code never touches it.
+    gitops_repo_url: str = field(default_factory=lambda: _env("GITOPS_REPO_URL", ""))
+    # How ArgoCD addresses that same repository from inside the cluster. The
+    # worker pushes from a sandbox on the host's docker network and cannot
+    # reach a ClusterIP; ArgoCD is in-cluster and cannot reach a NodePort by
+    # the host's name. Same split as REGISTRY / REGISTRY_INTERNAL. Defaults to
+    # the worker's URL so a single-address setup still works.
+    gitops_repo_url_internal: str = field(default_factory=lambda: _env("GITOPS_REPO_URL_INTERNAL", ""))
+    gitops_branch: str = field(default_factory=lambda: _env("GITOPS_BRANCH", "main"))
+    gitops_username: str = field(default_factory=lambda: _env("GITOPS_USERNAME", "controlplane"))
+    gitops_password: str = field(default_factory=lambda: _env("GITOPS_PASSWORD", ""))
+
+    # Tekton: tenant builds run as Pods in the tenant's own namespace instead
+    # of in a sandbox container on the control-plane host.
+    #
+    # Off by default, and deliberately so: switching it on replaces the runner
+    # that enforces the no-docker-socket and no-secret-in-argv guarantees with
+    # one whose equivalents are Kubernetes objects that have to exist first
+    # (the Pipeline, the registry Secret, Tekton itself). A default of "on"
+    # would break every deployment on a cluster that has none of them.
+    tekton_enabled: bool = field(default_factory=lambda: _env("TEKTON_ENABLED", "false").lower() == "true")
+    # Replaces SANDBOX_* wall-clock limits, which are docker flags and do not
+    # apply to a Pod.
+    tekton_timeout: str = field(default_factory=lambda: _env("TEKTON_TIMEOUT", "30m"))
+
+    # Elasticsearch / Kibana, for the per-tenant log view.
+    #
+    # Tenancy is expressed in the index name (tenant-<namespace>-*) because
+    # index-pattern privileges are the only enforcement the basic licence has —
+    # filtering rows inside a shared index is document-level security, which is
+    # Platinum. See core/elk_tenancy.py.
+    elasticsearch_url: str = field(default_factory=lambda: _env("ELASTICSEARCH_URL", ""))
+    kibana_url: str = field(default_factory=lambda: _env("KIBANA_URL", ""))
+    elasticsearch_user: str = field(default_factory=lambda: _env("ELASTICSEARCH_USER", "elastic"))
+    elasticsearch_password: str = field(default_factory=lambda: _env("ELASTICSEARCH_PASSWORD", ""))
+
     # Caps (mirror docs/PLATFORM_SPEC.md §6.2)
     max_projects_per_user: int = field(default_factory=lambda: _env_int("MAX_PROJECTS_PER_USER", 3))
     max_nodes_per_project: int = field(default_factory=lambda: _env_int("MAX_NODES_PER_PROJECT", 10))
@@ -272,6 +316,18 @@ class Settings:
     cost_per_gb_ram_hour: float = field(default_factory=lambda: _env_float("COST_PER_GB_RAM_HOUR", 0.004))
     cost_per_gb_disk_hour: float = field(default_factory=lambda: _env_float("COST_PER_GB_DISK_HOUR", 0.0002))
     cost_currency: str = field(default_factory=lambda: _env("COST_CURRENCY", "EUR"))
+
+    @property
+    def gitops_repo_url_for_argocd(self) -> str:
+        """The repository URL written into every Application.
+
+        Falls back to the worker's URL when no in-cluster address is set, so a
+        deployment where both sides share one address needs one variable rather
+        than two identical ones. Never the other way round: defaulting the
+        worker's push URL to an in-cluster name would produce a push that
+        cannot resolve and a deploy that fails at the last step.
+        """
+        return self.gitops_repo_url_internal or self.gitops_repo_url
 
     @property
     def is_dev(self) -> bool:

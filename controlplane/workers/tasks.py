@@ -17,18 +17,21 @@ import uuid
 from datetime import UTC
 from pathlib import Path
 
+import yaml
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from controlplane.core.config import settings
 from controlplane.core.app_config import load_secrets
+from controlplane.core.config import settings
 from controlplane.core.git_credentials import ASKPASS_SCRIPT, credential_for_repo
 from controlplane.core.kubeconfigs import get_kubeconfig, store_kubeconfig, transfer_kubeconfig
 from controlplane.core.logging import request_id_var
 from controlplane.core.pipeline_config import (
     CONFIG_FILENAME,
     InvalidPipelineConfig,
+)
+from controlplane.core.pipeline_config import (
     load_stages as load_pipeline_stages,
 )
 from controlplane.core.pool import claim_cluster
@@ -62,6 +65,12 @@ from controlplane.repositories.projects import ProjectRepository
 from controlplane.runners.ansible_runner import ansible_playbook
 from controlplane.runners.sandbox import SandboxResult, SandboxRun, run_sandbox
 from controlplane.runners.scanners import run_gitleaks, run_pip_audit, run_trivy
+from controlplane.runners.tekton import KubectlCaller as TektonKubectl
+from controlplane.runners.tekton import pipeline_task_names, render_pipelinerun, stage_task_name
+from controlplane.runners.tekton import push_step_index as tekton_push_index
+from controlplane.runners.tekton import start as tekton_start
+from controlplane.runners.tekton import step_indices as tekton_step_indices
+from controlplane.runners.tekton import wait as tekton_wait
 from controlplane.runners.terraform_runner import (
     terraform_apply,
     terraform_destroy,
@@ -379,9 +388,39 @@ def _provision_namespace(
         node.status = "running"
     db.commit()
 
+    _grant_tenant_log_access(db, job_id, project)
+
     _mark_ready(db, project_id)
     _mark_job(db, uuid.UUID(job_id), "succeeded")
     _append_log(job_id, f"Namespace {ns} ({spec.project}) ready.")
+
+
+def _grant_tenant_log_access(db: Session, job_id: str, project: Project) -> None:
+    """Give the project's team read access to its own logs in Elasticsearch.
+
+    Re-run on every provision, not once per team: a team that adds a project
+    needs the new namespace in its role, and granting only at team creation
+    would leave every project after the first invisible to its owner.
+
+    A failure here does not fail the provision. The namespace, quota and
+    network policy are already applied and the project is usable; losing the
+    Kibana view is a degraded feature, not a broken environment. It is logged
+    loudly rather than swallowed, because a silent skip is how a tenant ends up
+    with an empty Logs tab and nothing anywhere explaining why.
+    """
+    if not settings.elasticsearch_url:
+        return
+    try:
+        from controlplane.core.elk_tenancy import ElkProvisioningError, provision_team
+
+        team = db.get(Team, project.team_id)
+        owned = db.scalars(select(Project.id).where(Project.team_id == project.team_id)).all()
+        provision_team(project.team_id, team.name if team else "", list(owned))
+        _append_log(job_id, "Elasticsearch access granted for this team's own logs.")
+    except ElkProvisioningError as exc:
+        _append_log(job_id, f"WARNING: could not grant Elasticsearch access: {exc}")
+    except Exception as exc:  # noqa: BLE001
+        _append_log(job_id, f"WARNING: could not grant Elasticsearch access: {exc}")
 
 
 def _adopt_pooled_cluster(
@@ -1126,200 +1165,255 @@ def deploy_task(job_id: str, deployment_id: str, project_id: str, user_id: str) 
             total = 7
             user_stages: list = []
 
-            _step(job_id, 1, total, "cloning repository")
-            cloned = _clone_repo(
-                deployment.repo_url, job_id, on_line,
-                branch=deployment.branch, team_id=project.team_id,
-            )
+            if _tekton_applies_to(project):
+                # Tekton runs the tenant's stages, the build and the scan as
+                # Pods in the tenant's own namespace, so they inherit that
+                # namespace's quota, NetworkPolicy and ServiceAccount.
+                #
+                # The repository is still cloned here first, and it has to be:
+                # .platform.yml and "does this repo have a Dockerfile" are only
+                # knowable by reading the checkout, and the pipeline's shape
+                # depends on both. The clone is shallow and thrown away
+                # immediately; the in-cluster clone is what the build uses.
+                _step(job_id, 1, total, "cloning repository")
+                cloned = _clone_repo(
+                    deployment.repo_url, job_id, on_line,
+                    branch=deployment.branch, team_id=project.team_id,
+                )
+                try:
+                    user_stages = load_pipeline_stages(cloned)
+                except InvalidPipelineConfig as exc:
+                    raise RuntimeError(str(exc)) from exc
+                total = 7 + len(user_stages)
+                if user_stages:
+                    _append_log(
+                        job_id,
+                        f"{CONFIG_FILENAME} declares {len(user_stages)} extra stage(s): "
+                        + ", ".join(stage.name for stage in user_stages),
+                    )
 
-            try:
-                user_stages = load_pipeline_stages(cloned)
-            except InvalidPipelineConfig as exc:
-                # Fail closed and say why: silently ignoring a malformed file
-                # would run a pipeline its author did not ask for.
-                raise RuntimeError(str(exc)) from exc
-            total = 7 + len(user_stages)
-            if user_stages:
-                _append_log(
-                    job_id,
-                    f"{CONFIG_FILENAME} declares {len(user_stages)} extra stage(s): "
-                    + ", ".join(stage.name for stage in user_stages),
+                dockerfile = ""
+                if not (cloned / "Dockerfile").is_file():
+                    entrypoint = _try_autogenerate_dockerfile(cloned, deployment.port)
+                    if entrypoint is None:
+                        raise RuntimeError(
+                            f"No Dockerfile at the root of {deployment.repo_url} "
+                            f"(branch {deployment.branch}), and this doesn't look like a plain "
+                            "FastAPI app (need requirements.txt + main.py/app.py with "
+                            "`app = FastAPI(...)`) — add a Dockerfile and deploy again."
+                        )
+                    # Handed to the pipeline as a parameter: under Tekton the
+                    # build reads a checkout that only exists in the cluster,
+                    # so a file written here would never reach kaniko.
+                    dockerfile = (cloned / "Dockerfile").read_text()
+                    _append_log(
+                        job_id,
+                        f"No Dockerfile found — detected a FastAPI app in {entrypoint}.py "
+                        "and generated one automatically.",
+                    )
+
+                _tekton_build_and_scan(
+                    db, job_id, project, deployment, repo, image_ref, on_line,
+                    stages=user_stages, dockerfile=dockerfile, total=total,
+                )
+            else:
+                _step(job_id, 1, total, "cloning repository")
+                cloned = _clone_repo(
+                    deployment.repo_url, job_id, on_line,
+                    branch=deployment.branch, team_id=project.team_id,
                 )
 
-            # Tenant-declared stages run on the checkout, before an image is
-            # built from it: a failing test should stop the pipeline before
-            # it spends a build slot, not after.
-            for offset, stage in enumerate(user_stages, start=1):
-                _step(job_id, 1 + offset, total, stage.name)
-                result = run_sandbox(
+                try:
+                    user_stages = load_pipeline_stages(cloned)
+                except InvalidPipelineConfig as exc:
+                    # Fail closed and say why: silently ignoring a malformed file
+                    # would run a pipeline its author did not ask for.
+                    raise RuntimeError(str(exc)) from exc
+                total = 7 + len(user_stages)
+                if user_stages:
+                    _append_log(
+                        job_id,
+                        f"{CONFIG_FILENAME} declares {len(user_stages)} extra stage(s): "
+                        + ", ".join(stage.name for stage in user_stages),
+                    )
+
+                # Tenant-declared stages run on the checkout, before an image is
+                # built from it: a failing test should stop the pipeline before
+                # it spends a build slot, not after.
+                for offset, stage in enumerate(user_stages, start=1):
+                    _step(job_id, 1 + offset, total, stage.name)
+                    result = run_sandbox(
+                        SandboxRun(
+                            # These are commands out of a tenant's repository, so
+                            # they run where every other tenant command runs: an
+                            # ephemeral container with CPU, memory and wall-clock
+                            # limits and no docker socket. Never on the host.
+                            command=["sh", "-c", stage.run],
+                            image=stage.image or settings.sandbox_image,
+                            workspace=cloned,
+                            # A CI workspace has to be writable. Test runners
+                            # write caches and coverage data next to the code —
+                            # `pytest --cov` dies with "Read-only file system:
+                            # /w/.coverage" — and any stage that generates a
+                            # file (a migration, a build artifact, codegen)
+                            # cannot run at all without it. The checkout is a
+                            # throwaway clone that is purged when the job ends,
+                            # so nothing outside this job can be affected.
+                            workspace_writable=True,
+                            timeout_seconds=settings.scan_timeout_seconds,
+                            on_line=on_line,
+                        )
+                    )
+                    if result.timed_out:
+                        raise RuntimeError(f"stage {stage.name!r} timed out")
+                    if result.exit_code != 0:
+                        raise RuntimeError(
+                            f"stage {stage.name!r} failed (exit {result.exit_code}): "
+                            f"{(result.output or '')[-400:]}"
+                        )
+
+                # Check this before spending a build slot on it. docker's own
+                # complaint ("unable to evaluate symlinks in Dockerfile path:
+                # lstat .../repo/Dockerfile") names a path inside a temp directory
+                # the user has never heard of and cannot inspect.
+                if not (cloned / "Dockerfile").is_file():
+                    entrypoint = _try_autogenerate_dockerfile(cloned, deployment.port)
+                    if entrypoint is None:
+                        raise RuntimeError(
+                            f"No Dockerfile at the root of {deployment.repo_url} "
+                            f"(branch {deployment.branch}), and this doesn't look like a plain "
+                            "FastAPI app (need requirements.txt + main.py/app.py with "
+                            "`app = FastAPI(...)`) — add a Dockerfile and deploy again."
+                        )
+                    _append_log(
+                        job_id,
+                        f"No Dockerfile found — detected a FastAPI app in {entrypoint}.py "
+                        "and generated one automatically.",
+                    )
+
+                repo.set_status(deployment, "building")
+                db.commit()
+
+                _step(job_id, len(user_stages) + 2, total, "building image")
+                build = run_sandbox(
                     SandboxRun(
-                        # These are commands out of a tenant's repository, so
-                        # they run where every other tenant command runs: an
-                        # ephemeral container with CPU, memory and wall-clock
-                        # limits and no docker socket. Never on the host.
-                        command=["sh", "-c", stage.run],
-                        image=stage.image or settings.sandbox_image,
+                        command=["docker", "build", "-t", image_ref, "."],
                         workspace=cloned,
-                        # A CI workspace has to be writable. Test runners
-                        # write caches and coverage data next to the code —
-                        # `pytest --cov` dies with "Read-only file system:
-                        # /w/.coverage" — and any stage that generates a
-                        # file (a migration, a build artifact, codegen)
-                        # cannot run at all without it. The checkout is a
-                        # throwaway clone that is purged when the job ends,
-                        # so nothing outside this job can be affected.
-                        workspace_writable=True,
-                        timeout_seconds=settings.scan_timeout_seconds,
+                        requires_docker_daemon=True,
+                        timeout_seconds=settings.provision_timeout_seconds,
                         on_line=on_line,
                     )
                 )
-                if result.timed_out:
-                    raise RuntimeError(f"stage {stage.name!r} timed out")
-                if result.exit_code != 0:
-                    raise RuntimeError(
-                        f"stage {stage.name!r} failed (exit {result.exit_code}): "
-                        f"{(result.output or '')[-400:]}"
+                _check(build)
+
+                _step(job_id, len(user_stages) + 3, total, "pushing image to registry")
+                push = run_sandbox(
+                    SandboxRun(
+                        command=["docker", "push", image_ref],
+                        requires_docker_daemon=True,
+                        timeout_seconds=600,
+                        on_line=on_line,
+                        env={"REGISTRY_USER": settings.registry_user},
+                        secret_env={"REGISTRY_PASSWORD": settings.registry_password},
                     )
-
-            # Check this before spending a build slot on it. docker's own
-            # complaint ("unable to evaluate symlinks in Dockerfile path:
-            # lstat .../repo/Dockerfile") names a path inside a temp directory
-            # the user has never heard of and cannot inspect.
-            if not (cloned / "Dockerfile").is_file():
-                entrypoint = _try_autogenerate_dockerfile(cloned, deployment.port)
-                if entrypoint is None:
-                    raise RuntimeError(
-                        f"No Dockerfile at the root of {deployment.repo_url} "
-                        f"(branch {deployment.branch}), and this doesn't look like a plain "
-                        "FastAPI app (need requirements.txt + main.py/app.py with "
-                        "`app = FastAPI(...)`) — add a Dockerfile and deploy again."
-                    )
-                _append_log(
-                    job_id,
-                    f"No Dockerfile found — detected a FastAPI app in {entrypoint}.py "
-                    "and generated one automatically.",
                 )
+                _check(push)
 
-            repo.set_status(deployment, "building")
-            db.commit()
-
-            _step(job_id, len(user_stages) + 2, total, "building image")
-            build = run_sandbox(
-                SandboxRun(
-                    command=["docker", "build", "-t", image_ref, "."],
-                    workspace=cloned,
-                    requires_docker_daemon=True,
-                    timeout_seconds=settings.provision_timeout_seconds,
-                    on_line=on_line,
-                )
-            )
-            _check(build)
-
-            _step(job_id, len(user_stages) + 3, total, "pushing image to registry")
-            push = run_sandbox(
-                SandboxRun(
-                    command=["docker", "push", image_ref],
-                    requires_docker_daemon=True,
-                    timeout_seconds=600,
-                    on_line=on_line,
-                    env={"REGISTRY_USER": settings.registry_user},
-                    secret_env={"REGISTRY_PASSWORD": settings.registry_password},
-                )
-            )
-            _check(push)
-
-            _step(job_id, len(user_stages) + 4, total, "trivy scan + gate")
-            repo.set_status(deployment, "scanning")
-            db.commit()
-            # Scan the image that was just pushed, addressed the way a
-            # sandbox can reach it: the control plane pushes to
-            # settings.registry (published on the host), which resolves to the
-            # sandbox container itself from inside one.
-            scan_ref = _registry_scan_ref(image_ref)
-            # Deliberately NOT streamed to the job log. Trivy's report is the
-            # JSON document itself — hundreds of kilobytes of SBOM — and the
-            # log is truncated head-first at 200 kB, so streaming it evicted
-            # everything the user actually wanted to read: their own stage
-            # output, the build, the push. The findings are parsed below and
-            # summarised in one line instead.
-            trivy = run_trivy(
-                scan_ref,
-                from_registry=True,
-                network=settings.registry_network,
-                insecure=settings.registry_insecure,
-            )
-            from controlplane.parsers.trivy_parser import parse_trivy
-
-            # The gate must fail closed. `parse_trivy` returns an empty result
-            # for output it cannot read, which is indistinguishable from a
-            # clean image, so a scanner that never ran produced gate == 0 and
-            # the image shipped as if it had passed. That is exactly what
-            # happened here: trivy could not reach the Docker socket, logged
-            # "failed to connect to the docker API", and the deployment went
-            # live unscanned while the UI promised the opposite.
-            #
-            # An image whose vulnerabilities are unknown is not an image known
-            # to be safe, so treat an unusable scan as a block.
-            if trivy.timed_out or trivy.exit_code != 0:
-                # Trivy downloads its vulnerability database on first use, and
-                # two scans starting together can collide over it. That is a
-                # transient failure, and blocking a deployment over it while
-                # an identical image sails through minutes later is not a
-                # security decision — it is a coin toss. Retry once; a real
-                # failure still blocks, because the gate stays fail-closed.
-                _append_log(job_id, f"trivy exited {trivy.exit_code} — retrying once")
-                time.sleep(5)
+                _step(job_id, len(user_stages) + 4, total, "trivy scan + gate")
+                repo.set_status(deployment, "scanning")
+                db.commit()
+                # Scan the image that was just pushed, addressed the way a
+                # sandbox can reach it: the control plane pushes to
+                # settings.registry (published on the host), which resolves to the
+                # sandbox container itself from inside one.
+                scan_ref = _registry_scan_ref(image_ref)
+                # Deliberately NOT streamed to the job log. Trivy's report is the
+                # JSON document itself — hundreds of kilobytes of SBOM — and the
+                # log is truncated head-first at 200 kB, so streaming it evicted
+                # everything the user actually wanted to read: their own stage
+                # output, the build, the push. The findings are parsed below and
+                # summarised in one line instead.
                 trivy = run_trivy(
                     scan_ref,
                     from_registry=True,
                     network=settings.registry_network,
                     insecure=settings.registry_insecure,
                 )
+                from controlplane.parsers.trivy_parser import parse_trivy
 
-            if trivy.timed_out or trivy.exit_code != 0:
-                repo.set_status(deployment, "blocked", image_ref=image_ref)
-                db.commit()
-                raise RuntimeError(
-                    "Image could not be scanned, so it was not deployed. "
-                    # RawResult carries `stdout`; there is no `output`. Reading
-                    # the wrong attribute raised AttributeError while building
-                    # this very message, which replaced the real reason with a
-                    # type error on six deployments.
-                    f"Trivy exited {trivy.exit_code}: {(trivy.stdout or '')[-400:]}"
-                )
+                # The gate must fail closed. `parse_trivy` returns an empty result
+                # for output it cannot read, which is indistinguishable from a
+                # clean image, so a scanner that never ran produced gate == 0 and
+                # the image shipped as if it had passed. That is exactly what
+                # happened here: trivy could not reach the Docker socket, logged
+                # "failed to connect to the docker API", and the deployment went
+                # live unscanned while the UI promised the opposite.
+                #
+                # An image whose vulnerabilities are unknown is not an image known
+                # to be safe, so treat an unusable scan as a block.
+                if trivy.timed_out or trivy.exit_code != 0:
+                    # Trivy downloads its vulnerability database on first use, and
+                    # two scans starting together can collide over it. That is a
+                    # transient failure, and blocking a deployment over it while
+                    # an identical image sails through minutes later is not a
+                    # security decision — it is a coin toss. Retry once; a real
+                    # failure still blocks, because the gate stays fail-closed.
+                    _append_log(job_id, f"trivy exited {trivy.exit_code} — retrying once")
+                    time.sleep(5)
+                    trivy = run_trivy(
+                        scan_ref,
+                        from_registry=True,
+                        network=settings.registry_network,
+                        insecure=settings.registry_insecure,
+                    )
 
-            if not _is_usable_trivy_report(trivy.stdout):
-                repo.set_status(deployment, "blocked", image_ref=image_ref)
-                db.commit()
-                raise RuntimeError(
-                    "Image could not be scanned, so it was not deployed: "
-                    "Trivy produced no readable report."
-                )
+                if trivy.timed_out or trivy.exit_code != 0:
+                    repo.set_status(deployment, "blocked", image_ref=image_ref)
+                    db.commit()
+                    raise RuntimeError(
+                        "Image could not be scanned, so it was not deployed. "
+                        # RawResult carries `stdout`; there is no `output`. Reading
+                        # the wrong attribute raised AttributeError while building
+                        # this very message, which replaced the real reason with a
+                        # type error on six deployments.
+                        f"Trivy exited {trivy.exit_code}: {(trivy.stdout or '')[-400:]}"
+                    )
 
-            parsed = parse_trivy(trivy.stdout)
-            gate = parsed.summary.get("critical", 0) + parsed.summary.get("high", 0)
-            _append_log(
-                job_id,
-                "trivy: "
-                + ", ".join(
-                    f"{parsed.summary.get(level, 0)} {level}"
-                    for level in ("critical", "high", "medium", "low")
-                ),
-            )
-            if gate > 0:
-                repo.set_status(deployment, "blocked", image_ref=image_ref)
-                db.commit()
-                raise RuntimeError(
-                    f"Image blocked: {parsed.summary['critical']} critical, "
-                    f"{parsed.summary['high']} high. Gate on CRITICAL/HIGH."
+                if not _is_usable_trivy_report(trivy.stdout):
+                    repo.set_status(deployment, "blocked", image_ref=image_ref)
+                    db.commit()
+                    raise RuntimeError(
+                        "Image could not be scanned, so it was not deployed: "
+                        "Trivy produced no readable report."
+                    )
+
+                parsed = parse_trivy(trivy.stdout)
+                gate = parsed.summary.get("critical", 0) + parsed.summary.get("high", 0)
+                _append_log(
+                    job_id,
+                    "trivy: "
+                    + ", ".join(
+                        f"{parsed.summary.get(level, 0)} {level}"
+                        for level in ("critical", "high", "medium", "low")
+                    ),
                 )
+                if gate > 0:
+                    repo.set_status(deployment, "blocked", image_ref=image_ref)
+                    db.commit()
+                    raise RuntimeError(
+                        f"Image blocked: {parsed.summary['critical']} critical, "
+                        f"{parsed.summary['high']} high. Gate on CRITICAL/HIGH."
+                    )
 
             _step(job_id, len(user_stages) + 5, total, "rendering + applying manifests")
             repo.set_status(deployment, "deploying", image_ref=image_ref)
             db.commit()
             manifests = _render_manifests(project, deployment, image_ref)
             try:
-                kubectl_apply(manifests, project, on_line)
+                if _gitops_applies_to(project):
+                    _gitops_ship(db, job_id, project, deployment, manifests, image_ref, on_line)
+                else:
+                    kubectl_apply(manifests, project, on_line)
             finally:
                 # The rendered secret carries the tenant's values in the
                 # clear; it exists only long enough for kubectl to read it.
@@ -1376,8 +1470,22 @@ def undeploy_task(job_id: str, deployment_name: str, project_id: str, user_id: s
             return
         namespace = k8s_namespace(project.id)
         on_line = _log_lines(job_id)
-        for kind in ("deployment", "service", "ingress"):
-            kubectl(["delete", kind, deployment_name, f"--namespace={namespace}", "--ignore-not-found"], project, on_line=on_line)
+        if _gitops_applies_to(project):
+            # Delete the Application, not the workload. ArgoCD's
+            # resources-finalizer cascades to everything it created, and
+            # selfHeal would recreate anything deleted out from under it —
+            # so deleting the Deployment directly here would look like it
+            # worked and then quietly come back on the next sync.
+            from controlplane.renderers.argocd import application_name
+
+            kubectl(
+                ["delete", "application", application_name(project.id, deployment_name),
+                 "--namespace=argocd", "--ignore-not-found"],
+                project, on_line=on_line,
+            )
+        else:
+            for kind in ("deployment", "service", "ingress"):
+                kubectl(["delete", kind, deployment_name, f"--namespace={namespace}", "--ignore-not-found"], project, on_line=on_line)
         _mark_job(db, uuid.UUID(job_id), "succeeded")
     except Exception as exc:  # noqa: BLE001
         _fail(db, uuid.UUID(job_id), str(exc))
@@ -1501,6 +1609,214 @@ def kubectl(args: list[str], project: Project | None, on_line=None) -> SandboxRe
                 on_line=on_line,
             )
         )
+
+
+def _tekton_applies_to(project: Project) -> bool:
+    """Whether this project's builds run as Tekton PipelineRuns.
+
+    Namespace mode only. A VM-mode project has its own cluster with no Tekton
+    installed in it, so a PipelineRun there is an object nothing reconciles —
+    the deploy would hang on a run that never starts.
+    """
+    if not settings.tekton_enabled:
+        return False
+    mode = project.infra_spec.get("mode") if isinstance(project.infra_spec, dict) else None
+    return mode == "namespace"
+
+
+def _tekton_kubectl(project: Project):
+    """A kubectl caller for Tekton, routed through the sandbox like every other
+    command the worker runs."""
+    def call(args: list[str]) -> str:
+        result = kubectl(args, project)
+        _check(result)
+        return result.output
+
+    return TektonKubectl(call=call)
+
+
+def _tekton_build_and_scan(
+    db: Session,
+    job_id: str,
+    project: Project,
+    deployment: Deployment,
+    repo: DeploymentRepository,
+    image_ref: str,
+    on_line=None,
+    stages: list | None = None,
+    dockerfile: str = "",
+    total: int = 7,
+) -> None:
+    """Steps 1-4 as one PipelineRun, with job_steps rows kept in step.
+
+    The gate is *not* re-implemented here. It lives in the scan Task, which
+    fails closed inside the cluster; this function only reads the outcome. A
+    gate evaluated on the client side of a poll loop is a gate that a dropped
+    connection switches off.
+    """
+    namespace = k8s_namespace(project.id)
+    caller = _tekton_kubectl(project)
+
+    stages = stages or []
+    run = render_pipelinerun(
+        project.id,
+        deployment.id,
+        deployment.repo_url,
+        deployment.branch or "main",
+        image_ref,
+        # The tenant's own ServiceAccount, created with the namespace. The
+        # build gets the tenant's permissions, never the control plane's.
+        service_account=f"{namespace}-sa",
+        timeout=settings.tekton_timeout,
+        stages=stages,
+        dockerfile=dockerfile,
+    )
+    declared = pipeline_task_names(stages)
+    index_of = tekton_step_indices(stages)
+    labels = {stage_task_name(offset, stage.name): stage.name for offset, stage in enumerate(stages, start=1)}
+    name = tekton_start(caller, run)
+    _append_log(job_id, f"Tekton PipelineRun {name} started in {namespace}")
+
+    repo.set_status(deployment, "building")
+    db.commit()
+
+    seen: dict[str, str] = {}
+
+    def report(snapshot) -> None:
+        # One row per pipeline task, updated as it changes. Writing on every
+        # poll instead would rewrite three rows every five seconds for the
+        # life of the build.
+        #
+        # Numbered against the built-in seven, not 1..3: the graph unions
+        # these rows with the deploy template, so numbering them sequentially
+        # would put "scan" at index 3 where the template says "push" and
+        # leave a phantom fourth box the tenant never ran.
+        for step in snapshot.steps:
+            index = index_of.get(step.name)
+            if index is None or seen.get(step.name) == step.status:
+                continue
+            seen[step.name] = step.status
+            if step.status not in ("running", "succeeded", "failed", "cancelled"):
+                continue
+            # The tenant's own wording for their stages, not the sanitised
+            # Tekton object name they had to be given.
+            _step(job_id, index, total, labels.get(step.name, step.name))
+            # kaniko builds and pushes in one step, so a succeeded build means
+            # the image is in the registry. Recording the push step explicitly
+            # keeps the seven-step contract honest instead of leaving a gap the
+            # graph would fill from the template with a status it invented.
+            if step.name == "build" and step.status == "succeeded":
+                _step(job_id, tekton_push_index(stages), total, "pushing image to registry")
+
+    result = tekton_wait(caller, namespace, name, on_state=report, declared=declared)
+
+    if result.status == "cancelled":
+        raise RuntimeError(f"PipelineRun {name} was cancelled.")
+    if result.status != "succeeded":
+        # The scan task's message is the one that explains a blocked image,
+        # and it is what the tenant needs to read. Falling back to the
+        # PipelineRun's own message keeps a build failure legible too.
+        failed = next((step for step in result.steps if step.status == "failed"), None)
+        detail = (failed.error_message if failed and failed.error_message else result.message) or ""
+        if failed is not None and failed.name == "scan":
+            repo.set_status(deployment, "blocked", image_ref=image_ref)
+            db.commit()
+        where = labels.get(failed.name, failed.name) if failed else "unknown"
+        raise RuntimeError(f"Tekton pipeline failed at {where}: {detail[-400:]}")
+
+    _append_log(job_id, f"Tekton PipelineRun {name} succeeded — image built, pushed and scanned")
+
+
+def _gitops_applies_to(project: Project) -> bool:
+    """Whether this project's workloads are reconciled by ArgoCD.
+
+    Namespace mode only, and only when GitOps is switched on. A VM-mode
+    project runs on its own cluster, which has no ArgoCD in it — shipping
+    an Application there would create an object nothing ever reads, and the
+    workload would simply never appear. Direct apply stays correct there.
+    """
+    if not settings.gitops_enabled:
+        return False
+    mode = project.infra_spec.get("mode") if isinstance(project.infra_spec, dict) else None
+    return mode == "namespace"
+
+
+def _write_yaml(directory: Path, name: str, document: dict) -> Path:
+    path = directory / name
+    path.write_text(yaml.safe_dump(document, sort_keys=False))
+    return path
+
+
+def _gitops_ship(
+    db: Session,
+    job_id: str,
+    project: Project,
+    deployment: Deployment,
+    manifests: list[Path],
+    image_ref: str,
+    on_line=None,
+) -> None:
+    """Commit the rendered manifests and let ArgoCD roll them out.
+
+    Order matters. The AppProject is applied before the Application, because
+    an Application naming a project that does not exist yet is rejected
+    outright and never retried into existence. The manifests are pushed before
+    the Application, so the first sync finds something to sync rather than
+    failing on a missing path and backing off.
+    """
+    from controlplane.renderers.argocd import render_app_project, render_application
+    from controlplane.runners.gitops import publish_manifests
+
+    namespace = k8s_namespace(project.id)
+    # The same sanitised name the workload objects are rendered under, not the
+    # raw service_name: an underscore is legal in a service name and illegal in
+    # a Kubernetes object name, and undeploy looks the Application up by this
+    # spelling. Two spellings here would orphan the Application on delete.
+    service = _deployment_name(deployment)
+
+    # The Secret is applied directly and deliberately never committed — see
+    # publish_manifests. It also has to land before the workload, or the pods
+    # start, fail to mount it, and CrashLoop until the sync happens to retry.
+    secrets = [path for path in manifests if path.name == "secret.yaml"]
+    if secrets:
+        kubectl_apply(secrets, project, on_line)
+
+    _append_log(job_id, f"publishing manifests for {service} to the platform manifest repository")
+    sha = publish_manifests(
+        project.id,
+        service,
+        manifests,
+        message=f"deploy {namespace}/{service} at {image_ref}",
+        on_line=on_line,
+    )
+    _append_log(job_id, f"manifests committed as {sha[:12]}")
+
+    # Every project the team owns, so the AppProject whitelist covers the
+    # team's other namespaces too and does not shrink each time a different
+    # project deploys — a whitelist rebuilt from one project would revoke the
+    # destinations of every Application the team already has running.
+    owned = db.scalars(select(Project.id).where(Project.team_id == project.team_id)).all()
+
+    staging = Path(tempfile.mkdtemp(prefix="ctl-argocd-"))
+    try:
+        objects = [
+            # The ArgoCD-facing address, not the worker's: the sourceRepos
+            # whitelist is matched against what the Application actually asks
+            # for, so a mismatch here rejects every sync with "not permitted
+            # in project".
+            _write_yaml(staging, "appproject.yaml", render_app_project(
+                project.team_id, list(owned), settings.gitops_repo_url_for_argocd,
+            )),
+            _write_yaml(staging, "application.yaml", render_application(
+                project.id, project.team_id, service,
+                settings.gitops_repo_url_for_argocd, settings.gitops_branch,
+            )),
+        ]
+        kubectl_apply(objects, project, on_line)
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+
+    _append_log(job_id, f"ArgoCD Application {namespace}-{service} synced from {settings.gitops_branch}")
 
 
 def kubectl_apply(manifest_paths: list[Path], project: Project, on_line=None) -> None:

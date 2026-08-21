@@ -1,82 +1,115 @@
-# Project Rules for Pipeline Graph Implementation
+# CLAUDE.md
 
-## Context
-This project adds a pipeline graph visualization to the controlplane platform:
-- Tenant deployment graph: 7 steps (clone→build→push→scan→render→rollout→URL) from `job_steps` table
-- Platform CI graph: 13 GitHub Actions jobs from `parse_ci()` + `gh run view`
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-One shared renderer (`pipeline-graph.js`) consumes a normalized contract from two producers.
+`README.md` is the authoritative description of what the platform does, its API surface, config
+variables and operational scripts. Read it for domain questions. This file covers what the README
+does not: commands, and the invariants that are easy to break without noticing.
 
----
+## Commands
 
-## Key Files to Modify
+```bash
+# Full default suite (no cluster, no Docker required) — this is the gate
+pytest controlplane/tests tests/
 
-| File | Purpose |
-|------|---------|
-| `controlplane/models/job_step.py` | New model |
-| `controlplane/migrations/versions/0009_job_steps.py` | Alembic migration (down_revision="0008") |
-| `controlplane/workers/tasks.py` | `_step()` helper, 13 marker replacements, `_mark_job` closes step |
-| `controlplane/api/schemas.py` | `GraphNode`, `GraphEdge`, `PipelineGraphOut` |
-| `controlplane/api/routers/jobs.py` | Tenant graph endpoint |
-| `controlplane/api/routers/platform.py` | CI graph endpoint (admin) |
-| `controlplane/platform_ops.py` | `ci_run_graph(run_id)` |
-| `controlplane/web/static/pipeline-graph.js` | Shared renderer (layout, svg, render) |
-| `controlplane/web/static/shell.css` | `.pipe-*` styles |
-| `controlplane/web/static/index.html` | Script load order |
-| `controlplane/web/static/app.js` | `renderJob` integration |
-| `controlplane/web/static/platform/app.js` | `renderCiTab` integration |
+# One file / one test
+pytest controlplane/tests/test_tasks.py -q
+pytest controlplane/tests/test_tasks.py::test_name -x -q
 
----
+# Integration tests spin real PostgreSQL via testcontainers (needs Docker)
+pytest controlplane/tests -q -m integration
+pytest controlplane/tests tests/ -m ""      # everything, including e2e/network
 
-## Constraints & Conventions
+# Lint (config in controlplane/pyproject.toml: ruff, line-length 110, py312)
+ruff check controlplane/ app/ tests/
 
-1. **Alembic head is 0008** — migration must be 0009 with `down_revision = "0008"`
+# Migrations — alembic.ini resolves script_location relative to itself
+(cd controlplane && alembic upgrade head)
+(cd controlplane && alembic downgrade -1)
 
-2. **SessionLocal has `expire_on_commit=False`** — `_step()` must open its own `SessionLocal()` and commit immediately (like `_append_log`). Never call inside another transaction.
-
-3. **Status vocabulary: exactly 6 values** — queued, running, succeeded, failed, cancelled, skipped. Map all inputs:
-   - Job.status → normalized (interrupted → failed)
-   - GitHub status/conclusion → normalized (failure/timed_out/startup_failure → failed)
-
-4. **CSP: script-src 'self'** — no inline handlers in HTML. Bind with `el.onclick = fn` (control-plane) or `data-act` dispatch (platform).
-
-5. **Test UI parsing** — `tests/test_ui.py:53-60` regexes `platform/app.js` for `state.configTab`. Do not rename tabs or restructure that literal.
-
-6. **Log format unchanged** — `_step()` still calls `_append_log(job_id, "[n/N] name")` so `parseStages`/`stageTracker` keep working as fallback.
-
-7. **No bundler** — static files are ES modules/IIFEs loaded via `<script>`. `pipeline-graph.js` must be an IIFE exporting `window.PipelineGraph = { layout, svg, render }`.
-
-8. **CSS scoping** — `shell.css` is the only global stylesheet. Prefix all new classes `.pipe-`. Do not touch leaked block in `style.css:279-333`.
-
-9. **Layout algorithm** — Kahn topological → layer = longest path from roots. Within layer: barycentre (mean predecessor row), tie-break by id. Cycle guard: leftover nodes after Kahn → final layer with `detail: "dependency cycle"`. Fixed box: w=180, h=56, gapX=72, gapY=20.
-
-10. **Matrix collapse** — one node per workflow job. GitHub matrix legs named `build (users-service)` → collapse by prefix match. Roll: any failure→failed, else any in_progress→running, else all success→succeeded.
-
-11. **Degraded CI path** — when `gh` unreachable: return `reachable: false`, `error: "..."`, but still return nodes+edges with all statuses `skipped`. Console shows `offlineCard(...)`.
-
----
-
-## Verification Checklist
-
-- [ ] `cd controlplane && alembic upgrade head` creates `job_steps` table
-- [ ] `alembic downgrade -1 && alembic upgrade head` clean
-- [ ] `pytest controlplane/tests/test_pipeline_graph.py -q` passes (new unit tests)
-- [ ] `pytest controlplane/tests/test_tasks.py -q` passes (job_steps assertions)
-- [ ] `pytest controlplane/tests/test_deployment_jobs.py -q` passes (endpoint tests)
-- [ ] `pytest controlplane/tests tests/ -q` full suite green (307 baseline)
-- [ ] E2E: deploy service → job page shows live graph; CI tab shows DAG; offline CI shows greyed shape
-
----
-
-## Agent Communication
-
-Agents write to `.worktrees/.scratchpad/{owner}.md`:
-```markdown
-# {OWNER} Status
-## Current Task    (ID + description)
-## Progress        ([x]/[ ] steps)
-## Needs from others
-## Completed artifacts (path — description)
+# Run locally (see README "Getting started" for the supporting services)
+uvicorn controlplane.api.main:app --port 8000
+celery -A controlplane.workers.celery_app worker --loglevel=info --concurrency=2
 ```
 
-Read sibling scratchpads + `blockers.md` before starting.
+`addopts` deselects `integration`, `e2e` and `network` markers by default, so a green
+`pytest` run has not touched a database container. CI runs `pytest -q tests/` and
+`pytest -q controlplane/tests -m "not integration"` as two separate jobs — a change that
+only passes when both suites run together will still fail CI.
+
+## Architecture: the load-bearing parts
+
+**Tenancy lives in `controlplane/repositories/`, not in routers.** Every repository
+constructor takes an explicit `Scope` (`api/deps.py:get_scope`); there is no default scope
+anywhere, so a forgotten filter is a type error rather than a leak. Inaccessible resources
+raise `NotFoundError` → **404, never 403** — a 403 would confirm another team's resource
+exists. `ForbiddenError` → 403 is only for the case where the router already proved
+visibility. When adding an endpoint, go through a repository; do not query models directly.
+
+**Namespaces derive from the project UUID**, never the project name (`core/validation.py`).
+Two teams may both name a project `staging`.
+
+**Three layers of the request path:** routers (`api/routers/`) → repositories (tenancy) →
+models. RBAC is `api/rbac.py` + the action→role table in `core/roles.py`; the operator
+console is gated on the *global* `User.role`, separate from per-team roles.
+
+**Every external command goes through `runners/sandbox.py`.** Nothing shells out directly.
+Secrets go into a 0600 env-file, never argv (`docker run -e K=V` is world-readable via
+`/proc`). The Docker socket is mounted only for build and push.
+
+**Workers write their own sessions.** `SessionLocal` is `expire_on_commit=False`. Helpers
+that stream progress (`_append_log`, `_step` in `workers/tasks.py`) open their own
+`SessionLocal()` and commit immediately — they must never be called inside another
+transaction, or the job log stops updating until the outer commit.
+`db.configure_database()` reconfigures the existing sessionmaker in place because
+`workers/tasks.py` bound `SessionLocal` at import time.
+
+**The scan gate fails closed.** An unreadable or failed Trivy report blocks the rollout
+exactly like a CRITICAL finding. There is no bypass flag, and `.platform.yml` cannot add one.
+
+**Two opt-in paths change the deploy pipeline.** Both default off, both namespace-mode
+only (a VM-mode project's own cluster has neither ArgoCD nor Tekton in it):
+
+- `GITOPS_ENABLED` — the worker commits rendered manifests to the platform manifest repo
+  and creates an ArgoCD Application instead of `kubectl apply`. Isolation is the
+  Application's derived `destination.namespace` **plus** the team's AppProject whitelist;
+  the AppProject is the server-side half and is not optional. Rendered Secrets are never
+  committed. `renderers/argocd.py`, `runners/gitops.py`, `k8s/gitops/`.
+- `TEKTON_ENABLED` — clone/build/scan become Pods in the tenant's namespace, built with
+  kaniko. Loses `.platform.yml` stages and Dockerfile autogeneration, both of which read
+  a host checkout that this path never produces. `runners/tekton.py`,
+  `core/tekton_status.py`, `k8s/tekton/`.
+
+`GITOPS_REPO_URL` vs `GITOPS_REPO_URL_INTERNAL` is the same host/in-cluster address split
+as `REGISTRY` vs `REGISTRY_INTERNAL` — setting them equal breaks one side, and the
+failure reads as "repository not found".
+
+## Conventions that tests enforce
+
+- **Job/step status vocabulary is exactly six values**: `queued, running, succeeded, failed,
+  cancelled, skipped`. Anything external (GitHub conclusions, `interrupted` jobs) is
+  normalized into that set before it reaches a schema.
+- **CSP is `script-src 'self'`** — no inline handlers in HTML. Bind via `el.onclick = fn`
+  (control-plane console) or `data-act` dispatch (platform console).
+- **No bundler.** `controlplane/web/static/*.js` are plain scripts loaded in order by
+  `index.html`; shared modules are IIFEs hanging one object off `window`.
+- **`shell.css` is the global stylesheet**; `style.css:279-333` contains a known leaked block
+  — leave it alone. Prefix pipeline-graph classes `.pipe-`.
+- **`tests/test_ui.py` regexes `web/static/platform/app.js`** for literals such as
+  `state.configTab`. Renaming console tabs or restructuring those literals breaks it.
+- **Job log format `[n/N] name`** is parsed by the console (`parseStages`/`stageTracker`) as a
+  fallback when the graph endpoint is unavailable. `_step()` must keep emitting it.
+- **Tekton status is a condition, not a field.** `Succeeded` carries the string "True" /
+  "False" / "Unknown"; "Unknown" means both running and not-yet-started, and a
+  cancellation arrives as "False" exactly like a failure. `core/tekton_status.py` owns
+  that mapping — do not re-derive it at a call site.
+- **Task names in `k8s/tekton/pipeline.yaml` must match `TEKTON_PIPELINE_TASKS`** in
+  `runners/tekton.py`; a test asserts it, because a rename on one side draws a graph with
+  a permanently-pending box.
+- **Migrations are sequential**: new revision = `NNNN_name.py` with `down_revision` pointing
+  at the current head (currently `0010`). Both directions must run clean.
+
+## Agent scratchpads
+
+Parallel agents write status to `.worktrees/.scratchpad/{owner}.md` and read sibling
+scratchpads plus `blockers.md` before starting.

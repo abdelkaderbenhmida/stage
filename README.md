@@ -257,7 +257,7 @@ Decisions that are easy to get wrong, and how they are handled here:
 | --- | --- | --- |
 | Metrics | Prometheus | scrapes kubelet/cAdvisor via a ServiceMonitor maintained by the Prometheus Operator, so it works on kind, k3s or kubeadm without hardcoded node IPs. `PROMETHEUS_URL` must be reachable *from the control plane*, which on a local cluster means a port-forward |
 | Dashboards | Grafana | platform dashboards; anonymous access disabled |
-| Logs | Loki (and an ELK stack for the platform's own services) | per-namespace queries built server-side. **`k8s/monitoring/loki/` currently ships only a promtail config — there is no Loki deployment, so the per-project log view has no backend to talk to** |
+| Logs | Loki, plus ELK with a role, user and Kibana space per team | per-namespace queries built server-side. Loki runs single-binary with filesystem storage in `monitoring`; promtail ships from `logging`, which is exempt from the restricted PodSecurity profile a log collector cannot satisfy |
 | Alerts | AlertManager | SLO rules, with history browsable from the operator console |
 | Per-project view | the control plane itself | four panels — CPU cores, memory, running pods, container restarts — scoped to the project namespace |
 
@@ -374,6 +374,8 @@ app/                       the platform's own demo microservices
 
 k8s/
   apps/base, apps/chart    the demo services' manifests and Helm chart
+  gitops/                  the manifest repository ArgoCD syncs tenant workloads from
+  tekton/                  opt-in: tenant builds as Pods in the tenant's namespace
   monitoring/              prometheus, grafana, loki, elk, alertmanager,
                            kube-state-metrics, kubelet
   vault/                   Vault deployment and Kubernetes auth
@@ -484,6 +486,47 @@ There is no setting to skip the vulnerability gate — it applies to every build
 this file says. A malformed `.platform.yml` fails the deployment with the reason rather
 than being ignored, since ignoring it would run a pipeline you did not ask for.
 
+### GitOps for tenant workloads (opt-in)
+
+With `GITOPS_ENABLED=true`, a deploy no longer ends at `kubectl apply`. The worker
+commits the manifests it rendered to the platform's own manifest repository
+(`k8s/gitops/`) and creates an ArgoCD **Application** that syncs them, so drift is
+reconciled continuously instead of accumulating unnoticed.
+
+The isolation rests on two things, because either alone is bypassable:
+
+- every Application's `destination.namespace` is derived from the project UUID, and
+- the team's **AppProject** whitelists only the namespaces that team owns, so ArgoCD
+  itself refuses a destination outside them — the check that counts, since anyone who
+  can edit an Application can edit its destination.
+
+Rendered Secrets are the one manifest GitOps does not manage: a git history keeps them
+forever and survives every later rotation, so they are applied directly instead.
+
+Namespace-mode projects only. A VM-mode project runs on its own cluster with no ArgoCD
+in it, and the direct apply stays correct there.
+
+### Tekton builds (opt-in)
+
+With `TEKTON_ENABLED=true`, clone, build and scan stop running in a sandbox container on
+the control-plane host and become Pods in the **tenant's own namespace** — so they
+inherit the ResourceQuota, default-deny NetworkPolicy and ServiceAccount that already
+bound the tenant's apps. Builds also stop competing with the API for host CPU.
+
+`docker build` cannot run in a Pod without the node's docker socket, which is root on
+the node, so the build step is **kaniko** instead. The vulnerability gate moves into the
+scan Task and still fails closed.
+
+A repository's own `.platform.yml` stages become real Tekton tasks, running between the
+clone and the build exactly as they do on the sandbox path — so a failing test still
+stops the pipeline before it spends a build slot. Dockerfile autogeneration works too:
+the platform reads the checkout, generates one, and passes it to the pipeline as a
+parameter, because under Tekton the checkout the build sees only exists in the cluster.
+
+The pipeline is therefore built per run rather than referenced, since the tenant's stages
+are only knowable after reading their repository. See
+[`k8s/tekton/README.md`](k8s/tekton/README.md).
+
 ---
 
 ## Configuration reference
@@ -520,6 +563,15 @@ Everything is read from the environment; see `controlplane/core/config.py`.
 | `LIBVIRT_URI`, `STORAGE_POOL`, `NETWORK_INTERFACE`, `DNS_SERVERS` | — | VM mode |
 | `TF_STATE_URL`, `TF_STATE_USERNAME`, `TF_STATE_PASSWORD`, `TF_STATE_INSECURE` | — | remote Terraform state |
 | `COST_CURRENCY` | — | currency shown in team cost estimates |
+| `GITOPS_ENABLED` | `false` | reconcile tenant workloads with ArgoCD instead of applying them once |
+| `GITOPS_REPO_URL` | — | the platform's manifest repository, as the **worker** reaches it (NodePort, authenticated HTTP) |
+| `GITOPS_REPO_URL_INTERNAL` | falls back to `GITOPS_REPO_URL` | the same repository as **ArgoCD** reaches it (ClusterIP DNS) |
+| `GITOPS_BRANCH` | `main` | branch the Applications track |
+| `GITOPS_USERNAME`, `GITOPS_PASSWORD` | `controlplane` / — | credentials, if the manifest repository is authenticated |
+| `TEKTON_ENABLED` | `false` | run tenant builds as Tekton PipelineRuns in the tenant's namespace |
+| `TEKTON_TIMEOUT` | `30m` | pipeline wall-clock ceiling (replaces `SANDBOX_*`, which are docker flags) |
+| `ELASTICSEARCH_URL`, `KIBANA_URL` | — | per-tenant log access; each team gets a role, user and Kibana space |
+| `ELASTICSEARCH_USER`, `ELASTICSEARCH_PASSWORD` | `elastic` / — | administrator credential used to provision those |
 
 Secrets (`JWT_SECRET`, `REGISTRY_PASSWORD`, `TF_STATE_PASSWORD`,
 `OIDC_CLIENT_SECRET`) may be resolved from Vault instead of the environment; the
@@ -598,6 +650,10 @@ Path filtering keeps a one-service change from rebuilding everything.
 Stated plainly: this is a working platform with real isolation on a shared cluster, not
 a hosted product.
 
+- **The manifest repository ships with a placeholder password.** `k8s/gitops/` runs
+  Gitea with authentication required, but the committed `git-server-admin` Secret holds
+  `CHANGE-ME-BEFORE-USE`. Replace it before the NodePort is reachable by anything you
+  do not trust — the install instructions in that file generate one.
 - **Soft multi-tenancy.** Tenants share one cluster, separated by namespaces, quotas
   and network policies. Genuinely untrusted tenants want a cluster each; VM mode is the
   path there, and the per-project kubeconfig plumbing is incomplete.
@@ -608,9 +664,16 @@ a hosted product.
 - **`local-vault.sh` runs Vault in dev mode**: in-memory, auto-unsealed, a known root
   token. Restarting it discards every stored credential.
   `k8s/vault/manifests.yaml` is the real deployment.
-- **Logs have no backend.** `k8s/monitoring/loki/` contains a promtail config and
-  no Loki deployment, so the per-project log view returns nothing on a stock install.
-  The ELK stack covers the platform's own services only.
+- **Loki keeps logs in an `emptyDir`.** The deployment is single-binary with
+  filesystem storage and no PersistentVolumeClaim, so a pod restart discards every
+  stored line and retention is capped at 168 h. Fine for a lab; a real deployment
+  wants object storage and the read/write/backend split.
+- **Kibana tenancy is by index, not by document.** Each team gets an Elasticsearch
+  role, user and Kibana space, and Logstash writes one index per tenant namespace
+  (`tenant-<namespace>-*`). That is what the basic licence can enforce; filtering rows
+  inside a shared index needs document-level security, which is Platinum. A log line
+  whose namespace field is missing or malformed is routed to the platform index, where
+  only operators can read it, rather than being allowed to invent an index name.
 - **Applications cannot yet be configured.** Environment variables and per-deployment
   secrets are modelled and validated but not yet rendered into the pod spec, so a
   service that needs configuration cannot be deployed as-is.
