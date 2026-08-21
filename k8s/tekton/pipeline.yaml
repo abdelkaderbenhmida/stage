@@ -99,7 +99,10 @@ spec:
         # Reproducible layers, and no timestamp churn that would make every
         # rebuild of identical source push a different digest.
         - --reproducible
-      resources:
+      # `computeResources`, not `resources`: the latter is the v1beta1
+      # spelling and the v1 webhook rejects the whole file with
+      # "unknown field resources", naming no task.
+      computeResources:
         requests:
           cpu: 250m
           memory: 512Mi
