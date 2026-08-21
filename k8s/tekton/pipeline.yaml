@@ -1,0 +1,224 @@
+# The platform's tenant build pipeline, applied once per tenant namespace.
+#
+# Namespaced on purpose. A cluster-scoped ClusterTask would be referenceable by
+# every tenant, and a tenant able to reference a shared object is a tenant able
+# to be affected by another's change to it. One copy per namespace costs a few
+# kilobytes and keeps the blast radius at one project.
+#
+# Task names here are what the tenant sees as step labels in the pipeline
+# graph. They are asserted against TEKTON_PIPELINE_TASKS in
+# controlplane/runners/tekton.py — rename in both places or the test fails.
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: clone
+  labels:
+    app.kubernetes.io/part-of: devops-platform
+spec:
+  params:
+    - name: repo-url
+      type: string
+    - name: revision
+      type: string
+    - name: dockerfile
+      type: string
+      default: ""
+  workspaces:
+    - name: source
+  steps:
+    - name: clone
+      image: alpine/git:v2.45.2
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: ["ALL"]
+      env:
+        # Without this git blocks on stdin asking for a username whenever the
+        # repository is private or misspelt, and the Pod sits there until the
+        # pipeline timeout — minutes spent on a failure knowable immediately.
+        - name: GIT_TERMINAL_PROMPT
+          value: "0"
+      script: |
+        #!/bin/sh
+        set -eu
+        git clone --depth 1 --branch "$(params.revision)" "$(params.repo-url)" "$(workspaces.source.path)/repo"
+        # Drop the git metadata before anything builds from this directory: it
+        # carries the remote configuration and, for an authenticated clone, is
+        # where a credential would live. A tenant Dockerfile doing `COPY . .`
+        # would otherwise bake it into an image and push it to a registry.
+        rm -rf "$(workspaces.source.path)/repo/.git"
+
+        # The platform generates a Dockerfile for a plain FastAPI app that has
+        # none. Under Tekton the checkout only exists in the cluster, so it is
+        # passed in as a parameter and written here — a file written on the
+        # control-plane host would never reach kaniko.
+        #
+        # Never overwrite: a repository that ships its own Dockerfile must
+        # build from that one, and the platform's guess would silently replace
+        # it with something that builds a different image.
+        if [ -n "$(params.dockerfile)" ] && [ ! -f "$(workspaces.source.path)/repo/Dockerfile" ]; then
+          printf '%s' "$(params.dockerfile)" > "$(workspaces.source.path)/repo/Dockerfile"
+          echo "No Dockerfile in the repository — wrote the generated one."
+        fi
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: build
+  labels:
+    app.kubernetes.io/part-of: devops-platform
+spec:
+  params:
+    - name: image
+      type: string
+    - name: registry-insecure
+      type: string
+      default: "false"
+  workspaces:
+    - name: source
+    - name: docker-credentials
+  steps:
+    - name: build-and-push
+      # kaniko, not `docker build`: building with the Docker daemon inside a
+      # Pod means mounting the node's docker socket, which is root on the node.
+      # Handing that to a tenant build would undo every namespace control this
+      # pipeline exists to inherit.
+      image: gcr.io/kaniko-project/executor:v1.23.2
+      env:
+        - name: DOCKER_CONFIG
+          value: $(workspaces.docker-credentials.path)
+      args:
+        - --dockerfile=$(workspaces.source.path)/repo/Dockerfile
+        - --context=$(workspaces.source.path)/repo
+        - --destination=$(params.image)
+        - --insecure=$(params.registry-insecure)
+        - --insecure-pull=$(params.registry-insecure)
+        # Reproducible layers, and no timestamp churn that would make every
+        # rebuild of identical source push a different digest.
+        - --reproducible
+      resources:
+        requests:
+          cpu: 250m
+          memory: 512Mi
+        limits:
+          cpu: "2"
+          memory: 2Gi
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: scan
+  labels:
+    app.kubernetes.io/part-of: devops-platform
+spec:
+  params:
+    - name: image
+      type: string
+    - name: registry-insecure
+      type: string
+      default: "false"
+  workspaces:
+    - name: source
+  results:
+    - name: blocking
+      description: Count of CRITICAL and HIGH findings.
+  steps:
+    - name: trivy
+      image: aquasec/trivy:0.56.2
+      script: |
+        #!/bin/sh
+        # NOTE: no `set -e`. A non-zero trivy exit must reach the explicit
+        # check below, which fails closed; letting the shell abort here would
+        # end the step with no result written and the gate never evaluated.
+        INSECURE=""
+        if [ "$(params.registry-insecure)" = "true" ]; then INSECURE="--insecure"; fi
+
+        trivy image $INSECURE --quiet --format json \
+          --severity CRITICAL,HIGH "$(params.image)" > /tmp/report.json
+        RC=$?
+
+        # The gate fails closed, exactly as controlplane/workers/tasks.py does.
+        # An image whose vulnerabilities could not be read is not an image
+        # known to be safe, and an empty parse is indistinguishable from a
+        # clean one — which is how an unscanned image once shipped as passing.
+        if [ "$RC" -ne 0 ] || [ ! -s /tmp/report.json ]; then
+          echo "Image could not be scanned, so it was not deployed (trivy exited $RC)."
+          exit 1
+        fi
+
+        COUNT=$(grep -o '"Severity":"\(CRITICAL\|HIGH\)"' /tmp/report.json | wc -l)
+        printf '%s' "$COUNT" > "$(results.blocking.path)"
+        if [ "$COUNT" -gt 0 ]; then
+          echo "Image blocked: $COUNT CRITICAL/HIGH findings."
+          exit 1
+        fi
+        echo "No CRITICAL or HIGH findings."
+---
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: tenant-deploy
+  labels:
+    app.kubernetes.io/part-of: devops-platform
+spec:
+  params:
+    - name: repo-url
+      type: string
+    - name: revision
+      type: string
+    - name: image
+      type: string
+    - name: registry-insecure
+      type: string
+      default: "false"
+  workspaces:
+    - name: source
+    - name: docker-credentials
+  results:
+    - name: blocking
+      value: $(tasks.scan.results.blocking)
+  tasks:
+    - name: clone
+      taskRef:
+        name: clone
+      params:
+        - name: repo-url
+          value: $(params.repo-url)
+        - name: revision
+          value: $(params.revision)
+      workspaces:
+        - name: source
+          workspace: source
+    - name: build
+      taskRef:
+        name: build
+      runAfter: ["clone"]
+      params:
+        - name: image
+          value: $(params.image)
+        - name: registry-insecure
+          value: $(params.registry-insecure)
+      workspaces:
+        - name: source
+          workspace: source
+        - name: docker-credentials
+          workspace: docker-credentials
+    # There is no separate push task: kaniko builds and pushes in one step, so
+    # the image exists in the registry by the time the scan runs. That is what
+    # makes scanning the *pushed* image possible rather than a local one — the
+    # gate must judge the artifact that would actually be deployed.
+    - name: scan
+      taskRef:
+        name: scan
+      runAfter: ["build"]
+      params:
+        - name: image
+          value: $(params.image)
+        - name: registry-insecure
+          value: $(params.registry-insecure)
+      workspaces:
+        - name: source
+          workspace: source
