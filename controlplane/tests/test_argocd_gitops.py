@@ -260,10 +260,10 @@ def test_git_declares_the_checkout_as_a_safe_directory(tmp_path, monkeypatch):
     "detected dubious ownership" — after the clone has already succeeded."""
     from controlplane.runners import gitops
 
-    envs: list[dict] = []
+    envs: list[tuple[list[str], dict]] = []
 
     def fake_sandbox(run):
-        envs.append(run.env)
+        envs.append((run.command, run.env))
         return gitops.SandboxResult(exit_code=0, output="sha", duration_seconds=0.0)
 
     monkeypatch.setattr(gitops, "run_sandbox", fake_sandbox)
@@ -272,7 +272,37 @@ def test_git_declares_the_checkout_as_a_safe_directory(tmp_path, monkeypatch):
         config=gitops.GitOpsConfig(repo_url="http://h/r.git", branch="main", username="u", password="p"),
     )
 
-    # Every git call after the clone, not just one of them.
-    for env in envs[1:]:
+    # Every git call that operates inside the checkout, not just one of them.
+    inside = [env for command, env in envs if command[:2] == ["git", "-C"]]
+    assert inside
+    for env in inside:
         assert env["GIT_CONFIG_KEY_0"] == "safe.directory"
         assert env["GIT_CONFIG_VALUE_0"].endswith("/repo")
+
+
+def test_checkout_ownership_is_taken_back_before_staging(monkeypatch):
+    """The clone runs inside the sandbox, so every file it writes is owned by
+    the container's user. This process then rewrites the service's directory
+    and cannot — shutil.rmtree fails with "Permission denied" on a file it can
+    see but does not own."""
+    import os
+
+    from controlplane.runners import gitops
+
+    seen: list[list[str]] = []
+
+    def fake_sandbox(run):
+        seen.append(run.command)
+        return gitops.SandboxResult(exit_code=0, output="sha", duration_seconds=0.0)
+
+    monkeypatch.setattr(gitops, "run_sandbox", fake_sandbox)
+    gitops.publish_manifests(
+        uuid.uuid4(), "api", [], message="m",
+        config=gitops.GitOpsConfig(repo_url="http://h/r.git", branch="main", username="u", password="p"),
+    )
+
+    chown = seen[1]
+    assert chown[0] == "chown"
+    assert chown[2] == f"{os.getuid()}:{os.getgid()}"
+    # Straight after the clone, before anything is staged.
+    assert seen[0][:2] == ["git", "clone"]

@@ -15,6 +15,7 @@ to prompt on stdin and hang a build slot until the timeout.
 
 from __future__ import annotations
 
+import os
 import shutil
 import uuid
 from dataclasses import dataclass
@@ -132,6 +133,23 @@ def publish_manifests(
         )
         if clone.exit_code != 0:
             raise GitOpsError(f"could not clone the manifest repository: {clone.output[-400:]}")
+
+        # The clone ran inside the sandbox, so every file it wrote is owned by
+        # the container's user. This process then rewrites the service's
+        # directory and cannot: shutil.rmtree fails with "Permission denied"
+        # on a file it can see but does not own. Handing ownership back is
+        # what lets the manifests be staged from here.
+        chown = run_sandbox(
+            SandboxRun(
+                command=["chown", "-R", f"{os.getuid()}:{os.getgid()}", str(root / "repo")],
+                workspace=root,
+                writable_paths=["repo"],
+                network_enabled=False,
+                timeout_seconds=60,
+            )
+        )
+        if chown.exit_code != 0:
+            raise GitOpsError(f"could not take ownership of the checkout: {chown.output[-200:]}")
 
         target = root / "repo" / manifest_path(project_id, service_name)
         if target.exists():
