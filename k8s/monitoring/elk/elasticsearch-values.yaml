@@ -91,7 +91,13 @@ data:
     # the indexing buffer so RSS stays far below the container limit.
     node.store.allow_mmap: false
     indices.memory.index_buffer_size: 64mb
-    indices.breaker.total.limit: 40%
+    # 40% of a 512m heap is 205MB, and Kibana's own start-up — it installs
+    # index templates and alerting resources — pushes past that on an
+    # otherwise idle cluster. The breaker then rejects requests with
+    # "Data too large", Kibana never finishes installing, and its readiness
+    # probe returns 503 forever with the cause visible only in ES's log.
+    # 70% still trips well before the JVM is in trouble.
+    indices.breaker.total.limit: 70%
 ---
 # Secret `elasticsearch-credentials` (ELASTIC_PASSWORD + KIBANA_PASSWORD) is
 # NOT declared here — it is created out-of-band by
@@ -172,7 +178,7 @@ spec:
               protocol: TCP
           env:
             - name: ES_JAVA_OPTS
-              value: "-Xms512m -Xmx512m -XX:ReservedCodeCacheSize=64m -XX:MaxDirectMemorySize=256m -Dio.netty.leakDetectionLevel=disabled"
+              value: "-Xms1g -Xmx1g -XX:ReservedCodeCacheSize=64m -XX:MaxDirectMemorySize=256m -Dio.netty.leakDetectionLevel=disabled"
             - name: ELASTIC_PASSWORD
               valueFrom:
                 secretKeyRef:
@@ -186,10 +192,13 @@ spec:
           resources:
             requests:
               cpu: 200m
-              memory: 448Mi
+              memory: 1280Mi
             limits:
               cpu: "1"
-              memory: 1024Mi
+              # Must exceed the heap with room for the JVM's own off-heap use
+              # (direct buffers, metaspace, thread stacks). A 1g heap in a 1g
+              # container is an OOMKill waiting for the first real query.
+              memory: 2Gi
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: false  # ES writes to /usr/share/elasticsearch/data

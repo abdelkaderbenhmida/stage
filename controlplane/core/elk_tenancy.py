@@ -19,6 +19,7 @@ returned by the API — the platform uses the credential on the tenant's behalf.
 
 from __future__ import annotations
 
+import logging
 import secrets
 import uuid
 from dataclasses import dataclass
@@ -29,7 +30,12 @@ from controlplane.core.config import settings
 from controlplane.core.validation import k8s_namespace
 from controlplane.core.vault import get_secret_store
 
+logger = logging.getLogger("controlplane.elk")
+
 _TIMEOUT = 10.0
+# Kibana answers markedly slower than Elasticsearch, especially while it is
+# still installing its own index templates after a restart.
+_KIBANA_TIMEOUT = 30.0
 
 # Long enough that it is not worth attacking, short enough to fit any password
 # policy. Generated, never chosen: a per-tenant credential nobody types does
@@ -170,19 +176,14 @@ def provision_team(
     owns_client = client is None
     client = client or httpx.Client(timeout=_TIMEOUT)
     try:
-        if admin.kibana_url and _space_missing(client, admin, team_id):
-            _check(
-                client.post(
-                    f"{admin.kibana_url}/api/spaces/space",
-                    json=render_space(team_id, team_name),
-                    auth=admin.auth,
-                    # Kibana rejects unbranded API calls outright; this header
-                    # is its CSRF guard, not decoration.
-                    headers={"kbn-xsrf": "controlplane"},
-                ),
-                "creating the team's Kibana space",
-            )
-
+        # Elasticsearch first, and this order is load-bearing.
+        #
+        # The role is the access control; the Kibana space is a place to put a
+        # saved search. Doing the space first meant a slow Kibana — its spaces
+        # API is not fast on a small cluster — aborted the whole call before
+        # the role was updated, so a team that had just added a project
+        # silently kept the old role and could not see its own new logs. The
+        # cosmetic half must never be able to fail the functional half.
         _check(
             client.put(
                 f"{admin.elasticsearch_url}/_security/role/{role_name(team_id)}",
@@ -204,6 +205,9 @@ def provision_team(
             ),
             "creating the team's Elasticsearch user",
         )
+
+        if admin.kibana_url:
+            _ensure_space(client, admin, team_id, team_name)
     finally:
         if owns_client:
             client.close()
@@ -211,6 +215,37 @@ def provision_team(
     if not existing:
         store.set(str(team_id), VAULT_KEY, password)
     return password
+
+
+def _ensure_space(client: httpx.Client, admin: ElkAdmin, team_id: uuid.UUID, team_name: str) -> None:
+    """Create the team's Kibana space, and never fail the caller if it cannot.
+
+    By the time this runs the role and user exist, so the team can already read
+    its own logs through the platform. A missing space costs them a tidy
+    landing page in Kibana, which is not worth failing a provision over — and
+    Kibana is markedly slower to answer than Elasticsearch, so this is the call
+    most likely to time out.
+    """
+    try:
+        if not _space_missing(client, admin, team_id):
+            return
+        response = client.post(
+            f"{admin.kibana_url}/api/spaces/space",
+            json=render_space(team_id, team_name),
+            auth=admin.auth,
+            # Kibana rejects unbranded API calls outright; this header is its
+            # CSRF guard, not decoration.
+            headers={"kbn-xsrf": "controlplane"},
+            timeout=_KIBANA_TIMEOUT,
+        )
+        # 409 means another provision created it first, which is success.
+        if response.status_code >= 400 and response.status_code != 409:
+            logger.warning(
+                "could not create the Kibana space for team %s (HTTP %s)",
+                team_id, response.status_code,
+            )
+    except httpx.HTTPError as exc:
+        logger.warning("could not create the Kibana space for team %s: %s", team_id, exc)
 
 
 def _space_missing(client: httpx.Client, admin: ElkAdmin, team_id: uuid.UUID) -> bool:
@@ -223,5 +258,6 @@ def _space_missing(client: httpx.Client, admin: ElkAdmin, team_id: uuid.UUID) ->
         f"{admin.kibana_url}/api/spaces/space/{space_name(team_id)}",
         auth=admin.auth,
         headers={"kbn-xsrf": "controlplane"},
+        timeout=_KIBANA_TIMEOUT,
     )
     return response.status_code == 404

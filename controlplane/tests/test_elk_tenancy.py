@@ -123,6 +123,48 @@ def test_provision_does_not_rotate_an_existing_password(monkeypatch):
     assert first == second
 
 
+def test_a_broken_kibana_does_not_block_elasticsearch_access(monkeypatch):
+    """The role is the access control; the space is a place to put a saved
+    search. Doing the space first meant a slow Kibana aborted the call before
+    the role was updated, so a team that had just added a project silently kept
+    the old role and could not see its own new logs."""
+    store = {}
+    monkeypatch.setattr(elk_tenancy, "get_secret_store", lambda: _Store(store))
+    seen: list[str] = []
+
+    def handler(request):
+        url = str(request.url)
+        if "/api/spaces/" in url:
+            raise httpx.ReadTimeout("kibana is slow", request=request)
+        seen.append(url)
+        return httpx.Response(200, json={})
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        password = elk_tenancy.provision_team(
+            uuid.uuid4(), "T", [uuid.uuid4()], admin=_admin(), client=client
+        )
+
+    assert password
+    assert any("/_security/role/" in url for url in seen)
+    assert any("/_security/user/" in url for url in seen)
+
+
+def test_the_role_is_written_before_kibana_is_touched(monkeypatch):
+    store = {}
+    monkeypatch.setattr(elk_tenancy, "get_secret_store", lambda: _Store(store))
+    order: list[str] = []
+
+    def handler(request):
+        url = str(request.url)
+        order.append("kibana" if "/api/spaces/" in url else "elasticsearch")
+        return httpx.Response(404 if "/api/spaces/space/" in url else 200, json={})
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        elk_tenancy.provision_team(uuid.uuid4(), "T", [uuid.uuid4()], admin=_admin(), client=client)
+
+    assert order.index("elasticsearch") < order.index("kibana")
+
+
 def test_provision_does_not_recreate_an_existing_space(monkeypatch):
     """Kibana's space API has no upsert: POST on an existing id is a 409."""
     store = {}
