@@ -1,0 +1,46 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: loki
+  namespace: argocd
+  labels:
+    app.kubernetes.io/name: loki
+    app.kubernetes.io/part-of: devops-platform
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  annotations:
+    # After prometheus/grafana (15) and alongside elk (20): promtail's only
+    # job is to push into Loki, so ordering it before the Loki Service just
+    # produces a pod that retries connection-refused until Loki lands.
+    argocd.argoproj.io/sync-wave: "20"
+spec:
+  project: devops-platform
+  source:
+    # The directory holds objects in TWO namespaces on purpose: Loki itself in
+    # `monitoring`, promtail in `logging`. Every object carries an explicit
+    # `metadata.namespace`, so spec.destination.namespace below is only the
+    # fallback for objects that declare none — there are none. Do not "fix"
+    # this by splitting the directory: applying them as one unit is what keeps
+    # promtail's clients.url and the Loki Service from drifting apart.
+    repoURL: https://github.com/abdelkaderbenhmida/stage.git
+    targetRevision: secondary
+    path: k8s/monitoring/loki
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: monitoring
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+      allowEmpty: false
+    syncOptions:
+      - CreateNamespace=true
+      - PrunePropagationPolicy=foreground
+      - PruneLast=true
+      - ServerSideApply=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m

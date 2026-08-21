@@ -15,6 +15,15 @@ spec:
       server: https://kubernetes.default.svc
     - namespace: monitoring
       server: https://kubernetes.default.svc
+    # promtail lives here, not in `monitoring`: that namespace enforces the
+    # PodSecurity "restricted" profile and a log collector needs hostPath
+    # mounts and root. Without this entry loki-app never syncs, so the
+    # tenant Logs panel has no backend even though the manifests are in git.
+    - namespace: logging
+      server: https://kubernetes.default.svc
+    # The manifest repository every tenant Application syncs from.
+    - namespace: gitops
+      server: https://kubernetes.default.svc
     - namespace: istio-system
       server: https://kubernetes.default.svc
     - namespace: flagger-system

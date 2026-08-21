@@ -1,8 +1,7 @@
-# promtail-config — the only piece of the Loki/promtail deployment
-# committed so far. The rest (StatefulSet, DaemonSet, RBAC, Services)
-# runs live in the cluster with no manifest anywhere in git — that's
-# real drift, correctly flagged by the platform UI's Drift tab, not
-# something to paper over by guessing at the rest of the spec here.
+# promtail-config — the scrape configuration for the log collector.
+# The rest of the stack is committed alongside it: loki.yaml (ConfigMap,
+# Service, Deployment), promtail.yaml (RBAC + DaemonSet) and namespace.yaml,
+# deployed as one unit by k8s/argocd/applications/loki-app.yaml.
 #
 # Bug this fixes: the original scrape_configs had no relabel rule
 # setting __path__, so promtail discovered every pod via k8s SD but
