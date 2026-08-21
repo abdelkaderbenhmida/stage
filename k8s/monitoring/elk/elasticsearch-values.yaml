@@ -121,11 +121,18 @@ spec:
     spec:
       serviceAccountName: elasticsearch
       # Keep ES off the control-plane node to reduce API/DNS instability.
+      # Prefer a worker node, do not require one. As a hard requirement this
+      # is unschedulable on any single-node cluster (kind, k3s, minikube),
+      # where the only node IS the control plane — and a Pending pod with a
+      # node-affinity message reads like a capacity problem rather than a
+      # manifest that can never be satisfied. It sat Pending for five days
+      # exactly that way.
       affinity:
         nodeAffinity:
-          requiredDuringSchedulingIgnoredDuringExecution:
-            nodeSelectorTerms:
-              - matchExpressions:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              preference:
+                matchExpressions:
                   - key: node-role.kubernetes.io/control-plane
                     operator: DoesNotExist
       securityContext:
