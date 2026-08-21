@@ -1,0 +1,269 @@
+# The platform's manifest repository — the git source ArgoCD reads tenant
+# workloads from.
+#
+# What lives here: only YAML the control plane rendered itself (Deployment or
+# Rollout, Service, Ingress), one directory per <project-namespace>/<service>.
+# Tenant source code never reaches this repository, and neither do rendered
+# Secrets — a git history keeps them forever, so the deploy path applies those
+# directly and skips them here (see runners/gitops.py).
+#
+# Why a git server at all: ArgoCD can only sync from git, helm or OCI. There is
+# no "here are some manifests" source. Tenant repositories are external and
+# often private, and the platform deliberately stores no tenant code, so the
+# manifests it renders need a home of their own.
+#
+# Why Gitea and not `git daemon`: the git:// protocol has no authentication at
+# all. The earlier version of this file relied on a NetworkPolicy alone, which
+# does not restrain the NodePort the control-plane worker has to push through —
+# a podSelector rule does not match traffic arriving at a node. Anyone able to
+# reach that port could read and write every tenant's rendered manifests.
+# Gitea speaks authenticated HTTP, which both the worker and ArgoCD support.
+#
+# TWO ADDRESSES, one repository, for exactly the reason the image registry has
+# two (see REGISTRY / REGISTRY_INTERNAL in the README):
+#   - ArgoCD runs *in* the cluster: http://git-server.gitops.svc.cluster.local:3000/...
+#   - the worker pushes from a sandbox container on the host's docker network,
+#     which cannot route to a ClusterIP: http://<node>:30300/...
+# GITOPS_REPO_URL is the worker's address, GITOPS_REPO_URL_INTERNAL ArgoCD's.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: gitops
+  labels:
+    app.kubernetes.io/name: gitops
+    app.kubernetes.io/part-of: devops-platform
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: git-server-data
+  namespace: gitops
+  labels:
+    app.kubernetes.io/name: git-server
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+---
+# Credentials for the single account the control plane pushes with. Generated
+# by whoever installs the platform, not committed:
+#
+#   kubectl -n gitops create secret generic git-server-admin \
+#     --from-literal=username=controlplane \
+#     --from-literal=password="$(openssl rand -base64 24)"
+#
+# The same values go into GITOPS_USERNAME / GITOPS_PASSWORD for the worker and
+# into the ArgoCD repository Secret below.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: git-server-admin
+  namespace: gitops
+  labels:
+    app.kubernetes.io/name: git-server
+  annotations:
+    # A placeholder so a fresh install comes up; `kubectl create secret` above
+    # replaces it. Left obvious rather than plausible, so an unrotated install
+    # is visible at a glance instead of looking like a real credential.
+    controlplane.io/rotate-me: "true"
+type: Opaque
+stringData:
+  username: controlplane
+  password: CHANGE-ME-BEFORE-USE
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: git-server
+  namespace: gitops
+  labels:
+    app.kubernetes.io/name: git-server
+spec:
+  # NodePort, not ClusterIP: the writer is the control-plane worker's sandbox
+  # container, which runs on the host's docker network and has no route to a
+  # ClusterIP. Readers (ArgoCD) still use the in-cluster DNS name. Unlike the
+  # git:// version this port is authenticated, so exposing it costs a password
+  # rather than the whole repository.
+  type: NodePort
+  selector:
+    app.kubernetes.io/name: git-server
+  ports:
+    - name: http
+      port: 3000
+      targetPort: http
+      nodePort: 30300
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: git-server
+  namespace: gitops
+  labels:
+    app.kubernetes.io/name: git-server
+    app.kubernetes.io/part-of: devops-platform
+spec:
+  replicas: 1
+  # One volume, one writer. A second pod rolling alongside the first would
+  # have two servers writing the same refs.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: git-server
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: git-server
+        app.kubernetes.io/part-of: devops-platform
+    spec:
+      securityContext:
+        fsGroup: 1000
+      containers:
+        - name: gitea
+          image: gitea/gitea:1.22.6-rootless
+          env:
+            # Skip the interactive installer: an unconfigured Gitea serves a
+            # setup page instead of the git endpoints, so the first push would
+            # fetch HTML and fail with a git error naming neither cause.
+            - name: GITEA__security__INSTALL_LOCK
+              value: "true"
+            - name: GITEA__database__DB_TYPE
+              value: sqlite3
+            - name: GITEA__server__ROOT_URL
+              value: http://git-server.gitops.svc.cluster.local:3000/
+            - name: GITEA__server__HTTP_PORT
+              value: "3000"
+            # This repository is infrastructure, not a forge. Nobody signs up,
+            # and an anonymous reader must not be able to enumerate tenants.
+            - name: GITEA__service__DISABLE_REGISTRATION
+              value: "true"
+            - name: GITEA__service__REQUIRE_SIGNIN_VIEW
+              value: "true"
+            - name: GITEA__repository__DEFAULT_PRIVATE
+              value: "private"
+            - name: GITEA__actions__ENABLED
+              value: "false"
+          ports:
+            - name: http
+              containerPort: 3000
+          readinessProbe:
+            httpGet:
+              path: /api/healthz
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /api/healthz
+              port: http
+            initialDelaySeconds: 60
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/gitea
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: git-server-data
+---
+# Creates the admin account and the tenants repository. A Job rather than an
+# init container: it must run once against a *running* Gitea (the API is only
+# up after the server starts), and re-running it on every pod restart would
+# reset the account the platform is actively pushing with.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: git-server-bootstrap
+  namespace: gitops
+  labels:
+    app.kubernetes.io/name: git-server
+  annotations:
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  backoffLimit: 10
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: git-server-bootstrap
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: bootstrap
+          image: gitea/gitea:1.22.6-rootless
+          env:
+            - name: GIT_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: git-server-admin
+                  key: username
+            - name: GIT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: git-server-admin
+                  key: password
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -eu
+              BASE=http://git-server.gitops.svc.cluster.local:3000
+
+              # The Job can start before the server is listening; retrying here
+              # is cheaper than a CrashLoop that reads like a broken image.
+              i=0
+              until curl -sf "$BASE/api/healthz" >/dev/null; do
+                i=$((i+1))
+                [ "$i" -gt 60 ] && echo "gitea did not become ready" && exit 1
+                sleep 5
+              done
+
+              # Idempotent: a 422 means the user already exists, which is the
+              # normal case on every sync after the first.
+              curl -s -o /dev/null -w '%{http_code}\n' -X POST "$BASE/api/v1/admin/users" \
+                -H 'Content-Type: application/json' \
+                -u "$GIT_USERNAME:$GIT_PASSWORD" \
+                -d "{\"username\":\"$GIT_USERNAME\",\"password\":\"$GIT_PASSWORD\",\"email\":\"controlplane@platform.local\",\"must_change_password\":false}" || true
+
+              # auto_init, so `main` exists. Cloning a bare repository with
+              # --branch main fails with "Remote branch main not found", which
+              # is what every deploy would hit on a fresh install.
+              curl -s -o /dev/null -w '%{http_code}\n' -X POST "$BASE/api/v1/user/repos" \
+                -H 'Content-Type: application/json' \
+                -u "$GIT_USERNAME:$GIT_PASSWORD" \
+                -d '{"name":"tenants","private":true,"auto_init":true,"default_branch":"main"}' || true
+
+              echo "bootstrap complete"
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+---
+# How ArgoCD authenticates to the manifest repository. Without this the
+# Application syncs fail with "authentication required" — Gitea is configured
+# to refuse anonymous reads on purpose.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: git-server-repo
+  namespace: argocd
+  labels:
+    argocd.argoproj.io/secret-type: repository
+type: Opaque
+stringData:
+  type: git
+  url: http://git-server.gitops.svc.cluster.local:3000/controlplane/tenants.git
+  username: controlplane
+  password: CHANGE-ME-BEFORE-USE
