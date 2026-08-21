@@ -1,0 +1,52 @@
+# App-of-apps over k8s/argocd/applications/.
+#
+# Until this existed, that directory was in git but nothing applied it: the
+# `devops-platform-applicationset` Application syncs path `k8s/argocd`, and an
+# ArgoCD directory source is NOT recursive by default, so it only ever applied
+# project.yaml and applicationset.yaml. Every Application in here had to be
+# created by hand with kubectl, and one that was committed but never applied —
+# loki-app.yaml — looked deployed while doing nothing at all.
+#
+# Recursing the parent app instead would have swept in k8s/argocd/install/,
+# the upstream ArgoCD manifests, and had ArgoCD reconcile its own installation
+# as a side effect of managing its Applications.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: argocd-applications
+  namespace: argocd
+  labels:
+    app.kubernetes.io/name: argocd-applications
+    app.kubernetes.io/part-of: devops-platform
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  annotations:
+    # Before everything it creates.
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  project: devops-platform
+  source:
+    repoURL: https://github.com/abdelkaderbenhmida/stage.git
+    targetRevision: secondary
+    path: k8s/argocd/applications
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      selfHeal: true
+      # NOT prune. Every Application already running was created by hand
+      # before this file existed; pruning on first sync would delete any that
+      # is not yet committed here, taking its workloads with it through the
+      # resources-finalizer. Turn it on once this directory is known to be the
+      # complete set.
+      prune: false
+      allowEmpty: false
+    syncOptions:
+      - ServerSideApply=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m
