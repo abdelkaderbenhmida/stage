@@ -1,0 +1,50 @@
+# Resource defaults for Tekton's OWN containers.
+#
+# Tekton injects init containers into every TaskRun pod (`prepare`,
+# `place-scripts`) to stage the entrypoint binary and the step scripts. They
+# declare no resources, so a tenant namespace's LimitRange gives each of them
+# its default — 500m of CPU limit here.
+#
+# A pod's quota cost is max(sum of containers, max of init containers), so
+# those injected containers set the floor: a step declaring 250m still cost
+# 500m, and a tenant whose app already used most of its quota could not run a
+# stage at all. The failure names the *step's* pod and a number the step never
+# asked for, which is a genuinely confusing thing to debug.
+#
+# Applied to the tekton-pipelines namespace, so it covers every tenant at once
+# rather than needing a LimitRange tweak per namespace — and without lowering
+# the default for the tenants' own application pods, which is what editing the
+# LimitRange would have done.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: config-defaults
+  namespace: tekton-pipelines
+  labels:
+    app.kubernetes.io/instance: default
+    app.kubernetes.io/part-of: tekton-pipelines
+data:
+  default-timeout-minutes: "60"
+  # Keys are container names; `default` covers anything not named.
+  default-container-resource-requirements: |
+    default:
+      requests:
+        cpu: "10m"
+        memory: "64Mi"
+      limits:
+        cpu: "250m"
+        memory: "512Mi"
+    place-scripts:
+      requests:
+        cpu: "10m"
+        memory: "32Mi"
+      limits:
+        cpu: "100m"
+        memory: "128Mi"
+    prepare:
+      requests:
+        cpu: "10m"
+        memory: "32Mi"
+      limits:
+        cpu: "100m"
+        memory: "128Mi"

@@ -20,6 +20,7 @@ What this module is careful about:
 
 from __future__ import annotations
 
+import base64
 import json
 import re
 import time
@@ -90,7 +91,13 @@ def _stage_task(index: int, stage, default_image: str) -> dict:
         # runAfter is set by the caller, which is the only place that knows
         # what ran before this stage.
         "taskSpec": {
-            "metadata": {"labels": {"controlplane.io/stage-name": stage.name[:63]}},
+            # An annotation, not a label. Label VALUES must be DNS-safe, and a
+            # stage name is free text out of a tenant's .platform.yml — a
+            # stage called "unit tests" makes Kubernetes reject the TaskRun
+            # outright, so the whole pipeline dies at the first stage with an
+            # error about label syntax rather than anything the tenant wrote.
+            # Annotations have no such restriction.
+            "metadata": {"annotations": {"controlplane.io/stage-name": stage.name[:253]}},
             "workspaces": [{"name": "source"}],
             "steps": [
                 {
@@ -102,6 +109,16 @@ def _stage_task(index: int, stage, default_image: str) -> dict:
                     "image": stage.image or default_image,
                     "workingDir": "$(workspaces.source.path)/repo",
                     "script": "#!/bin/sh\nset -eu\n" + stage.run,
+                    # Explicit and modest. Without these the namespace's
+                    # LimitRange default applies — 500m of *limit* per step —
+                    # and a tenant whose app already uses most of its quota
+                    # cannot run a stage at all: the pod is refused with
+                    # "exceeded quota" before the stage's own command is ever
+                    # reached. A shell command does not need half a core.
+                    "computeResources": {
+                        "requests": {"cpu": "50m", "memory": "128Mi"},
+                        "limits": {"cpu": "250m", "memory": "512Mi"},
+                    },
                 }
             ],
         },
@@ -129,7 +146,7 @@ def build_pipeline_spec(stages: list, default_image: str) -> dict:
             "params": [
                 {"name": "repo-url", "value": "$(params.repo-url)"},
                 {"name": "revision", "value": "$(params.revision)"},
-                {"name": "dockerfile", "value": "$(params.dockerfile)"},
+                {"name": "dockerfile-b64", "value": "$(params.dockerfile-b64)"},
             ],
             "workspaces": [{"name": "source", "workspace": "source"}],
         }
@@ -172,11 +189,13 @@ def build_pipeline_spec(stages: list, default_image: str) -> dict:
             {"name": "revision", "type": "string"},
             {"name": "image", "type": "string"},
             {"name": "registry-insecure", "type": "string", "default": "false"},
-            # Empty unless the platform generated one. Passed as a param, not
-            # baked into the image or written from the host: under Tekton the
-            # checkout only exists inside the cluster, so a Dockerfile written
-            # on the control-plane host would never reach kaniko.
-            {"name": "dockerfile", "type": "string", "default": ""},
+            # Empty unless the platform generated one, and base64: under
+            # Tekton the checkout only exists inside the cluster, so a
+            # Dockerfile written on the control-plane host never reaches
+            # kaniko — and Tekton substitutes params textually into the task's
+            # shell script, where a Dockerfile's own quotes and newlines would
+            # be mangled (or, for a tenant-supplied value, executed).
+            {"name": "dockerfile-b64", "type": "string", "default": ""},
         ],
         "workspaces": [{"name": "source"}, {"name": "docker-credentials"}],
         "tasks": tasks,
@@ -189,6 +208,16 @@ def pipeline_task_names(stages: list) -> list[str]:
     for index, stage in enumerate(stages, start=1):
         names.append(stage_task_name(index, stage.name))
     return [*names, "build", "scan"]
+
+
+def _b64(text: str) -> str:
+    """Base64 for a value that has to survive textual substitution into a shell.
+
+    The base64 alphabet has no quotes, no whitespace and no shell
+    metacharacters, so a value encoded here cannot change the meaning of the
+    script it is pasted into, whatever it contained.
+    """
+    return base64.b64encode(text.encode()).decode() if text else ""
 
 
 def step_indices(stages: list) -> dict[str, int]:
@@ -253,7 +282,7 @@ def render_pipelinerun(
                 {"name": "revision", "value": revision},
                 {"name": "image", "value": image},
                 {"name": "registry-insecure", "value": "true" if settings.registry_insecure else "false"},
-                {"name": "dockerfile", "value": dockerfile},
+                {"name": "dockerfile-b64", "value": _b64(dockerfile)},
             ],
             "workspaces": [
                 {

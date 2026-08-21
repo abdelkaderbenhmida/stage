@@ -31,6 +31,56 @@ def _totals(spec: InfraSpec) -> tuple[int, int, int]:
     return vcpu, memory_mb, disk_gb
 
 
+def _registry_port() -> int:
+    """Port out of REGISTRY_INTERNAL ("kind-registry:5000"). Defaults to 5000."""
+    _, _, port = settings.registry_internal.rpartition(":")
+    return int(port) if port.isdigit() else 5000
+
+
+def _build_egress_manifests(namespace: str, labels: dict) -> list[dict]:
+    """Let a Tekton build pod reach the image registry, and nothing else new.
+
+    The default-deny policy allows outbound traffic to 0.0.0.0/0 *except* the
+    RFC1918 ranges, so that a tenant cannot reach private infrastructure. A
+    local registry normally lives in one of those ranges — kind puts it on
+    172.18.0.0/16 — so a build resolves the registry name, then times out
+    connecting to it. The failure names an address the tenant never configured
+    and looks like a broken registry rather than a policy decision.
+
+    Scoped twice over: only pods that belong to a PipelineRun, and only the
+    registry's own address and port. A tenant's application pods are not
+    selected by this and keep the unmodified default-deny egress.
+    """
+    if not (settings.tekton_enabled and settings.registry_cidr):
+        return []
+    return [
+        {
+            "apiVersion": "networking.k8s.io/v1",
+            "kind": "NetworkPolicy",
+            "metadata": {
+                "name": f"{namespace}-allow-build-registry",
+                "namespace": namespace,
+                "labels": labels,
+            },
+            "spec": {
+                "podSelector": {
+                    # Tekton stamps this on every pod it creates for a run.
+                    "matchExpressions": [
+                        {"key": "tekton.dev/pipelineRun", "operator": "Exists"}
+                    ]
+                },
+                "policyTypes": ["Egress"],
+                "egress": [
+                    {
+                        "to": [{"ipBlock": {"cidr": settings.registry_cidr}}],
+                        "ports": [{"protocol": "TCP", "port": _registry_port()}],
+                    }
+                ],
+            },
+        }
+    ]
+
+
 def build_manifests(spec: InfraSpec, namespace: str) -> list[dict]:
     """Return the manifest documents defining an isolated tenant namespace.
 
@@ -146,6 +196,7 @@ def build_manifests(spec: InfraSpec, namespace: str) -> list[dict]:
                 ],
             },
         },
+        *_build_egress_manifests(namespace, labels),
         {
             "apiVersion": "v1",
             "kind": "ServiceAccount",

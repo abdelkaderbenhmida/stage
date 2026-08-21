@@ -240,6 +240,14 @@ class Settings:
     # Replaces SANDBOX_* wall-clock limits, which are docker flags and do not
     # apply to a Pod.
     tekton_timeout: str = field(default_factory=lambda: _env("TEKTON_TIMEOUT", "30m"))
+    # The registry as a CIDR, for the one NetworkPolicy rule that lets a build
+    # pod push. The tenant default-deny egress excludes RFC1918 on purpose —
+    # so a tenant cannot reach private infrastructure — and a local registry
+    # usually lives there (kind puts it on 172.18.0.0/16), so without this the
+    # push times out against an address DNS resolved happily.
+    # Empty means "do not open anything", which is right for a registry that
+    # is already reachable through the allowed public range.
+    registry_cidr: str = field(default_factory=lambda: _env("REGISTRY_CIDR", ""))
 
     # Elasticsearch / Kibana, for the per-tenant log view.
     #

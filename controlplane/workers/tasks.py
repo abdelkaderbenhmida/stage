@@ -1658,12 +1658,26 @@ def _tekton_build_and_scan(
     caller = _tekton_kubectl(project)
 
     stages = stages or []
+    # The address the registry answers on from INSIDE the cluster.
+    #
+    # image_ref names the registry as the control-plane host reaches it
+    # (settings.registry, published on the host, usually localhost:5000). A
+    # build pod resolving `localhost` reaches itself, so kaniko fails at the
+    # push-permission check with "connection refused" against its own loopback
+    # — before it has pushed anything, and naming an address the tenant never
+    # configured. The sandbox path never hit this because it pushes from the
+    # host, where that address is the right one.
+    #
+    # Only the push target is rewritten. The rendered manifests keep image_ref,
+    # because the kubelet pulls through the node's containerd mirror, which is
+    # configured for the host-facing name.
+    push_ref = _registry_scan_ref(image_ref)
     run = render_pipelinerun(
         project.id,
         deployment.id,
         deployment.repo_url,
         deployment.branch or "main",
-        image_ref,
+        push_ref,
         # The tenant's own ServiceAccount, created with the namespace. The
         # build gets the tenant's permissions, never the control plane's.
         service_account=f"{namespace}-sa",
