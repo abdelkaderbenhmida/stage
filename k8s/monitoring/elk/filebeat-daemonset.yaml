@@ -76,11 +76,33 @@ data:
         - type: kubernetes
           hints.enabled: true
           node: ${NODE_NAME}
-          # Only tail containers matching the devops-platform workloads.
           templates:
+            # The platform's own services, identified by their label.
             - condition:
                 contains:
                   kubernetes.labels.app_kubernetes_io/part-of: "devops-platform"
+              config:
+                - type: container
+                  paths:
+                    - /var/log/containers/*${data.kubernetes.container.id}*.log
+
+            # Tenant workloads.
+            #
+            # Matched on the namespace, not on a label: a tenant's manifests
+            # are their own and carry whatever labels they choose, so nothing
+            # about a tenant pod is guaranteed except the namespace it runs
+            # in. That name is derived from the project UUID
+            # (core/validation.k8s_namespace), which is exactly the shape
+            # matched here — and the same shape the Logstash pipeline routes
+            # on when it picks the tenant's index.
+            #
+            # Without this, per-tenant log access has nothing to show: the
+            # only condition was the platform's own part-of label, so no
+            # tenant line was ever collected, and a tenant's Kibana space was
+            # empty for want of input rather than for want of permission.
+            - condition:
+                regexp:
+                  kubernetes.namespace: "^p-[0-9a-f]{20}$"
               config:
                 - type: container
                   paths:
