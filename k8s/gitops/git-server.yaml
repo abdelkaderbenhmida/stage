@@ -202,17 +202,38 @@ spec:
               # tables to write into.
               gitea --config "$CONF" migrate
 
-              # Idempotent: on every restart after the first the account
-              # exists and this fails, which is the expected path. The output
-              # is filtered because Gitea echoes the password back.
-              gitea --config "$CONF" admin user create \
-                --admin \
-                --username "$GIT_USERNAME" \
-                --password "$GIT_PASSWORD" \
-                --email controlplane@platform.local \
-                --must-change-password=false \
-                2>&1 | grep -vF "$GIT_PASSWORD" || true
-              echo "admin account present"
+              # Create, or bring the password back in line with the Secret.
+              #
+              # `admin user create` alone is not enough: it fails once the
+              # account exists, so rotating the Secret left Gitea on the old
+              # password while every client used the new one — the worker's
+              # push and ArgoCD's fetch both 401, and the account looks
+              # correctly configured from the outside. change-password is what
+              # makes the Secret authoritative.
+              #
+              # Output is filtered because Gitea echoes the password back.
+              # Output goes to a file rather than through a pipe: piping to
+              # grep makes the shell test GREP's exit status, not gitea's, so
+              # the create always looked like it succeeded and the update
+              # branch was never taken.
+              OUT=/var/lib/gitea/.bootstrap-out
+              if gitea --config "$CONF" admin user create \
+                   --admin \
+                   --username "$GIT_USERNAME" \
+                   --password "$GIT_PASSWORD" \
+                   --email controlplane@platform.local \
+                   --must-change-password=false > "$OUT" 2>&1; then
+                echo "admin account created"
+              else
+                grep -vF "$GIT_PASSWORD" "$OUT" || true
+                gitea --config "$CONF" admin user change-password \
+                  --username "$GIT_USERNAME" \
+                  --password "$GIT_PASSWORD" \
+                  --must-change-password=false > "$OUT" 2>&1 || true
+                grep -vF "$GIT_PASSWORD" "$OUT" || true
+                echo "admin account already existed — password synced to the Secret"
+              fi
+              rm -f "$OUT"
           volumeMounts:
             - name: data
               mountPath: /var/lib/gitea
