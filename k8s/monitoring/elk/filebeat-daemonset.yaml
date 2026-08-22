@@ -66,6 +66,11 @@ metadata:
     app.kubernetes.io/part-of: devops-platform
 data:
   filebeat.yml: |
+    # Where the registry lives — the record of how far each file has been
+    # read. It must be the mounted path, or filebeat writes it to the
+    # container's own filesystem and it is lost on every restart.
+    path.data: /var/lib/filebeat-data
+
     filebeat.config:
       inputs:
         path: ${path.config}/inputs.d/*.yml
@@ -280,5 +285,16 @@ spec:
           hostPath:
             path: /var/lib/docker/containers
             type: Directory
+        # Remembers how far each file has been read, so a restart does not
+        # re-ship every line already in Elasticsearch — the same reason
+        # promtail keeps its positions file on a hostPath.
+        #
+        # As an emptyDir this was discarded with the pod, so every restart
+        # re-ingested every log file on the node from the beginning. That is
+        # not just volume: the documents are duplicates, so counts and any
+        # rate built on them are wrong, and nothing about it looks like an
+        # error.
         - name: data
-          emptyDir: {}
+          hostPath:
+            path: /var/lib/filebeat-data
+            type: DirectoryOrCreate
