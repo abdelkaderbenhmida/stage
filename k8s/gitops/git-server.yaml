@@ -48,32 +48,31 @@ spec:
     requests:
       storage: 5Gi
 ---
-# Credentials for the single account the control plane pushes with. Generated
-# by whoever installs the platform, not committed:
+# The Secrets this stack needs are deliberately NOT declared in this file.
 #
+# `git-server-admin` (gitops namespace) and `git-server-repo` (argocd
+# namespace) hold the same credential — the account the control-plane worker
+# pushes with and ArgoCD reads with. Committing them with a placeholder does
+# not work under GitOps: this directory is an ArgoCD Application with
+# selfHeal, so a rotated password is reverted to the placeholder within
+# minutes and every install ends up sharing one credential that is public in
+# git. The same mistake shipped a permanently-401 Logstash for days.
+#
+# Create both before the first deploy, from one generated value:
+#
+#   PW="$(openssl rand -base64 24)"
 #   kubectl -n gitops create secret generic git-server-admin \
-#     --from-literal=username=controlplane \
-#     --from-literal=password="$(openssl rand -base64 24)"
+#     --from-literal=username=controlplane --from-literal=password="$PW"
+#   kubectl -n argocd create secret generic git-server-repo \
+#     --from-literal=type=git \
+#     --from-literal=url=http://git-server.gitops.svc.cluster.local:3000/controlplane/tenants.git \
+#     --from-literal=username=controlplane --from-literal=password="$PW"
+#   kubectl -n argocd label secret git-server-repo \
+#     argocd.argoproj.io/secret-type=repository
 #
-# The same values go into GITOPS_USERNAME / GITOPS_PASSWORD for the worker and
-# into the ArgoCD repository Secret below.
-apiVersion: v1
-kind: Secret
-metadata:
-  name: git-server-admin
-  namespace: gitops
-  labels:
-    app.kubernetes.io/name: git-server
-  annotations:
-    # A placeholder so a fresh install comes up; `kubectl create secret` above
-    # replaces it. Left obvious rather than plausible, so an unrotated install
-    # is visible at a glance instead of looking like a real credential.
-    controlplane.io/rotate-me: "true"
-type: Opaque
-stringData:
-  username: controlplane
-  password: CHANGE-ME-BEFORE-USE
----
+# The same $PW goes into GITOPS_USERNAME / GITOPS_PASSWORD for the worker.
+# Every object below references these with a required secretKeyRef, so a
+# missing Secret fails loudly instead of starting with no credential.
 apiVersion: v1
 kind: Service
 metadata:
@@ -354,20 +353,3 @@ spec:
             limits:
               cpu: 500m
               memory: 256Mi
----
-# How ArgoCD authenticates to the manifest repository. Without this the
-# Application syncs fail with "authentication required" — Gitea is configured
-# to refuse anonymous reads on purpose.
-apiVersion: v1
-kind: Secret
-metadata:
-  name: git-server-repo
-  namespace: argocd
-  labels:
-    argocd.argoproj.io/secret-type: repository
-type: Opaque
-stringData:
-  type: git
-  url: http://git-server.gitops.svc.cluster.local:3000/controlplane/tenants.git
-  username: controlplane
-  password: CHANGE-ME-BEFORE-USE

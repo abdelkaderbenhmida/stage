@@ -650,10 +650,12 @@ Path filtering keeps a one-service change from rebuilding everything.
 Stated plainly: this is a working platform with real isolation on a shared cluster, not
 a hosted product.
 
-- **The manifest repository ships with a placeholder password.** `k8s/gitops/` runs
-  Gitea with authentication required, but the committed `git-server-admin` Secret holds
-  `CHANGE-ME-BEFORE-USE`. Replace it before the NodePort is reachable by anything you
-  do not trust — the install instructions in that file generate one.
+- **Several Secrets must be created out-of-band, before first deploy.** Gitea's
+  credential (`git-server-admin` + `git-server-repo`), Grafana's admin password, and
+  the Elasticsearch/Kibana passwords are deliberately absent from git: an
+  ArgoCD-managed Secret with a committed placeholder is reverted to that placeholder
+  on every sync, so it is a shared public password rather than a reminder. Each
+  manifest carries the `kubectl create secret` line that generates it.
 - **Soft multi-tenancy.** Tenants share one cluster, separated by namespaces, quotas
   and network policies. Genuinely untrusted tenants want a cluster each; VM mode is the
   path there, and the per-project kubeconfig plumbing is incomplete.

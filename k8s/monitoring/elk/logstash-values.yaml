@@ -137,22 +137,20 @@ data:
       }
     }
 ---
-# Secret ref — Logstash needs the elastic password to write to ES.
-# We re-use the elasticsearch-credentials Secret created in
-# elasticsearch/manifest.yaml instead of duplicating the value.
-apiVersion: v1
-kind: Secret
-metadata:
-  name: logstash-elasticsearch-auth
-  namespace: monitoring
-  labels:
-    app.kubernetes.io/name: logstash
-    app.kubernetes.io/part-of: devops-platform
-type: Opaque
-stringData:
-  # Reuse the same password as ELASTIC_PASSWORD — injected kubectl-side.
-  # DO NOT COMMIT REAL VALUE — bootstrap with bootstrap-elasticsearch-secret.sh.
-  ELASTIC_PASSWORD: "DO-NOT-COMMIT-INJECT-VIA-Scripts-bootstrap-elasticsearch-secret.sh"
+# Secret `logstash-elasticsearch-auth` (ELASTIC_PASSWORD) is deliberately NOT
+# declared here. It is created out-of-band by
+# scripts/bootstrap-elasticsearch-secret.sh, exactly like `kibana-credentials`.
+#
+# It used to be declared with a placeholder value and the instruction to
+# inject the real one. That cannot work under GitOps: this directory is an
+# ArgoCD Application with selfHeal, so within a couple of minutes ArgoCD put
+# the placeholder back and Logstash went to 401 against Elasticsearch. The
+# result was a stack that looked healthy — Logstash restarts, so its pod is
+# often "Running" — while shipping precisely zero log lines. A committed
+# placeholder for a secret is not a reminder, it is a value that wins.
+#
+# The Deployment below references it with optional: false, so a missing Secret
+# fails the pod loudly instead of starting Logstash with no credential.
 ---
 # Deployment — 1 replica for 3-node dev cluster.
 apiVersion: apps/v1
