@@ -1,0 +1,135 @@
+# Retention for the log indices.
+#
+# Logstash writes one index per day per tenant (`tenant-<namespace>-*`) plus
+# one for the platform (`devops-platform-*`), with ilm_enabled => false and
+# manage_template => false — so nothing was ever deleting them. On this cluster
+# that was roughly 800,000 documents a day into a 10Gi volume, growing without
+# limit until Elasticsearch hits its flood-stage watermark and turns every
+# index read-only. That failure is abrupt and, from the outside, looks like
+# logging simply stopping.
+#
+# Loki already caps its own retention at 168h (k8s/monitoring/loki/loki.yaml);
+# this is the same bound for the ELK half.
+#
+# ILM is attached through an index template, not through the Logstash output —
+# `ilm_enabled => false` there only stops Logstash managing rollover aliases
+# itself, which is right for date-named indices. The policy still applies.
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: elk-retention
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: elk-retention
+    app.kubernetes.io/part-of: devops-platform
+spec:
+  # Daily is ample for a policy that only has to exist; the CronJob is here so
+  # the policy survives Elasticsearch being recreated, not because it changes.
+  schedule: "17 3 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  startingDeadlineSeconds: 600
+  jobTemplate:
+    spec:
+      ttlSecondsAfterFinished: 600
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: elk-retention
+            app.kubernetes.io/part-of: devops-platform
+        spec:
+          restartPolicy: OnFailure
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: apply
+              image: curlimages/curl:8.10.1
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              env:
+                - name: ELASTIC_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: elasticsearch-credentials
+                      key: ELASTIC_PASSWORD
+                      optional: false
+              command: ["/bin/sh", "-c"]
+              args:
+                - |
+                  set -eu
+                  ES=http://elasticsearch.monitoring.svc.cluster.local:9200
+                  AUTH="elastic:$ELASTIC_PASSWORD"
+
+                  i=0
+                  until curl -sf -u "$AUTH" "$ES/_cluster/health" >/dev/null; do
+                    i=$((i+1))
+                    [ "$i" -gt 60 ] && echo "elasticsearch not reachable" && exit 1
+                    sleep 5
+                  done
+
+                  # 7 days, matching Loki's 168h. `min_age` is measured from
+                  # index creation, which for date-named daily indices is the
+                  # day they cover.
+                  CODE=$(curl -s -o /tmp/o -w '%{http_code}' -u "$AUTH" \
+                    -X PUT "$ES/_ilm/policy/devops-platform-logs" \
+                    -H 'Content-Type: application/json' -d '{
+                      "policy": {
+                        "phases": {
+                          "hot":    { "actions": {} },
+                          "delete": { "min_age": "7d", "actions": { "delete": {} } }
+                        }
+                      }
+                    }')
+                  [ "$CODE" = "200" ] || { echo "policy PUT failed: $CODE"; cat /tmp/o; exit 1; }
+
+                  # Applies to both the platform index and every tenant index.
+                  # priority 100 so it wins over Elasticsearch's own defaults
+                  # without displacing a more specific template someone adds.
+                  CODE=$(curl -s -o /tmp/o -w '%{http_code}' -u "$AUTH" \
+                    -X PUT "$ES/_index_template/devops-platform-logs" \
+                    -H 'Content-Type: application/json' -d '{
+                      "index_patterns": ["devops-platform-*", "tenant-p-*"],
+                      "priority": 100,
+                      "template": {
+                        "settings": {
+                          "index.lifecycle.name": "devops-platform-logs",
+                          "index.number_of_replicas": 0
+                        }
+                      }
+                    }')
+                  [ "$CODE" = "200" ] || { echo "template PUT failed: $CODE"; cat /tmp/o; exit 1; }
+
+                  # An index template only affects indices created after it, so
+                  # attach the policy to the ones already there. Without this
+                  # the backlog that prompted the policy is the one thing it
+                  # never deletes.
+                  CODE=$(curl -s -o /tmp/o -w '%{http_code}' -u "$AUTH" \
+                    -X PUT "$ES/devops-platform-*,tenant-p-*/_settings" \
+                    -H 'Content-Type: application/json' \
+                    -d '{"index.lifecycle.name":"devops-platform-logs"}')
+                  [ "$CODE" = "200" ] || echo "NOTE: could not attach policy to existing indices: $CODE"
+
+                  echo "retention policy applied (delete after 7d)"
+              resources:
+                requests:
+                  cpu: 10m
+                  memory: 32Mi
+                limits:
+                  cpu: 200m
+                  memory: 128Mi
+              volumeMounts:
+                - name: tmp
+                  mountPath: /tmp
+          volumes:
+            # readOnlyRootFilesystem is on, and the script writes /tmp/o.
+            - name: tmp
+              emptyDir: {}
