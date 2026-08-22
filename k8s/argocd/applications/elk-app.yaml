@@ -19,6 +19,24 @@ spec:
   destination:
     server: https://kubernetes.default.svc
     namespace: monitoring
+  # A StatefulSet's volumeClaimTemplates can never match git.
+  #
+  # The API server defaults apiVersion, kind and volumeMode into each template
+  # and attaches a status block, none of which a manifest can express — a PVC
+  # template's status is not a thing you write. ArgoCD therefore reports the
+  # StatefulSet OutOfSync forever, and a permanently-OutOfSync Application is
+  # worse than cosmetic: it hides any real drift underneath it, and there is no
+  # sync that clears it.
+  #
+  # Scoped to this one field of this one kind, so genuine changes to the
+  # StatefulSet — image, resources, affinity — are still detected.
+  ignoreDifferences:
+    - group: apps
+      kind: StatefulSet
+      name: elasticsearch
+      namespace: monitoring
+      jsonPointers:
+        - /spec/volumeClaimTemplates
   syncPolicy:
     automated:
       prune: true
