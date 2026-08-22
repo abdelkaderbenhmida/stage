@@ -394,10 +394,46 @@ def _provision_namespace(
     db.commit()
 
     _grant_tenant_log_access(db, job_id, project)
+    _install_tenant_pipeline(job_id, project, on_line)
 
     _mark_ready(db, project_id)
     _mark_job(db, uuid.UUID(job_id), "succeeded")
     _append_log(job_id, f"Namespace {ns} ({spec.project}) ready.")
+
+
+def _install_tenant_pipeline(job_id: str, project: Project, on_line=None) -> None:
+    """Install this tenant's own copy of the Tekton Pipeline and its Tasks.
+
+    Every tenant gets a private copy in their own namespace — never a
+    cluster-scoped ClusterTask, which every tenant could reference and be
+    affected by another's edit to. k8s/tekton/README.md states that choice;
+    this is what actually carries it out, which nothing did before. A deploy
+    under Tekton references PIPELINE_NAME by name in the tenant's own
+    namespace (runners/tekton.py:render_pipelinerun), and a namespace with no
+    Pipeline object fails that reference — so without this step, a tenant's
+    first Tekton deploy was the first place the gap showed up, as a
+    PipelineRun that could never start rather than as anything at provision
+    time.
+
+    Applied on every provision, not only when Tekton is enabled: flipping
+    TEKTON_ENABLED on later must not require re-provisioning every existing
+    project, and applying the same three Task objects again is a no-op.
+
+    Best-effort, like the log-access grant beside it: the namespace, quota and
+    network policy are already applied and the project is usable without this.
+    A failure here degrades one deploy path rather than the provision.
+    """
+    try:
+        # tasks.py is controlplane/workers/tasks.py; parents[2] is the repo
+        # root, matching how gitops.py and the Tekton README locate it.
+        manifest = Path(__file__).resolve().parents[2] / "k8s" / "tekton" / "pipeline.yaml"
+        if not manifest.is_file():
+            _append_log(job_id, "WARNING: k8s/tekton/pipeline.yaml not found — Tekton deploys will fail")
+            return
+        kubectl_apply([manifest], project, on_line)
+        _append_log(job_id, "Tekton pipeline installed for this namespace.")
+    except Exception as exc:  # noqa: BLE001
+        _append_log(job_id, f"WARNING: could not install the Tekton pipeline: {exc}")
 
 
 def _grant_tenant_log_access(db: Session, job_id: str, project: Project) -> None:

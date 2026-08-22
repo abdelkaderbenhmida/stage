@@ -172,7 +172,10 @@ def test_provision_namespace_mode_skips_terraform(session, user, team, stub_runn
     session.refresh(project)
     assert project.status == "ready"
     assert project.expires_at is not None
-    assert len(calls["kubectl"]) == 1
+    # Namespace manifest, then the tenant's own Tekton pipeline install —
+    # both go through kubectl_apply, and the second must not be skipped just
+    # because the first already ran.
+    assert len(calls["kubectl"]) == 2
     job = session.query(Job).filter(Job.project_id == project.id).one()
     session.refresh(job)  # task wrote via another session; identity map is stale
     assert job.status == "succeeded"
@@ -665,3 +668,80 @@ def test_provision_warm_pool_mismatch_falls_back_to_terraform(session, user, tea
     session.refresh(project)
     assert project.status == "ready"
     assert runs == ["apply"]  # fell back to normal provisioning
+
+def test_provision_namespace_mode_installs_the_tenants_own_tekton_pipeline(session, user, team, stub_runners):
+    """Every tenant gets a private copy of the Pipeline and its Tasks in their
+    own namespace, never a cluster-scoped ClusterTask another tenant could
+    reference and be affected by an edit to (k8s/tekton/README.md).
+
+    Nothing installed it before this: a deploy under Tekton references the
+    Pipeline by name in the tenant's own namespace
+    (runners/tekton.py:render_pipelinerun), and a namespace with no Pipeline
+    object fails that reference — so the gap's first symptom was a tenant's
+    first Tekton deploy failing, not anything at provision time.
+    """
+    project = Project(owner_id=user.id, team_id=team.id, name="tekton-path", infra_spec=NS_SPEC, status="draft")
+    session.add(project)
+    session.flush()
+    for node in NS_SPEC["nodes"]:
+        session.add(Node(project_id=project.id, name=node["name"], vcpu=node["vcpu"],
+                         memory_mb=node["memory_mb"], disk_gb=node["disk_gb"], role=node["role"]))
+    session.commit()
+    calls: dict = stub_runners
+
+    job = _new_job(session, project, "provision")
+    tasks.provision_task(str(job.id), str(project.id), str(user.id), NS_SPEC, "/tmp/ns-ws2")
+
+    applied_paths = [str(path) for call in calls["kubectl"] for path in call[0]]
+    pipeline_calls = [p for p in applied_paths if p.endswith("k8s/tekton/pipeline.yaml")]
+
+    assert pipeline_calls, f"tekton pipeline manifest never applied; kubectl_apply calls were: {applied_paths}"
+
+    from pathlib import Path
+
+    installed = Path(pipeline_calls[0])
+    assert installed.is_file()
+    assert installed.name == "pipeline.yaml"
+    contents = installed.read_text()
+    for name in ("clone", "build", "scan", "tenant-deploy"):
+        assert name in contents, f"{name!r} missing from the manifest actually applied"
+
+
+def test_provision_still_succeeds_if_the_pipeline_install_fails(session, user, team, monkeypatch):
+    """Best-effort: the namespace, quota and network policy are already
+    applied and the project is usable without Tekton. A failure here must
+    degrade one deploy path, not the whole provision — same contract as the
+    log-access grant beside it."""
+    import controlplane.workers.tasks as t
+
+    # Only the pipeline install fails — the namespace/quota/network-policy
+    # apply (the first kubectl_apply call) must succeed normally, because that
+    # one is NOT best-effort and the project would be unusable without it.
+    calls = {"n": 0}
+
+    def _fail_second_call(*a, **k):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return
+        raise RuntimeError("cluster unreachable")
+
+    monkeypatch.setattr(t, "render_terraform", lambda *a, **k: [])
+    monkeypatch.setattr(t, "render_ansible", lambda *a, **k: [])
+    monkeypatch.setattr(t, "kubectl_apply", _fail_second_call)
+
+    project = Project(owner_id=user.id, team_id=team.id, name="tekton-fail", infra_spec=NS_SPEC, status="draft")
+    session.add(project)
+    session.flush()
+    for node in NS_SPEC["nodes"]:
+        session.add(Node(project_id=project.id, name=node["name"], vcpu=node["vcpu"],
+                         memory_mb=node["memory_mb"], disk_gb=node["disk_gb"], role=node["role"]))
+    session.commit()
+
+    job = _new_job(session, project, "provision")
+    tasks.provision_task(str(job.id), str(project.id), str(user.id), NS_SPEC, "/tmp/ns-ws3")
+
+    session.refresh(project)
+    session.refresh(job)
+    assert project.status == "ready"
+    assert job.status == "succeeded"
+    assert "WARNING" in (job.log or "")
