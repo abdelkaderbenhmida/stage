@@ -79,8 +79,21 @@ data:
     filebeat.autodiscover:
       providers:
         - type: kubernetes
-          hints.enabled: true
           node: ${NODE_NAME}
+          # Hints are on so a pod can opt in with co.elastic.logs/* annotations,
+          # but their DEFAULT config is off.
+          #
+          # With hints.default_config left at its default, autodiscover tails
+          # every pod on the node and the templates below only add to that —
+          # they do not restrict it, despite reading as though they do. The
+          # effect was that ArgoCD's controllers, kube-apiserver and the rest
+          # of kube-system were all collected: a quarter of a million documents
+          # of ArgoCD chatter alone in one day, which is what actually filled
+          # the index, not the tenant workloads it was meant to carry.
+          hints.enabled: true
+          hints.default_config:
+            enabled: false
+          # These templates are now the ONLY sources collected.
           templates:
             # The platform's own services, identified by their label.
             - condition:
