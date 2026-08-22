@@ -106,10 +106,22 @@ data:
             - stream
           ignore_missing: true
 
-    output.elasticsearch:
-      hosts: ["http://elasticsearch.monitoring.svc.cluster.local:9200"]
-      username: "${ELASTICSEARCH_USERNAME}"
-      password: "${ELASTICSEARCH_PASSWORD}"
+    # Ships to Logstash, NOT straight to Elasticsearch.
+    #
+    # It used to write directly to Elasticsearch, into a single shared
+    # `filebeat-*` data stream — which quietly defeated the per-tenant log
+    # access this stack exists to provide. Tenancy is expressed in the index
+    # name (`tenant-<namespace>-*`, see core/elk_tenancy.py) because index
+    # privileges are the only enforcement the basic licence has, and the
+    # routing that produces those names lives in the Logstash pipeline. With
+    # Logstash bypassed, every tenant's lines landed in one index no tenant
+    # role grants, so the Kibana space showed nothing at all while
+    # Elasticsearch filled up regardless.
+    #
+    # The queue settings below already assumed this path — they talk about
+    # holding events "when Logstash is down".
+    output.logstash:
+      hosts: ["logstash.monitoring.svc.cluster.local:5044"]
       worker: 2
 
     # Block-level: when Logstash is down, hold the events in the spooler
@@ -166,14 +178,10 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: spec.nodeName
-            - name: ELASTICSEARCH_USERNAME
-              value: "elastic"
-            - name: ELASTICSEARCH_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: elasticsearch-credentials
-                  key: ELASTIC_PASSWORD
-                  optional: false
+            # No Elasticsearch credential here: filebeat ships to Logstash,
+            # and Logstash is what authenticates to Elasticsearch. Keeping one
+            # would also mean copying the Secret into this namespace, since
+            # Secrets are namespaced and filebeat runs in `logging`.
           resources:
             requests:
               cpu: 10m

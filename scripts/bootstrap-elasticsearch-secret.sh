@@ -8,8 +8,6 @@
 #   - elasticsearch-credentials  (ELASTIC_PASSWORD, KIBANA_PASSWORD)
 #   - logstash-elasticsearch-auth (ELASTIC_PASSWORD — reused)
 #   - kibana-credentials          (KIBANA_PASSWORD)
-# and, in the `logging` namespace:
-#   - elasticsearch-credentials  (ELASTIC_PASSWORD — filebeat runs there)
 #
 # Usage:
 #   ELASTIC_PASSWORD="<elastic-pwd>" \
@@ -108,21 +106,6 @@ apply_secret elasticsearch-credentials       ELASTIC_PASSWORD "$ELASTIC_PASSWORD
 apply_secret elasticsearch-credentials        KIBANA_PASSWORD  "$KIBANA_PASSWORD"
 apply_secret logstash-elasticsearch-auth     ELASTIC_PASSWORD "$ELASTIC_PASSWORD"
 apply_secret kibana-credentials              KIBANA_PASSWORD  "$KIBANA_PASSWORD"
-
-# filebeat runs in `logging`, not `monitoring` — a log collector needs hostPath
-# mounts, which the restricted PodSecurity profile on `monitoring` forbids.
-# Secrets are namespaced, so its credential has to exist there too; without it
-# the DaemonSet's pods sit in CreateContainerConfigError and the ELK half of
-# the logging stack silently has no input.
-LOGGING_NAMESPACE="${LOGGING_NAMESPACE:-logging}"
-if kubectl get namespace "$LOGGING_NAMESPACE" >/dev/null 2>&1; then
-  NAMESPACE="$LOGGING_NAMESPACE" \
-    apply_secret elasticsearch-credentials ELASTIC_PASSWORD "$ELASTIC_PASSWORD"
-  echo "   - elasticsearch-credentials in $LOGGING_NAMESPACE (for filebeat)"
-else
-  echo "NOTE: namespace $LOGGING_NAMESPACE does not exist yet — re-run after"
-  echo "      deploying k8s/monitoring/loki/, or filebeat will not start."
-fi
 
 echo "OK — created/updated Secrets in namespace $NAMESPACE:"
 echo "   - elasticsearch-credentials (ELASTIC_PASSWORD + KIBANA_PASSWORD)"
