@@ -1012,6 +1012,111 @@ def _purge_path(path: Path, job_id: str | None = None) -> bool:
     return True
 
 
+def _run_secret_scan_gate(
+    db: Session, job_id: str, cloned: Path, deployment: Deployment, repo: DeploymentRepository, on_line=None
+) -> None:
+    """Block the deploy if gitleaks finds a committed secret in the checkout.
+
+    Runs the same scanner the platform's own CI gates on
+    (.github/workflows/ci-cd.yml: gitleaks blocks build) — automatically, on
+    every deploy, not only when a tenant thinks to request an on-demand scan
+    via POST /scans. A secret only needs to be missed once.
+
+    Every finding gitleaks reports is treated as blocking: parse_gitleaks
+    marks all of them "high" (gitleaks itself carries no severity field), so
+    there is no "low severity secret" to let through — a committed credential
+    is a committed credential.
+    """
+    from controlplane.parsers.gitleaks_parser import parse_gitleaks
+
+    result = run_gitleaks(cloned, on_line=on_line)
+    if result.timed_out or result.exit_code not in (0, 1):
+        # gitleaks exits 1 when it found leaks — that is success, not
+        # failure, and 0 is a clean scan. Anything else means it did not run
+        # to completion, and an unscanned checkout is not one known secret-free.
+        _append_log(job_id, f"gitleaks exited {result.exit_code} — retrying once")
+        time.sleep(5)
+        result = run_gitleaks(cloned, on_line=on_line)
+    if result.timed_out or result.exit_code not in (0, 1):
+        repo.set_status(deployment, "blocked")
+        db.commit()
+        raise RuntimeError(
+            f"Checkout could not be scanned for secrets, so it was not deployed. "
+            f"gitleaks exited {result.exit_code}: {(result.stdout or '')[-400:]}"
+        )
+
+    raw = result.artifact_path
+    text = Path(raw).read_text() if raw and Path(raw).exists() else "[]"
+    parsed = parse_gitleaks(text)
+    count = sum(parsed.summary.values())
+    if count:
+        repo.set_status(deployment, "blocked")
+        db.commit()
+        kinds = ", ".join(f"{v['identifier']}" for v in parsed.findings[:5] if v.get("identifier"))
+        raise RuntimeError(
+            f"Deploy blocked: gitleaks found {count} committed secret(s)"
+            + (f" ({kinds}{', ...' if count > 5 else ''})" if kinds else "")
+            + ". Remove them from git history, rotate them, and deploy again."
+        )
+    _append_log(job_id, "gitleaks: no committed secrets found")
+
+
+def _run_dependency_scan_gate(
+    db: Session, job_id: str, cloned: Path, deployment: Deployment, repo: DeploymentRepository, on_line=None
+) -> None:
+    """Block the deploy on a CRITICAL/HIGH known-vulnerable pinned dependency.
+
+    Same tool and the same gate the platform's own CI runs
+    (pip-audit --strict on app/shared/requirements.txt) — automatically, not
+    only on request. Skips rather than blocks when there is no
+    requirements.txt: most of the platform's tenants are not Python, and "no
+    dependency manifest found" is not evidence of a vulnerable dependency.
+    """
+    try:
+        requirements = _find_requirements(cloned)
+    except FileNotFoundError:
+        _append_log(job_id, "pip-audit: no requirements.txt found — skipping dependency scan")
+        return
+
+    from controlplane.parsers.pip_audit_parser import parse_pip_audit
+
+    result = run_pip_audit(requirements, on_line=on_line)
+    if result.timed_out or result.exit_code not in (0, 1):
+        # Exit 1 from pip-audit means "found vulnerabilities", not "crashed".
+        _append_log(job_id, f"pip-audit exited {result.exit_code} — retrying once")
+        time.sleep(5)
+        result = run_pip_audit(requirements, on_line=on_line)
+    if result.timed_out or result.exit_code not in (0, 1):
+        repo.set_status(deployment, "blocked")
+        db.commit()
+        raise RuntimeError(
+            f"Dependencies could not be scanned, so the image was not built. "
+            f"pip-audit exited {result.exit_code}: {(result.stdout or '')[-400:]}"
+        )
+
+    parsed = parse_pip_audit(result.stdout)
+    # No severity floor, matching `pip-audit --strict` in the platform's own
+    # CI (.github/workflows/ci-cd.yml) exactly: any known-vulnerable pinned
+    # dependency blocks, not only CRITICAL/HIGH. Unlike trivy and gitleaks,
+    # pip-audit's JSON carries no normalized severity of its own — this
+    # repository estimates one from the CVSS vector for the summary/findings
+    # shown in the UI (parse_pip_audit), but the platform's gate has never
+    # been "high enough", so the gate here does not start being one either.
+    gate = sum(parsed.summary.values())
+    _append_log(
+        job_id,
+        "pip-audit: "
+        + ", ".join(f"{parsed.summary.get(level, 0)} {level}" for level in ("critical", "high", "medium", "low")),
+    )
+    if gate:
+        repo.set_status(deployment, "blocked")
+        db.commit()
+        raise RuntimeError(
+            f"Deploy blocked: pip-audit found {gate} known-vulnerable pinned dependencies. "
+            "Rotate to a fixed version and deploy again."
+        )
+
+
 def _registry_scan_ref(image_ref: str) -> str:
     """Rewrite a pushed image reference the way a sandbox can reach it.
 
@@ -1198,12 +1303,13 @@ def deploy_task(job_id: str, deployment_id: str, project_id: str, user_id: str) 
         # removal must not depend on the build, scan and push all succeeding.
         cloned: Path | None = None
         try:
-            # The seven built-in stages are fixed, but a repository may add
-            # its own (tests, linters, migrations) via .platform.yml. They
-            # are only known after the clone, so the total is provisional
-            # until then — hence _step calls below take `total` rather than a
-            # literal 7.
-            total = 7
+            # The nine built-in stages are fixed — clone; secret scan gate;
+            # dependency scan gate; build; push; image scan gate; render;
+            # rollout; live URL — but a repository may add its own (tests,
+            # linters, migrations) via .platform.yml. They are only known
+            # after the clone, so the total is provisional until then — hence
+            # _step calls below take `total` rather than a literal 9.
+            total = 9
             user_stages: list = []
 
             if _tekton_applies_to(project):
@@ -1225,7 +1331,7 @@ def deploy_task(job_id: str, deployment_id: str, project_id: str, user_id: str) 
                     user_stages = load_pipeline_stages(cloned)
                 except InvalidPipelineConfig as exc:
                     raise RuntimeError(str(exc)) from exc
-                total = 7 + len(user_stages)
+                total = 9 + len(user_stages)
                 if user_stages:
                     _append_log(
                         job_id,
@@ -1264,13 +1370,27 @@ def deploy_task(job_id: str, deployment_id: str, project_id: str, user_id: str) 
                     branch=deployment.branch, team_id=project.team_id,
                 )
 
+                # Same two tools the platform's own CI gates on
+                # (.github/workflows/ci-cd.yml: gitleaks blocks build,
+                # pip-audit --strict fails on known-vulnerable pinned deps),
+                # run automatically on every tenant deploy rather than only on
+                # a manually-requested scan. Before the build, same reasoning
+                # as the tenant's own stages below: a secret or a known
+                # vulnerability is cheaper to catch before a build slot is
+                # spent than after.
+                _step(job_id, 2, total, "secret scan (gitleaks) + gate")
+                _run_secret_scan_gate(db, job_id, cloned, deployment, repo, on_line)
+
+                _step(job_id, 3, total, "dependency scan (pip-audit) + gate")
+                _run_dependency_scan_gate(db, job_id, cloned, deployment, repo, on_line)
+
                 try:
                     user_stages = load_pipeline_stages(cloned)
                 except InvalidPipelineConfig as exc:
                     # Fail closed and say why: silently ignoring a malformed file
                     # would run a pipeline its author did not ask for.
                     raise RuntimeError(str(exc)) from exc
-                total = 7 + len(user_stages)
+                total = 9 + len(user_stages)
                 if user_stages:
                     _append_log(
                         job_id,
@@ -1282,7 +1402,7 @@ def deploy_task(job_id: str, deployment_id: str, project_id: str, user_id: str) 
                 # built from it: a failing test should stop the pipeline before
                 # it spends a build slot, not after.
                 for offset, stage in enumerate(user_stages, start=1):
-                    _step(job_id, 1 + offset, total, stage.name)
+                    _step(job_id, 3 + offset, total, stage.name)
                     result = run_sandbox(
                         SandboxRun(
                             # These are commands out of a tenant's repository, so
@@ -1335,7 +1455,7 @@ def deploy_task(job_id: str, deployment_id: str, project_id: str, user_id: str) 
                 repo.set_status(deployment, "building")
                 db.commit()
 
-                _step(job_id, len(user_stages) + 2, total, "building image")
+                _step(job_id, len(user_stages) + 4, total, "building image")
                 build = run_sandbox(
                     SandboxRun(
                         command=["docker", "build", "-t", image_ref, "."],
@@ -1347,7 +1467,7 @@ def deploy_task(job_id: str, deployment_id: str, project_id: str, user_id: str) 
                 )
                 _check(build)
 
-                _step(job_id, len(user_stages) + 3, total, "pushing image to registry")
+                _step(job_id, len(user_stages) + 5, total, "pushing image to registry")
                 push = run_sandbox(
                     SandboxRun(
                         command=["docker", "push", image_ref],
@@ -1360,7 +1480,7 @@ def deploy_task(job_id: str, deployment_id: str, project_id: str, user_id: str) 
                 )
                 _check(push)
 
-                _step(job_id, len(user_stages) + 4, total, "trivy scan + gate")
+                _step(job_id, len(user_stages) + 6, total, "trivy scan + gate")
                 repo.set_status(deployment, "scanning")
                 db.commit()
                 # Scan the image that was just pushed, addressed the way a
@@ -1446,7 +1566,7 @@ def deploy_task(job_id: str, deployment_id: str, project_id: str, user_id: str) 
                         f"{parsed.summary['high']} high. Gate on CRITICAL/HIGH."
                     )
 
-            _step(job_id, len(user_stages) + 5, total, "rendering + applying manifests")
+            _step(job_id, len(user_stages) + 7, total, "rendering + applying manifests")
             repo.set_status(deployment, "deploying", image_ref=image_ref)
             db.commit()
             manifests = _render_manifests(project, deployment, image_ref)
@@ -1462,7 +1582,7 @@ def deploy_task(job_id: str, deployment_id: str, project_id: str, user_id: str) 
                     if path.name == "secret.yaml":
                         path.unlink(missing_ok=True)
 
-            _step(job_id, len(user_stages) + 6, total, "waiting for rollout")
+            _step(job_id, len(user_stages) + 8, total, "waiting for rollout")
             resource = "rollout" if deployment.strategy != "deployment" else "deployment"
             ns = k8s_namespace(project.id)
             rollout = kubectl(
@@ -1474,7 +1594,7 @@ def deploy_task(job_id: str, deployment_id: str, project_id: str, user_id: str) 
                 kubectl(["rollout", "undo", f"{resource}/{_deployment_name(deployment)}", f"--namespace={ns}"], project, on_line=on_line)
                 raise RuntimeError(f"rollout failed: {rollout.output[-500:]}")
 
-            _step(job_id, len(user_stages) + 7, total, "capturing live URL")
+            _step(job_id, len(user_stages) + 9, total, "capturing live URL")
             live_url = f"http://{_deployment_name(deployment)}.{ns}.{_cluster_domain()}"
             repo.set_status(deployment, "live", image_ref=image_ref, live_url=live_url)
             db.commit()
@@ -1686,9 +1806,9 @@ def _tekton_build_and_scan(
     on_line=None,
     stages: list | None = None,
     dockerfile: str = "",
-    total: int = 7,
+    total: int = 9,
 ) -> None:
-    """Steps 1-4 as one PipelineRun, with job_steps rows kept in step.
+    """Steps 1-6 as one PipelineRun, with job_steps rows kept in step.
 
     The gate is *not* re-implemented here. It lives in the scan Task, which
     fails closed inside the cluster; this function only reads the outcome. A
@@ -1749,10 +1869,10 @@ def _tekton_build_and_scan(
         # poll instead would rewrite three rows every five seconds for the
         # life of the build.
         #
-        # Numbered against the built-in seven, not 1..3: the graph unions
+        # Numbered against the built-in nine, not 1..5: the graph unions
         # these rows with the deploy template, so numbering them sequentially
-        # would put "scan" at index 3 where the template says "push" and
-        # leave a phantom fourth box the tenant never ran.
+        # would put "scan" at index 5 where the template says "trivy scan +
+        # gate" only by coincidence and every other row would be wrong.
         for step in snapshot.steps:
             index = index_of.get(step.name)
             if index is None or seen.get(step.name) == step.status:
@@ -1765,7 +1885,7 @@ def _tekton_build_and_scan(
             _step(job_id, index, total, labels.get(step.name, step.name))
             # kaniko builds and pushes in one step, so a succeeded build means
             # the image is in the registry. Recording the push step explicitly
-            # keeps the seven-step contract honest instead of leaving a gap the
+            # keeps the nine-step contract honest instead of leaving a gap the
             # graph would fill from the template with a status it invented.
             if step.name == "build" and step.status == "succeeded":
                 _step(job_id, tekton_push_index(stages), total, "pushing image to registry")

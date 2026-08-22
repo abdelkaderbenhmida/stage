@@ -39,7 +39,7 @@ from controlplane.core.validation import k8s_namespace
 # The tenant sees these as step labels. Renaming one there without renaming it
 # here draws a graph with a permanently-pending box in it, so a test asserts
 # the two agree.
-TEKTON_PIPELINE_TASKS = ["clone", "build", "scan"]
+TEKTON_PIPELINE_TASKS = ["clone", "secret-scan", "dependency-scan", "build", "scan"]
 
 PIPELINE_NAME = "tenant-deploy"
 
@@ -151,10 +151,28 @@ def build_pipeline_spec(stages: list, default_image: str) -> dict:
                 {"name": "dockerfile-b64", "value": "$(params.dockerfile-b64)"},
             ],
             "workspaces": [{"name": "source", "workspace": "source"}],
-        }
+        },
+        # Same two tools the platform's own CI gates on
+        # (.github/workflows/ci-cd.yml: gitleaks blocks build, pip-audit
+        # --strict fails on known-vulnerable pinned deps), run here as Pods
+        # in the tenant's own namespace — not on the control-plane host —
+        # before a build slot is spent on a checkout that should never have
+        # shipped.
+        {
+            "name": "secret-scan",
+            "taskRef": {"name": "secret-scan"},
+            "runAfter": ["clone"],
+            "workspaces": [{"name": "source", "workspace": "source"}],
+        },
+        {
+            "name": "dependency-scan",
+            "taskRef": {"name": "dependency-scan"},
+            "runAfter": ["secret-scan"],
+            "workspaces": [{"name": "source", "workspace": "source"}],
+        },
     ]
 
-    previous = "clone"
+    previous = "dependency-scan"
     for index, stage in enumerate(stages, start=1):
         task = _stage_task(index, stage, default_image)
         task["runAfter"] = [previous]
@@ -206,7 +224,7 @@ def build_pipeline_spec(stages: list, default_image: str) -> dict:
 
 def pipeline_task_names(stages: list) -> list[str]:
     """Every task in the built pipeline, in order — the labels the tenant sees."""
-    names = ["clone"]
+    names = ["clone", "secret-scan", "dependency-scan"]
     for index, stage in enumerate(stages, start=1):
         names.append(stage_task_name(index, stage.name))
     return [*names, "build", "scan"]
@@ -268,24 +286,32 @@ def registry_egress_warning(registry: str, registry_cidr: str) -> str:
 def step_indices(stages: list) -> dict[str, int]:
     """Where each pipeline task lands in the deploy job's step numbering.
 
-    The graph unions job_steps rows with the seven-step deploy template, and
-    the sandbox path inserts tenant stages directly after the clone — so the
-    built-in steps shift by however many stages there are. Numbering the Tekton
+    The graph unions job_steps rows with the nine-step deploy template
+    (workers/steps.py), and the sandbox path inserts tenant stages after its
+    own fixed prefix of three — clone, secret scan gate, dependency scan gate
+    (core/pipeline_graph.py:_DEPLOY_FIXED_PREFIX) — so the built-in steps
+    after that shift by however many stages there are. Numbering the Tekton
     tasks 1..n instead would put "scan" where the template says "push" and
     leave phantom boxes the tenant never ran.
 
     There is no entry for "push": kaniko builds and pushes in one task, so that
     step is recorded from the build's own success.
     """
-    indices = {"clone": 1, "build": 2 + len(stages), "scan": 4 + len(stages)}
+    indices = {
+        "clone": 1,
+        "secret-scan": 2,
+        "dependency-scan": 3,
+        "build": 4 + len(stages),
+        "scan": 6 + len(stages),
+    }
     for offset, stage in enumerate(stages, start=1):
-        indices[stage_task_name(offset, stage.name)] = 1 + offset
+        indices[stage_task_name(offset, stage.name)] = 3 + offset
     return indices
 
 
 def push_step_index(stages: list) -> int:
-    """Step 3 of the built-in seven, shifted past the tenant's own stages."""
-    return 3 + len(stages)
+    """Step 5 of the built-in nine, shifted past the tenant's own stages."""
+    return 5 + len(stages)
 
 
 def render_pipelinerun(

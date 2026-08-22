@@ -178,6 +178,13 @@ def test_canary_deploy_awaits_rollout_resource(session, monkeypatch, tmp_path):
     monkeypatch.setattr(
         tasks, "run_trivy", lambda *a, **k: RawResult(tool="trivy", target="img", stdout=TRIVY_OK)
     )
+    # deploy_task also gates on gitleaks and pip-audit now (same tools the
+    # platform's own CI runs), and neither is stubbed by run_sandbox above:
+    # both call run_sandbox through their own module (runners/scanners/), not
+    # through tasks.py's reference to it, so patching tasks.run_sandbox alone
+    # does not reach them.
+    monkeypatch.setattr(tasks, "run_gitleaks", lambda *a, **k: RawResult(tool="gitleaks", target="x"))
+    monkeypatch.setattr(tasks, "run_pip_audit", lambda *a, **k: RawResult(tool="pip_audit", target="x"))
     monkeypatch.setattr(tasks, "kubectl", _fake_kubectl)
     monkeypatch.setattr(tasks, "kubectl_apply", lambda *a, **k: None)
 

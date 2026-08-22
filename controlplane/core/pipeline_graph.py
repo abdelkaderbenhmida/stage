@@ -57,6 +57,12 @@ def _slugify(name: str, taken: set[str]) -> str:
     return slug
 
 
+# clone, secret-scan gate, dependency-scan gate: the built-in steps a
+# repository's own .platform.yml stages are inserted after (deploy_task) and
+# that the graph must therefore treat as unshifted, whatever `extra` is.
+_DEPLOY_FIXED_PREFIX = 3
+
+
 def _pick_template(job: Job, rows: list[JobStep], project: Project | None) -> list[str]:
     if job.type == "deploy":
         return JOB_STEP_TEMPLATES.get("deploy", [])
@@ -122,19 +128,21 @@ def job_graph(db, job: Job) -> dict:
         # named the pending steps after entirely different work ("building
         # image" shown where "pushing image" would run). When the job is
         # longer than the template, only rows can be trusted for a label.
-        # deploy_task inserts a repository's own stages directly after the
-        # clone, so when the job is longer than the template the offset is
-        # known: the first step is still the clone, the next `extra` are the
-        # repository's, and the remaining built-ins follow, shifted by that
-        # many. Labelling the tail with `template[i - 1]` regardless — as
-        # this did — named pending steps after entirely different work.
+        # deploy_task inserts a repository's own stages after the fixed
+        # prefix — clone, then the secret and dependency scan gates — so when
+        # the job is longer than the template the offset is known: the first
+        # FIXED_PREFIX steps are the built-ins that run before any stage can,
+        # the next `extra` are the repository's, and the remaining built-ins
+        # follow, shifted by that many. Labelling the tail with
+        # `template[i - 1]` regardless — as this did — named pending steps
+        # after entirely different work.
         extra = max(0, declared_total - len(template))
         taken: set[str] = set()
         for i in range(1, total + 1):
             row = by_index.get(i)
             if row is not None:
                 label = row.name
-            elif extra and 2 <= i <= 1 + extra:
+            elif extra and _DEPLOY_FIXED_PREFIX < i <= _DEPLOY_FIXED_PREFIX + extra:
                 # One of the repository's own stages, not yet started, so its
                 # name is not knowable — the template has no entry for it.
                 # Reading the template here anyway produced a second
@@ -142,9 +150,9 @@ def job_graph(db, job: Job) -> dict:
                 # stage belongs.
                 label = f"step {i} of {declared_total}"
             else:
-                # Built-in stage: the first is the clone, the rest sit after
-                # the repository's stages and are shifted by that many.
-                template_index = i - 1 if i == 1 else i - 1 - extra
+                # Built-in stage: the fixed prefix is unshifted, the rest sit
+                # after the repository's stages and are shifted by that many.
+                template_index = i - 1 if i <= _DEPLOY_FIXED_PREFIX else i - 1 - extra
                 label = (
                     template[template_index]
                     if 0 <= template_index < len(template)

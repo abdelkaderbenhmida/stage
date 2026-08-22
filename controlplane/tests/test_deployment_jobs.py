@@ -223,11 +223,11 @@ def test_graph_returns_steps_as_nodes_and_chained_edges(client, deployment, sess
     session.add_all(
         [
             JobStep(
-                job_id=uuid.UUID(job_id), step_index=1, step_total=7, name="cloning repository",
+                job_id=uuid.UUID(job_id), step_index=1, step_total=9, name="cloning repository",
                 status="succeeded", started_at=now, finished_at=now + timedelta(seconds=12),
             ),
             JobStep(
-                job_id=uuid.UUID(job_id), step_index=2, step_total=7, name="building image",
+                job_id=uuid.UUID(job_id), step_index=2, step_total=9, name="secret scan (gitleaks) + gate",
                 status="running", started_at=now + timedelta(seconds=12),
             ),
         ]
@@ -239,11 +239,11 @@ def test_graph_returns_steps_as_nodes_and_chained_edges(client, deployment, sess
     body = resp.json()
     assert body["source"] == "job"
     assert body["title"] == "api · deploy"
-    # A "deploy" job always fills to its 7-step template; rows 1-2 are
+    # A "deploy" job always fills to its 9-step template; rows 1-2 are
     # authoritative, the rest come from the template as not-yet-started.
     labels = [n["label"] for n in body["nodes"]]
-    assert labels[:2] == ["cloning repository", "building image"]
-    assert len(body["nodes"]) == 7
+    assert labels[:2] == ["cloning repository", "secret scan (gitleaks) + gate"]
+    assert len(body["nodes"]) == 9
     assert [n["status"] for n in body["nodes"][:2]] == ["succeeded", "running"]
     assert body["nodes"][0]["duration_s"] == 12.0
     assert body["nodes"][0]["depends_on"] == []

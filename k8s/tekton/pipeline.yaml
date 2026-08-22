@@ -8,6 +8,16 @@
 # Task names here are what the tenant sees as step labels in the pipeline
 # graph. They are asserted against TEKTON_PIPELINE_TASKS in
 # controlplane/runners/tekton.py — rename in both places or the test fails.
+#
+# The Pipeline object below (tenant-deploy) is NOT what actually runs a
+# deploy. render_pipelinerun() in controlplane/runners/tekton.py builds an
+# inline pipelineSpec per run instead — the tenant's own .platform.yml
+# stages are only known after their repository is read, and a static
+# Pipeline cannot express "and then whatever this repo declares". Only the
+# Task objects here are referenced at runtime, by name, from that inline
+# spec. Keep the Pipeline object's task graph in sync with
+# build_pipeline_spec() regardless, since it is what a human sees when they
+# run `kubectl describe pipeline tenant-deploy`.
 ---
 apiVersion: tekton.dev/v1
 kind: Task
@@ -81,6 +91,109 @@ spec:
           printf '%s' "$DOCKERFILE_B64" | base64 -d > "$(workspaces.source.path)/repo/Dockerfile"
           echo "No Dockerfile in the repository — wrote the generated one."
         fi
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: secret-scan
+  labels:
+    app.kubernetes.io/part-of: devops-platform
+spec:
+  # Same tool the platform's own CI gates on
+  # (.github/workflows/ci-cd.yml: gitleaks blocks build), run here instead of
+  # only on request — a committed secret only needs to be missed once.
+  workspaces:
+    - name: source
+  steps:
+    - name: gitleaks
+      image: zricethezav/gitleaks:v8.18.4
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: ["ALL"]
+      script: |
+        #!/bin/sh
+        # NOTE: no `set -e`. gitleaks exits 1 when it finds leaks — that is
+        # the gate firing, not a crash — and the explicit check below is what
+        # distinguishes "found something" from "did not run".
+        gitleaks detect           --source "$(workspaces.source.path)/repo"           --report-format json           --report-path /tmp/report.json           --no-banner --redact=true
+        RC=$?
+
+        # Fails closed, matching every other gate in this pipeline: a
+        # checkout that could not be scanned is not one known secret-free.
+        if [ "$RC" -ne 0 ] && [ "$RC" -ne 1 ]; then
+          echo "Checkout could not be scanned for secrets (gitleaks exited $RC)."
+          exit 1
+        fi
+        if [ "$RC" -eq 1 ]; then
+          echo "Deploy blocked: gitleaks found committed secret(s). Remove them from git history, rotate them, and deploy again."
+          exit 1
+        fi
+        echo "gitleaks: no committed secrets found."
+      computeResources:
+        requests:
+          cpu: 50m
+          memory: 128Mi
+        limits:
+          cpu: 250m
+          memory: 512Mi
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: dependency-scan
+  labels:
+    app.kubernetes.io/part-of: devops-platform
+spec:
+  # Same tool and the same gate the platform's own CI runs
+  # (pip-audit --strict on app/shared/requirements.txt). Skips rather than
+  # blocks when there is no requirements.txt: most tenants are not Python,
+  # and "no dependency manifest" is not evidence of a vulnerable one.
+  workspaces:
+    - name: source
+  steps:
+    - name: pip-audit
+      image: python:3.12-slim
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: ["ALL"]
+      script: |
+        #!/bin/sh
+        set -eu
+        REPO="$(workspaces.source.path)/repo"
+        REQ=""
+        for candidate in "$REPO/requirements.txt" "$REPO/app/requirements.txt" "$REPO/requirements/base.txt"; do
+          if [ -f "$candidate" ]; then REQ="$candidate"; break; fi
+        done
+        if [ -z "$REQ" ]; then
+          echo "pip-audit: no requirements.txt found — skipping dependency scan."
+          exit 0
+        fi
+
+        pip install --quiet --no-cache-dir pip-audit
+        # --strict is the whole gate: it is exactly what the platform's own
+        # CI runs (.github/workflows/ci-cd.yml), with no severity floor. Any
+        # known-vulnerable pinned dependency blocks, not only CRITICAL/HIGH —
+        # this repository estimates a severity from the CVSS vector for the
+        # summary shown in the UI (parse_pip_audit), but the gate itself has
+        # never had a floor, so this Task does not invent one either.
+        if ! pip-audit --requirement "$REQ" --strict; then
+          echo "Deploy blocked: pip-audit found known-vulnerable pinned dependencies."
+          exit 1
+        fi
+        echo "pip-audit: no known-vulnerable pinned dependencies."
+      computeResources:
+        requests:
+          cpu: 50m
+          memory: 256Mi
+        limits:
+          cpu: 500m
+          memory: 512Mi
 ---
 apiVersion: tekton.dev/v1
 kind: Task
@@ -209,6 +322,11 @@ spec:
   workspaces:
     - name: source
     - name: docker-credentials
+  # This Pipeline object is not actually referenced at deploy time — see the
+  # note at the top of the file. It is kept complete and correct anyway,
+  # because it is the one thing in the cluster a human runs `kubectl describe
+  # pipeline` against, and a Pipeline whose task graph does not match what
+  # actually runs is worse than no Pipeline object at all.
   results:
     - name: blocking
       value: $(tasks.scan.results.blocking)
@@ -224,10 +342,24 @@ spec:
       workspaces:
         - name: source
           workspace: source
+    - name: secret-scan
+      taskRef:
+        name: secret-scan
+      runAfter: ["clone"]
+      workspaces:
+        - name: source
+          workspace: source
+    - name: dependency-scan
+      taskRef:
+        name: dependency-scan
+      runAfter: ["secret-scan"]
+      workspaces:
+        - name: source
+          workspace: source
     - name: build
       taskRef:
         name: build
-      runAfter: ["clone"]
+      runAfter: ["dependency-scan"]
       params:
         - name: image
           value: $(params.image)

@@ -13,6 +13,8 @@ from __future__ import annotations
 JOB_STEP_TEMPLATES: dict[str, list[str]] = {
     "deploy": [
         "cloning repository",
+        "secret scan (gitleaks) + gate",
+        "dependency scan (pip-audit) + gate",
         "building image",
         "pushing image to registry",
         "trivy scan + gate",

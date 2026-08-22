@@ -117,12 +117,15 @@ def test_tasks_after_a_failure_are_skipped_not_pending():
     it "pending" would show a finished pipeline as still having work to do."""
     taskruns = [
         _taskrun("clone", "True", "Succeeded"),
+        _taskrun("secret-scan", "True", "Succeeded"),
+        _taskrun("dependency-scan", "True", "Succeeded"),
         _taskrun("build", "False", "Failed"),
     ]
     steps = pipeline_steps(_run("False", "Failed"), taskruns, tekton.TEKTON_PIPELINE_TASKS)
 
     assert [(s.name, s.status) for s in steps] == [
-        ("clone", "succeeded"), ("build", "failed"), ("scan", "skipped"),
+        ("clone", "succeeded"), ("secret-scan", "succeeded"), ("dependency-scan", "succeeded"),
+        ("build", "failed"), ("scan", "skipped"),
     ]
 
 
@@ -274,55 +277,63 @@ class _Stage:
         self.name, self.run, self.image = name, run, image
 
 
-def test_step_indices_line_up_with_the_builtin_seven_when_there_are_no_stages():
+def test_step_indices_line_up_with_the_builtin_nine_when_there_are_no_stages():
     """The graph unions job_steps rows with the deploy template. Numbering the
-    three tasks 1..3 would put "scan" where the template says "push"."""
+    five tasks 1..5 would put "scan" where the template says "trivy scan"
+    only by luck and every earlier row would be wrong."""
     from controlplane.workers.steps import JOB_STEP_TEMPLATES
 
     template = JOB_STEP_TEMPLATES["deploy"]
     indices = tekton.step_indices([])
 
-    assert indices == {"clone": 1, "build": 2, "scan": 4}
+    assert indices == {"clone": 1, "secret-scan": 2, "dependency-scan": 3, "build": 4, "scan": 6}
     assert "clon" in template[indices["clone"] - 1]
+    assert "secret" in template[indices["secret-scan"] - 1] or "gitleaks" in template[indices["secret-scan"] - 1]
+    assert "dependency" in template[indices["dependency-scan"] - 1] or "pip-audit" in template[indices["dependency-scan"] - 1]
     assert "build" in template[indices["build"] - 1]
-    assert "scan" in template[indices["scan"] - 1]
+    assert "trivy" in template[indices["scan"] - 1]
     assert "push" in template[tekton.push_step_index([]) - 1]
 
 
 def test_tenant_stages_shift_the_builtin_steps():
-    """Stages run between clone and build, exactly as on the sandbox path, so
-    a two-stage repository pushes build/scan two places along."""
+    """Stages run after clone and the two scan gates, exactly as on the
+    sandbox path, so a two-stage repository pushes build/scan two places
+    along from their no-stages position."""
     stages = [_Stage("unit tests"), _Stage("lint")]
     indices = tekton.step_indices(stages)
 
     assert indices["clone"] == 1
-    assert indices[tekton.stage_task_name(1, "unit tests")] == 2
-    assert indices[tekton.stage_task_name(2, "lint")] == 3
-    assert indices["build"] == 4
-    assert tekton.push_step_index(stages) == 5
-    assert indices["scan"] == 6
+    assert indices["secret-scan"] == 2
+    assert indices["dependency-scan"] == 3
+    assert indices[tekton.stage_task_name(1, "unit tests")] == 4
+    assert indices[tekton.stage_task_name(2, "lint")] == 5
+    assert indices["build"] == 6
+    assert tekton.push_step_index(stages) == 7
+    assert indices["scan"] == 8
 
 
-def test_stages_become_tasks_between_clone_and_build():
-    """A failing test must stop the pipeline before it spends a build slot."""
+def test_stages_become_tasks_between_the_scan_gates_and_build():
+    """A failing test must stop the pipeline before it spends a build slot —
+    and secret/dependency scanning must stop it earlier still, since a
+    checkout that leaks a credential should never reach a test runner either."""
     spec = tekton.build_pipeline_spec([_Stage("unit tests"), _Stage("lint")], "sandbox:latest")
     order = [t["name"] for t in spec["tasks"]]
 
-    assert order[0] == "clone"
+    assert order[:3] == ["clone", "secret-scan", "dependency-scan"]
     assert order[-2:] == ["build", "scan"]
-    assert len(order) == 5
+    assert len(order) == 7
     # Each stage runs after the previous one, so they are sequential rather
     # than a fan-out that would let a later stage start before an earlier
     # one failed.
     build = next(t for t in spec["tasks"] if t["name"] == "build")
-    assert build["runAfter"] == [order[2]]
+    assert build["runAfter"] == [order[-3]]
 
 
 def test_stage_names_are_sanitised_but_the_tenants_wording_is_kept():
     """Tekton object names are DNS-1123 labels; "unit tests" is not one. The
     tenant must still see their own wording in the graph."""
     spec = tekton.build_pipeline_spec([_Stage("Unit Tests & Lint!")], "sandbox:latest")
-    task = spec["tasks"][1]
+    task = spec["tasks"][3]
 
     assert task["name"] == tekton.stage_task_name(1, "Unit Tests & Lint!")
     assert task["name"].replace("-", "").isalnum()
@@ -343,7 +354,7 @@ def test_two_stages_with_the_same_name_do_not_collide():
 
 def test_a_stage_runs_in_the_image_it_asked_for():
     spec = tekton.build_pipeline_spec([_Stage("unit tests", image="python:3.11-slim")], "sandbox:latest")
-    step = spec["tasks"][1]["taskSpec"]["steps"][0]
+    step = spec["tasks"][3]["taskSpec"]["steps"][0]
 
     assert step["image"] == "python:3.11-slim"
 
@@ -351,7 +362,7 @@ def test_a_stage_runs_in_the_image_it_asked_for():
 def test_a_stage_without_an_image_falls_back_to_the_sandbox_image():
     spec = tekton.build_pipeline_spec([_Stage("unit tests")], "sandbox:latest")
 
-    assert spec["tasks"][1]["taskSpec"]["steps"][0]["image"] == "sandbox:latest"
+    assert spec["tasks"][3]["taskSpec"]["steps"][0]["image"] == "sandbox:latest"
 
 
 def test_generated_dockerfile_travels_as_a_base64_parameter():
@@ -413,12 +424,13 @@ def test_clone_task_never_overwrites_a_repositorys_own_dockerfile():
 
 
 def test_declared_task_list_includes_tenant_stages():
-    """Defaulting to the built-in three would drop every tenant stage out of
+    """Defaulting to the built-in five would drop every tenant stage out of
     the graph."""
     stages = [_Stage("unit tests")]
 
     assert tekton.pipeline_task_names(stages) == [
-        "clone", tekton.stage_task_name(1, "unit tests"), "build", "scan",
+        "clone", "secret-scan", "dependency-scan",
+        tekton.stage_task_name(1, "unit tests"), "build", "scan",
     ]
 
 
@@ -456,7 +468,7 @@ def test_stage_steps_declare_their_own_modest_resources():
     a stage at all: the pod is refused with "exceeded quota" before the stage's
     command is reached."""
     spec = tekton.build_pipeline_spec([_Stage("unit tests")], "sandbox:latest")
-    resources = spec["tasks"][1]["taskSpec"]["steps"][0]["computeResources"]
+    resources = spec["tasks"][3]["taskSpec"]["steps"][0]["computeResources"]
 
     assert resources["requests"]["cpu"] == "50m"
     assert resources["limits"]["cpu"] == "250m"

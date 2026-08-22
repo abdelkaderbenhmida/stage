@@ -158,13 +158,22 @@ Every step streams into a job log the tenant can watch live.
 
 | Step | What happens | Failure behaviour |
 | --- | --- | --- |
-| **1/7 clone** | Shallow clone of the requested branch. No credentials unless the team configured one. `.git` is removed afterwards. | A private or missing repository, or a branch that does not exist, fails in seconds with a message naming the repository — not a git internal error. |
-| **2/7 build** | `docker build` inside a sandboxed container. | A missing `Dockerfile` is detected *before* a build slot is spent. |
-| **3/7 push** | Image pushed to the registry, tagged `<team>/<project>-<service>:commit-<sha>`. | Registry credentials travel via a private env-file, never argv. |
-| **4/7 scan + gate** | Trivy scans the pushed image from the registry. | Any CRITICAL or HIGH blocks the deployment. An unreadable or failed scan also blocks — the gate is **fail-closed**. A transient scanner failure is retried once. |
-| **5/7 render + apply** | Deployment/Service/Ingress, or an Argo Rollout plus an SLO AnalysisTemplate for canary and blue-green. | Manifests are rendered per project mode, never into another project's workspace. |
-| **6/7 rollout** | `kubectl rollout status` with a timeout. | Failure triggers an automatic `rollout undo`. |
-| **7/7 live URL** | `http://<service>.<namespace>.<cluster-domain>` recorded on the deployment. | |
+| **1/9 clone** | Shallow clone of the requested branch. No credentials unless the team configured one. `.git` is removed afterwards. | A private or missing repository, or a branch that does not exist, fails in seconds with a message naming the repository — not a git internal error. |
+| **2/9 secret scan + gate** | Gitleaks scans the checkout for committed secrets — the same tool and the same gate the platform's own CI runs. | Any finding blocks the deployment. An unreadable scan also blocks — fail-closed, retried once on a transient failure. |
+| **3/9 dependency scan + gate** | pip-audit checks `requirements.txt` against known vulnerabilities — again the same tool and gate as the platform's own CI (`pip-audit --strict`, no severity floor). | Any known-vulnerable pinned dependency blocks. Skipped, not blocked, when there is no `requirements.txt` — most tenants are not Python. |
+| **4/9 build** | `docker build` inside a sandboxed container. | A missing `Dockerfile` is detected *before* a build slot is spent. |
+| **5/9 push** | Image pushed to the registry, tagged `<team>/<project>-<service>:commit-<sha>`. | Registry credentials travel via a private env-file, never argv. |
+| **6/9 image scan + gate** | Trivy scans the pushed image from the registry. | Any CRITICAL or HIGH blocks the deployment. An unreadable or failed scan also blocks — the gate is **fail-closed**. A transient scanner failure is retried once. |
+| **7/9 render + apply** | Deployment/Service/Ingress, or an Argo Rollout plus an SLO AnalysisTemplate for canary and blue-green. | Manifests are rendered per project mode, never into another project's workspace. |
+| **8/9 rollout** | `kubectl rollout status` with a timeout. | Failure triggers an automatic `rollout undo`. |
+| **9/9 live URL** | `http://<service>.<namespace>.<cluster-domain>` recorded on the deployment. | |
+
+The three scanners are exactly what `.github/workflows/ci-cd.yml` runs for the platform's
+own services — gitleaks blocks the build, pip-audit gates with `--strict`, Trivy scans the
+built image — run automatically on every tenant deploy instead of only on a manually
+requested scan (`POST /projects/{id}/scans`). Under Tekton (below) each runs as its own
+Task in the tenant's own namespace; on the sandbox path each runs as its own step on the
+control-plane host. Same tools, same gates, either path.
 
 Image tags are namespaced per team, so two tenants deploying a service with the same
 name cannot overwrite — or be served — each other's image.
@@ -317,7 +326,7 @@ Celery workers run every long operation; Celery beat runs the periodic ones.
 | Task | Trigger |
 | --- | --- |
 | `provision_task` | project provisioning (Terraform + Ansible, or namespace creation) |
-| `deploy_task` | the seven-step pipeline above |
+| `deploy_task` | the nine-step pipeline above |
 | `undeploy_task` | remove a service's manifests |
 | `scan_task` | Trivy, Gitleaks or pip-audit |
 | `destroy_task` | tear down namespace or VMs, then the workspace |
@@ -464,18 +473,20 @@ node*, so a registry the host can reach is otherwise invisible to the kubelet.
 3. The repository normally needs a **`Dockerfile` at its root**. A plain FastAPI app
    (a `requirements.txt` beside a `main.py`/`app.py` that assigns `app = FastAPI(...)`)
    is detected and built without one.
-4. The built image must be free of CRITICAL and HIGH vulnerabilities or the gate will
-   block it.
+4. The checkout must be free of committed secrets, `requirements.txt` (if present) free
+   of known-vulnerable pinned packages, and the built image free of CRITICAL and HIGH
+   vulnerabilities — gitleaks, pip-audit and Trivy each gate the deploy.
 5. For a private repository, first store a read-only token under
    **Teams → Private repository access**.
 
 #### Adding your own pipeline stages
 
-The seven built-in stages — clone, build, push, scan, render, roll out, publish the
-URL — are the platform's contract, not a description of what your application needs
-doing. A repository can declare stages of its own in **`.platform.yml`** at its root,
-and they run on the checkout before an image is built, so a failing test stops the
-pipeline before it spends a build slot:
+The nine built-in stages — clone, secret scan, dependency scan, build, push, image
+scan, render, roll out, publish the URL — are the platform's contract, not a
+description of what your application needs doing. A repository can declare stages of
+its own in **`.platform.yml`** at its root, and they run on the checkout after the two
+scan gates and before an image is built, so a failing test stops the pipeline before it
+spends a build slot:
 
 ```yaml
 stages:
