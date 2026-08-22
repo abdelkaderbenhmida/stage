@@ -215,9 +215,24 @@ data:
     # with their own ServiceAccount JWT — no shared root token at runtime.
     echo "Enable kubernetes auth method..."
     vault auth enable kubernetes || true
+    # token_reviewer_jwt is not optional here. Without it Vault validates a
+    # pod's token by calling TokenReview *as that pod*, and an application
+    # ServiceAccount has no TokenReview permission — so every login fails with
+    # a bare "permission denied" that names neither TokenReview nor the
+    # missing right. vault-sa is bound to system:auth-delegator (see the
+    # ClusterRoleBinding below) precisely so it can be the reviewer, and this
+    # Job runs as vault-sa, so its own mounted token is the one to use.
+    #
+    # disable_iss_validation: Kubernetes 1.21+ issues bound service account
+    # tokens whose issuer is the cluster's own URL rather than the legacy
+    # "kubernetes/serviceaccount", and Vault rejects the mismatch. The
+    # TokenReview call is what actually establishes the token is genuine;
+    # the issuer string adds nothing on top of it.
     vault write auth/kubernetes/config \
       kubernetes_host="https://kubernetes.default.svc.cluster.local" \
-      kubernetes_ca_cert=@/var/run/secrets/kubernetes.io/serviceaccount/ca.crt || true
+      kubernetes_ca_cert=@/var/run/secrets/kubernetes.io/serviceaccount/ca.crt \
+      token_reviewer_jwt=@/var/run/secrets/kubernetes.io/serviceaccount/token \
+      disable_iss_validation=true || true
 
     # ── Per-service provisioning — discovery-driven ────────────────────────
     # Service names come from the `devops-service-list` ConfigMap (synced by
@@ -252,23 +267,148 @@ data:
       # another service's own extra keys (PAYMENT_GATEWAY_KEY, API_KEY, ...).
       # `vault kv put` is used only the first time a path is created, since
       # patch requires the path to already exist.
+      db="postgresql://app:$(od -An -N 12 -tx1 /dev/urandom | tr -d ' \n')@postgres-${svc}.devops-platform.svc.cluster.local:5432/${svc}"
       if vault kv get -format=json secret/devops-platform/${svc} > /tmp/kv.json 2>/dev/null; then
-        db=$(sed -n 's/.*"DATABASE_URL"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' /tmp/kv.json)
-        jw=$(sed -n 's/.*"JWT_SECRET_KEY"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' /tmp/kv.json)
-        [ -n "$db" ] || db="postgresql://app:$(od -An -N 12 -tx1 /dev/urandom | tr -d ' \n')@postgres-${svc}.devops-platform.svc.cluster.local:5432/${svc}"
-        [ -n "$jw" ] || jw="$(od -An -N 32 -tx1 /dev/urandom | tr -d ' \n')"
-        vault kv patch secret/devops-platform/${svc} DATABASE_URL="$db" JWT_SECRET_KEY="$jw" || true
+        existing=$(sed -n 's/.*"DATABASE_URL"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' /tmp/kv.json)
+        [ -n "$existing" ] && db="$existing"
       else
-        db="postgresql://app:$(od -An -N 12 -tx1 /dev/urandom | tr -d ' \n')@postgres-${svc}.devops-platform.svc.cluster.local:5432/${svc}"
-        jw="$(od -An -N 32 -tx1 /dev/urandom | tr -d ' \n')"
-        vault kv put secret/devops-platform/${svc} DATABASE_URL="$db" JWT_SECRET_KEY="$jw" || true
+        : > /tmp/kv.json
+        vault kv put secret/devops-platform/${svc} DATABASE_URL="$db" || true
       fi
+
+      # Every token key the platform's services can require, seeded for every
+      # service rather than mapped per service name.
+      #
+      # Why all of them: each service refuses to start when its own key is
+      # absent (SERVICE_TEMPLATE SystemExits), and the keys differ —
+      # products-service wants API_KEY, orders-service PAYMENT_GATEWAY_KEY,
+      # inventory-service STOCK_SYNC_KEY. Seeding only DATABASE_URL and
+      # JWT_SECRET_KEY meant those three could never start from a clean Vault;
+      # the missing values had been written by hand once and vanished with the
+      # first restart, because dev-mode storage is in memory.
+      #
+      # A per-service map would hardcode service names, which this repository
+      # deliberately does not do (tests/test_no_hardcoded_environment.py) and
+      # which would need editing every time a service is added. An unused key
+      # in a service's own KV path grants nothing: the path is readable only
+      # by that service's own policy, and the value is random.
+      for key in DATABASE_URL JWT_SECRET_KEY API_KEY PAYMENT_GATEWAY_KEY STOCK_SYNC_KEY; do
+        # Never overwrite: a value already in Vault may be the one a running
+        # service authenticated with.
+        if grep -q "\"${key}\"" /tmp/kv.json 2>/dev/null; then
+          continue
+        fi
+        if [ "$key" = "DATABASE_URL" ]; then
+          value="$db"
+        else
+          value="$(od -An -N 32 -tx1 /dev/urandom | tr -d ' \n')"
+        fi
+        vault kv patch secret/devops-platform/${svc} "${key}=${value}" || true
+      done
     done
 
     echo "Vault setup complete. Sealed: $(vault status | grep Sealed | awk '{print $2}')"
     echo "!! Secrets are auto-generated — DATABASE_URL points at a not-yet-existing postgres-<svc> host."
 ---
 # Job — Runs the setup script once Vault is running
+# CronJob — re-applies the same configuration on a schedule.
+#
+# Vault runs in dev mode, which forces `inmem` storage: every restart of the
+# pod discards the Kubernetes auth method, the per-service policies and roles,
+# and every stored secret. The one-shot Job above has already Completed by
+# then and does not re-run, so the first Vault restart leaves every service's
+# vault-login init container failing with "permission denied" — all of them
+# CrashLoopBackOff, indefinitely, until a human notices and re-runs the Job.
+# That is exactly what happened here: Vault restarted and five services stayed
+# down for over a day.
+#
+# The setup script is idempotent by construction — `|| true` on every enable,
+# and `kv patch` rather than `kv put` on a path that already exists, so a
+# re-run never rewrites a secret another service is using. Running it on a
+# schedule is therefore safe, and turns a permanent outage into a few minutes
+# of degradation.
+#
+# The real fix is persistent storage, which means leaving dev mode. Until then
+# this is the compensation, stated rather than implied.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: vault-setup-cron
+  namespace: vault
+  labels:
+    app.kubernetes.io/name: vault-setup-cron
+    app.kubernetes.io/part-of: devops-platform
+spec:
+  schedule: "*/10 * * * *"
+  # A run that overlaps the previous one would race on the same paths.
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  # Vault being briefly unreachable is the normal case this exists for, not a
+  # reason to give up on the schedule.
+  startingDeadlineSeconds: 300
+  jobTemplate:
+    spec:
+      ttlSecondsAfterFinished: 300
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: vault-setup-cron
+            app.kubernetes.io/part-of: devops-platform
+        spec:
+          serviceAccountName: vault-sa
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 100
+            runAsGroup: 1000
+            fsGroup: 1000
+            seccompProfile:
+              type: RuntimeDefault
+          restartPolicy: OnFailure
+          containers:
+            - name: vault-setup
+              image: hashicorp/vault:1.15.2
+              imagePullPolicy: IfNotPresent
+              command: ["/bin/sh", "/scripts/setup.sh"]
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              env:
+                - name: VAULT_ADDR
+                  value: "http://vault-service.vault.svc.cluster.local:8200"
+                - name: VAULT_TOKEN
+                  valueFrom:
+                    secretKeyRef:
+                      name: vault-root-token
+                      key: root-token
+                - name: SERVICES
+                  valueFrom:
+                    configMapKeyRef:
+                      name: devops-service-list
+                      key: services
+              resources:
+                requests:
+                  cpu: "50m"
+                  memory: "64Mi"
+                limits:
+                  cpu: "200m"
+                  memory: "256Mi"
+              volumeMounts:
+                - name: setup-script
+                  mountPath: /scripts
+                  readOnly: true
+                - name: tmp
+                  mountPath: /tmp
+          volumes:
+            - name: setup-script
+              configMap:
+                name: vault-setup
+                defaultMode: 0755
+            - name: tmp
+              emptyDir: {}
+---
 apiVersion: batch/v1
 kind: Job
 metadata:

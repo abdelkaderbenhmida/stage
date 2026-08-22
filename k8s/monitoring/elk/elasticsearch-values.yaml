@@ -148,10 +148,18 @@ spec:
         fsGroup: 1000
         seccompProfile:
           type: RuntimeDefault
-      initContainers:
-        # ES refuses to start with vm.max_map_count < 262144 — privileged
-        # initContainer bumps it on the host. Removed in managed cloud / EKS
-        # where nodeAMI already sets it.
+      # ES refuses to start with vm.max_map_count < 262144. The privileged
+      # initContainer that used to bump it is kept below as a comment, for a
+      # host where it is needed.
+      #
+      # The `initContainers:` key itself is NOT declared here. With every entry
+      # under it commented out the key parses as null, Kubernetes drops it from
+      # the stored object, and ArgoCD then compares "initContainers: null" in
+      # git against a live object that has no such field — a diff no sync can
+      # ever resolve. The elk Application sat OutOfSync on exactly that, which
+      # also masks any real drift underneath it.
+      #
+      # Uncomment the block AND add the `initContainers:` key back together.
         # WARNING: vm.max_map_count must be set manually on node before deploy:
         #   sudo sysctl -w vm.max_map_count=262144
         #   echo "vm.max_map_count=262144" | sudo tee -a /etc/sysctl.conf
