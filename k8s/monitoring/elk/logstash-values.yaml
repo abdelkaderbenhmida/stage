@@ -201,14 +201,24 @@ spec:
                   key: ELASTIC_PASSWORD
                   optional: false
             - name: LS_JAVA_OPTS
-              value: "-Xms256m -Xmx256m"
+              # 256m was sized for a Logstash nothing actually shipped to.
+              # Once filebeat was pointed here (it had been writing straight to
+              # Elasticsearch), the first real backlog — tens of thousands of
+              # buffered events across ~60 harvested files — exhausted the heap
+              # and the JVM died with OutOfMemoryError mid-bulk, restarted, and
+              # met the same backlog again.
+              value: "-Xms512m -Xmx512m"
           resources:
             requests:
               cpu: 100m
-              memory: 512Mi
+              memory: 768Mi
             limits:
               cpu: 500m
-              memory: 1Gi
+              # Must exceed the heap with room for the JVM's off-heap use —
+              # direct buffers, metaspace, thread stacks. A 512m heap in a 1Gi
+              # container leaves too little and trades a heap OOM for an
+              # OOMKill, which is harder to read because nothing is logged.
+              memory: 1536Mi
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: false  # queue + logs dirs need write
