@@ -1,12 +1,24 @@
 # Filebeat — DaemonSet tailing /var/log/containers/*.log on every node,
 # forwarding to Logstash on port 5044 (per Phase 6 spec).
 # Uses autodiscovery to enrich logs with pod labels (namespace, container, svc).
+#
+# Runs in `logging`, not `monitoring`, for the same reason promtail does: a log
+# collector reads the kubelet's files through hostPath mounts, and `monitoring`
+# enforces the PodSecurity "restricted" profile, which forbids them. The
+# DaemonSet was in `monitoring` and every pod creation was rejected with
+# "restricted volume types" — desired 1, current 0, for long enough that the
+# ELK half of the logging stack had no input at all while every object in it
+# reported Synced and Healthy. A DaemonSet with no pods is easy to miss.
+#
+# Relaxing `monitoring` instead would weaken Prometheus, Grafana, Kibana and
+# Elasticsearch to accommodate one workload; `logging` confines the exemption
+# to the pods that need it (see k8s/monitoring/loki/namespace.yaml).
 ---
 apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: filebeat
-  namespace: monitoring
+  namespace: logging
   labels:
     app.kubernetes.io/name: filebeat
     app.kubernetes.io/part-of: devops-platform
@@ -37,7 +49,7 @@ metadata:
 subjects:
   - kind: ServiceAccount
     name: filebeat
-    namespace: monitoring
+    namespace: logging
 roleRef:
   kind: ClusterRole
   name: filebeat
@@ -48,7 +60,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: filebeat-config
-  namespace: monitoring
+  namespace: logging
   labels:
     app.kubernetes.io/name: filebeat
     app.kubernetes.io/part-of: devops-platform
@@ -118,7 +130,7 @@ apiVersion: apps/v1
 kind: DaemonSet
 metadata:
   name: filebeat
-  namespace: monitoring
+  namespace: logging
   labels:
     app.kubernetes.io/name: filebeat
     app.kubernetes.io/part-of: devops-platform
