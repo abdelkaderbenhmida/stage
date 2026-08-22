@@ -95,10 +95,21 @@ data:
             enabled: false
           # These templates are now the ONLY sources collected.
           templates:
-            # The platform's own services, identified by their label.
+            # The platform's own services.
+            #
+            # Matched on the namespace, not on the
+            # app.kubernetes.io/part-of label they all carry: that condition
+            # never actually matched, and the failure was invisible for as
+            # long as hints.default_config was collecting every pod anyway.
+            # Turning that off is what exposed it — nine harvesters, all of
+            # them tenant pods, and not one line from the platform's own
+            # services.
+            #
+            # The namespace is the same mechanism the tenant template below
+            # uses, which is known to work.
             - condition:
-                contains:
-                  kubernetes.labels.app_kubernetes_io/part-of: "devops-platform"
+                equals:
+                  kubernetes.namespace: "devops-platform"
               config:
                 - type: container
                   paths:
