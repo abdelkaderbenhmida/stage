@@ -109,6 +109,24 @@ data:
                     - /var/log/containers/*${data.kubernetes.container.id}*.log
 
     processors:
+      # Never collect the logging pipeline's own output.
+      #
+      # filebeat, logstash, elasticsearch and kibana all carry
+      # part-of=devops-platform, so the first autodiscover condition matched
+      # them and filebeat shipped Logstash's log lines to Logstash. Anything
+      # Logstash then said about them came straight back — a loop that
+      # amplifies rather than settles, and it wrote 8.8 million documents in a
+      # day before anyone looked at the index size.
+      #
+      # A component cannot be a useful source of its own telemetry here;
+      # `kubectl logs` is the right tool for debugging these four.
+      - drop_event:
+          when:
+            or:
+              - equals:
+                  kubernetes.namespace: "logging"
+              - regexp:
+                  kubernetes.labels.app_kubernetes_io/name: "^(logstash|elasticsearch|kibana|filebeat)$"
       - add_kubernetes_metadata:
           host: ${NODE_NAME}
           matchers:

@@ -65,10 +65,19 @@ data:
 
     filter {
       # The FastAPI json-logger emits one JSON object per line.
+      #
+      # skip_on_invalid_json is essential, not tidiness. Plenty of collected
+      # lines are not JSON — the JVM stack traces from Elasticsearch and
+      # Logstash itself, nginx access logs, kubelet output — and without this
+      # the filter logs a WARN for every one of them. Those warnings are
+      # themselves collected, which produces more warnings: 8.8 million
+      # documents in a single day on this cluster, all of them Logstash
+      # complaining about Logstash.
       json {
         source => "message"
         target => "app"
         remove_field => ["message"]
+        skip_on_invalid_json => true
       }
 
       # Pull structured fields up to the top level for Kibana search.
