@@ -1,3 +1,0 @@
-[36m[stress][0m baseline HPA:
-E0809 10:20:26.630679  176087 memcache.go:265] "Unhandled Error" err="couldn't get current server API group list: Get \"https://__MASTER_IP__:6443/api?timeout=32s\": dial tcp __MASTER_IP__:6443: connect: no route to host"
-E0809 10:20:29.702391  176087 memcache.go:265] "Unhandled Error" err="couldn't get current server API group list: Get \"https://__MASTER_IP__:6443/api?timeout=32s\": dial tcp __MASTER_IP__:6443: connect: no route to host"

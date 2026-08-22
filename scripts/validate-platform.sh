@@ -34,6 +34,9 @@ SKIP_INCIDENT=false
 ONLY=""
 NAMESPACE="devops-platform"
 MONITORING_NS="monitoring"
+# The log collectors live here, not in `monitoring`: that namespace enforces
+# the restricted PodSecurity profile and a collector needs hostPath mounts.
+LOGGING_NS="${LOGGING_NS:-logging}"
 ARGOCD_NS="argocd"
 APP_NAMESPACE="devops-platform"
 IMAGE_TAG="latest"
@@ -335,9 +338,16 @@ check_kibana() {
   fi
 
   # Filebeat DaemonSet must be scheduled on every node.
+  #
+  # Checked in $LOGGING_NS. It used to be checked in $MONITORING_NS, and when
+  # the DaemonSet moved this kept querying the old namespace: `kubectl get`
+  # found nothing, the `|| echo 0` turned that into 0/0, and the run failed
+  # with "Filebeat incomplet (0/0)" — which reads as a broken collector rather
+  # than a check looking in the wrong place. It was neither: filebeat was
+  # healthy the whole time.
   local fb_desired fb_ready
-  fb_desired=$(kubectl get daemonset -n "$MONITORING_NS" filebeat -o jsonpath='{.status.desiredNumberScheduled}' 2>/dev/null || echo 0)
-  fb_ready=$(kubectl get daemonset -n "$MONITORING_NS" filebeat -o jsonpath='{.status.numberReady}' 2>/dev/null || echo 0)
+  fb_desired=$(kubectl get daemonset -n "$LOGGING_NS" filebeat -o jsonpath='{.status.desiredNumberScheduled}' 2>/dev/null || echo 0)
+  fb_ready=$(kubectl get daemonset -n "$LOGGING_NS" filebeat -o jsonpath='{.status.numberReady}' 2>/dev/null || echo 0)
   fb_ready=${fb_ready:-0}
   if [[ "$fb_ready" -lt "$fb_desired" || "$fb_ready" -lt 1 ]]; then
     record_fail "Filebeat incomplet ($fb_ready/$fb_desired)"

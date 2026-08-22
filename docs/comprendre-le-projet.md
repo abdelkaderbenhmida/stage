@@ -600,7 +600,9 @@ flowchart LR
     ES --> KI[Kibana UI]
 ```
 
-> ⚠️ Filebeat est un **DaemonSet 1 replica par nœud** : si le cluster a 3 nœuds, `kubectl get pods -n monitoring -l 'app.kubernetes.io/name=filebeat'` doit montrer 3/3 running. Un résultat « 1/3 » dans `validate-platform.sh` signifie qu'Elastic ne reçoit pas les logs des autres nœuds.
+> ⚠️ Filebeat est un **DaemonSet 1 replica par nœud** : si le cluster a 3 nœuds, `kubectl get pods -n logging -l 'app.kubernetes.io/name=filebeat'` doit montrer 3/3 running. Un résultat « 1/3 » dans `validate-platform.sh` signifie qu'Elastic ne reçoit pas les logs des autres nœuds.
+>
+> Filebeat tourne dans le namespace `logging`, pas `monitoring` : `monitoring` applique le profil PodSecurity « restricted », qui interdit les montages hostPath dont un collecteur de logs a besoin. C'est le même namespace que promtail, et pour la même raison.
 
 #### Alertmanager 💬
 - Les `PrometheusRule` de `k8s/monitoring/alertmanager/rules.yaml` définissent les **SLO** et incidents :

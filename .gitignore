@@ -87,3 +87,6 @@ tests/k6/*.html
 # Ansible Molecule
 ansible/molecule/
 ansible/.molecule/
+
+# Output of scripts/stress-hpa.sh — a run artifact, not source.
+scripts/stress-run.log

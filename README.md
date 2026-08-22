@@ -269,7 +269,7 @@ on scrape configuration.
 
 ## API reference
 
-All endpoints are under `/api/v1`. Roughly 108 routes; grouped by router:
+All endpoints are under `/api/v1`. 115 endpoints; grouped by router:
 
 | Router | Endpoints |
 | --- | --- |
@@ -284,7 +284,7 @@ All endpoints are under `/api/v1`. Roughly 108 routes; grouped by router:
 | **catalogue** | `GET /catalogue` |
 | **infrastructure** | `GET /infra/capacity`, `/infra/preflight`, `/infra/terraform`, `POST /infra/terraform/reconcile` |
 | **webhooks** | `POST /webhooks/{provider}` |
-| **platform** (admin) | ~60 routes: `/overview`, `/health`, `/services`, `/apps`, `/ci`, `/helm`, `/argocd`, `/config`, `/ship/*`, and the `/live/*` family covering pods, logs, alerts, drift, Vault, ArgoCD, CI and scripts |
+| **platform** (admin) | 62 endpoints: `/overview`, `/health`, `/services`, `/apps`, `/ci`, `/helm`, `/argocd`, `/config`, `/ship/*`, and the `/live/*` family covering pods, logs, alerts, drift, Vault, ArgoCD, CI and scripts |
 
 Job logs stream over a short-lived token so a long-running log stream does not require
 sending the access token in a query string.
@@ -301,6 +301,7 @@ sending the access token in a query string.
 | `deployments` | one service: repo URL, branch, port, replicas, strategy, image, live URL |
 | `scans`, `findings` | scan runs and individual vulnerabilities/secrets |
 | `jobs` | every async operation, with status, streamed log, error and request id |
+| `job_steps` | one row per pipeline step of a job — label, status and timing, the source the pipeline graph is drawn from |
 | `webhook_subscriptions` | per-deployment push triggers |
 | `pooled_clusters` | warm pool of pre-provisioned clusters |
 | `audit_log` | who did what, to which resource, in which team |
@@ -324,6 +325,7 @@ Celery workers run every long operation; Celery beat runs the periodic ones.
 | `reap_stale_jobs` | unlocks projects whose worker died mid-job |
 | `poll_nodes` | every minute — node health |
 | `beat_pulse` | every 15 s — liveness of the scheduler itself |
+| `replenish_pool` | keeps the warm pool at its configured size |
 
 ---
 
@@ -342,11 +344,14 @@ controlplane/              the platform itself
     celery_app.py          queues and beat schedule
   runners/
     sandbox.py             the container sandbox every command goes through
+    tekton.py              opt-in: builds as Tekton PipelineRuns in the tenant's namespace
+    gitops.py              publishes rendered manifests to the platform's manifest repo
     terraform_runner.py    init / plan / apply / destroy
     ansible_runner.py      playbook execution
     scanners/              trivy.py, gitleaks.py, pip_audit.py
   renderers/
     namespace.py           namespace, quota, LimitRange, NetworkPolicy, ServiceAccount
+    argocd.py              AppProject per team, Application per deployment
     terraform.py, ansible.py
     templates/k8s/         deployment, service, ingress, rollout, analysis
   repositories/            data access — where the tenancy boundary lives
@@ -358,6 +363,10 @@ controlplane/              the platform itself
     app_config.py          per-deployment environment and secrets
     kubeconfigs.py         per-project cluster access
     roles.py               the action → role table
+    pipeline_config.py     a repository's own stages, read from .platform.yml
+    pipeline_graph.py      the normalised graph contract the console draws
+    tekton_status.py       Tekton conditions → the shared status vocabulary
+    elk_tenancy.py         per-team Elasticsearch role, user and Kibana space
     redaction.py           log scrubbing
     repo_url.py            repository URL allowlist
     validation.py          namespace derivation, slug rules
@@ -587,6 +596,7 @@ control plane refuses to start if one is configured but unreadable.
 | `seed-demo.py` | rebuild a full demo tenancy through the public API |
 | `local-registry.sh` | image registry plus the containerd mirror on every kind node |
 | `local-vault.sh` | local Vault for tenant secrets |
+| `local-observability.sh` | local Prometheus/Grafana/Loki for development |
 | `backup.sh` / `restore.sh` | database and workspaces as one checksummed, same-timestamp unit; restore fails closed |
 | `validate-platform.sh` | the platform conformance gate |
 | `validate-security.sh` | security checks |
@@ -677,9 +687,6 @@ a hosted product.
   inside a shared index needs document-level security, which is Platinum. A log line
   whose namespace field is missing or malformed is routed to the platform index, where
   only operators can read it, rather than being allowed to invent an index name.
-- **Applications cannot yet be configured.** Environment variables and per-deployment
-  secrets are modelled and validated but not yet rendered into the pod spec, so a
-  service that needs configuration cannot be deployed as-is.
 
 ## License
 
