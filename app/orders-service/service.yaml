@@ -4,4 +4,4 @@
 # successful build; the default `secondary` is the floating branch tag).
 # main.py remains the discovery contract for CI and introspect.py.
 name: orders-service
-tag: commit-3305982
+tag: commit-4632809
