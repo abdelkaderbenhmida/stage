@@ -21,8 +21,10 @@ What this module is careful about:
 from __future__ import annotations
 
 import base64
+import ipaddress
 import json
 import re
+import socket
 import time
 import uuid
 from dataclasses import dataclass
@@ -218,6 +220,49 @@ def _b64(text: str) -> str:
     script it is pasted into, whatever it contained.
     """
     return base64.b64encode(text.encode()).decode() if text else ""
+
+
+def registry_egress_warning(registry: str, registry_cidr: str) -> str:
+    """A warning when a build will not be able to reach the registry, or "".
+
+    The tenant namespace's default-deny egress excludes RFC1918, so a registry
+    in private space is unreachable from a build pod unless REGISTRY_CIDR
+    opened it. Without this the pipeline resolves the registry, hangs on the
+    push, and fails on the wall-clock timeout — thirty minutes later, naming a
+    connection to an address the tenant never configured.
+
+    A warning rather than a refusal: the registry may legitimately be public,
+    and DNS may resolve to something this cannot see from here.
+    """
+    if registry_cidr:
+        return ""
+
+    host = registry.split("/", 1)[0].rsplit(":", 1)[0].strip("[]")
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        try:
+            address = ipaddress.ip_address(socket.gethostbyname(host))
+        except (OSError, ValueError):
+            return ""
+
+    # Loopback and link-local are private by ipaddress's reckoning, and both
+    # are a different mistake: a build pod resolving them reaches itself and
+    # the node's metadata endpoint respectively. Opening REGISTRY_CIDR would
+    # not help, so suggesting it would send the reader the wrong way.
+    if address.is_loopback or address.is_link_local:
+        return (
+            f"WARNING: the registry {registry} resolves to {address}, which inside a build "
+            "pod means the pod itself. Set REGISTRY_INTERNAL to the address the registry "
+            "answers on from within the cluster."
+        )
+    if not address.is_private:
+        return ""
+    return (
+        f"WARNING: the registry {registry} resolves to {address}, which is inside the "
+        "range a tenant namespace's default-deny egress blocks. Set REGISTRY_CIDR "
+        f"(for example {address}/32) or this build will time out on the push."
+    )
 
 
 def step_indices(stages: list) -> dict[str, int]:

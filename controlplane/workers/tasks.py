@@ -66,7 +66,12 @@ from controlplane.runners.ansible_runner import ansible_playbook
 from controlplane.runners.sandbox import SandboxResult, SandboxRun, run_sandbox
 from controlplane.runners.scanners import run_gitleaks, run_pip_audit, run_trivy
 from controlplane.runners.tekton import KubectlCaller as TektonKubectl
-from controlplane.runners.tekton import pipeline_task_names, render_pipelinerun, stage_task_name
+from controlplane.runners.tekton import (
+    pipeline_task_names,
+    registry_egress_warning,
+    render_pipelinerun,
+    stage_task_name,
+)
 from controlplane.runners.tekton import push_step_index as tekton_push_index
 from controlplane.runners.tekton import start as tekton_start
 from controlplane.runners.tekton import step_indices as tekton_step_indices
@@ -1688,6 +1693,13 @@ def _tekton_build_and_scan(
     declared = pipeline_task_names(stages)
     index_of = tekton_step_indices(stages)
     labels = {stage_task_name(offset, stage.name): stage.name for offset, stage in enumerate(stages, start=1)}
+    # Said before the run starts, not after it times out: this is knowable now
+    # and the alternative is a thirty-minute wait for a message about an
+    # address the tenant never configured.
+    warning = registry_egress_warning(settings.registry_internal or settings.registry, settings.registry_cidr)
+    if warning:
+        _append_log(job_id, warning)
+
     name = tekton_start(caller, run)
     _append_log(job_id, f"Tekton PipelineRun {name} started in {namespace}")
 

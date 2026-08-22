@@ -570,6 +570,7 @@ Everything is read from the environment; see `controlplane/core/config.py`.
 | `GITOPS_USERNAME`, `GITOPS_PASSWORD` | `controlplane` / — | credentials, if the manifest repository is authenticated |
 | `TEKTON_ENABLED` | `false` | run tenant builds as Tekton PipelineRuns in the tenant's namespace |
 | `TEKTON_TIMEOUT` | `30m` | pipeline wall-clock ceiling (replaces `SANDBOX_*`, which are docker flags) |
+| `REGISTRY_CIDR` | — | the registry as a CIDR, so a build pod may push to it. Required whenever the registry is in RFC1918 space (a local one usually is) — the tenant default-deny egress excludes those ranges, so without it a build resolves the registry and then times out against it |
 | `ELASTICSEARCH_URL`, `KIBANA_URL` | — | per-tenant log access; each team gets a role, user and Kibana space |
 | `ELASTICSEARCH_USER`, `ELASTICSEARCH_PASSWORD` | `elastic` / — | administrator credential used to provision those |
 

@@ -522,3 +522,38 @@ def test_build_egress_policy_selects_only_build_pods_and_only_the_registry():
     egress = policy["spec"]["egress"][0]
     assert egress["to"][0]["ipBlock"]["cidr"] == "172.18.0.2/32"
     assert egress["ports"] == [{"protocol": "TCP", "port": 5000}]
+
+
+def test_no_egress_warning_when_the_cidr_is_configured():
+    assert tekton.registry_egress_warning("kind-registry:5000", "172.18.0.2/32") == ""
+
+
+def test_no_egress_warning_for_a_public_registry():
+    """The default-deny egress allows public ranges, so nothing is blocked."""
+    assert tekton.registry_egress_warning("8.8.8.8:5000", "") == ""
+
+
+def test_egress_warning_for_a_private_registry_with_no_cidr():
+    """A build resolves the registry, hangs on the push and fails on the
+    wall-clock timeout — thirty minutes later, naming a connection to an
+    address the tenant never configured. Saying it up front costs nothing."""
+    warning = tekton.registry_egress_warning("172.18.0.2:5000", "")
+
+    assert "REGISTRY_CIDR" in warning
+    assert "172.18.0.2/32" in warning
+
+
+def test_egress_warning_is_silent_when_the_host_cannot_be_resolved():
+    """DNS that does not resolve here may resolve inside the cluster; guessing
+    would put a wrong warning in every tenant's build log."""
+    assert tekton.registry_egress_warning("registry.invalid.example:5000", "") == ""
+
+
+def test_loopback_registry_points_at_registry_internal_not_at_the_cidr():
+    """127.0.0.1 is private by ipaddress's reckoning, but opening
+    REGISTRY_CIDR for it would not help: inside a build pod that address is
+    the pod itself. Suggesting the CIDR would send the reader the wrong way."""
+    warning = tekton.registry_egress_warning("localhost:5000", "")
+
+    assert "REGISTRY_INTERNAL" in warning
+    assert "REGISTRY_CIDR" not in warning
