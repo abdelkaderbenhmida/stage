@@ -91,6 +91,57 @@ spec:
             capabilities:
               drop: ["ALL"]
       containers:
+        # Keeps /vault/secrets/token valid.
+        #
+        # The init container above logs in once, and the role issues a token
+        # with a 1h TTL (k8s/vault/manifests.yaml). Nothing renewed it, so
+        # every pod's /readyz — which reports Vault reachability — began
+        # returning 503 exactly one hour after it started, and stayed there.
+        # Ten pods, all NotReady, with Vault itself perfectly healthy: the
+        # token had expired, which is not the condition the probe is meant to
+        # report.
+        #
+        # This is the job Vault Agent does. Doing it in six lines of shell
+        # avoids adding the injector and its webhook to the cluster for one
+        # file; if the injector is ever adopted, this sidecar and the init
+        # container are what it replaces.
+        - name: vault-token-refresh
+          image: hashicorp/vault:1.15.2
+          command:
+            - sh
+            - -c
+            - |
+              set -eu
+              # Half the TTL, so a failed refresh has one more attempt before
+              # anything expires.
+              while true; do
+                sleep 1800
+                VAULT_TOKEN=$(vault write -field=token auth/kubernetes/login                   role="{{ $svc.name }}"                   jwt="$(cat /var/run/secrets/vault/token)") || continue
+                # Written then moved, so a reader never sees a partial file.
+                echo "$VAULT_TOKEN" > /vault/secrets/token.new
+                mv /vault/secrets/token.new /vault/secrets/token
+              done
+          env:
+            - name: VAULT_ADDR
+              value: {{ $.Values.vault.addr | quote }}
+          volumeMounts:
+            - name: vault-sa-token
+              mountPath: /var/run/secrets/vault
+              readOnly: true
+            - name: vault-secrets
+              mountPath: /vault/secrets
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
         - name: {{ $svc.name }}
           image: {{ template "apps-common.image" (dict "Values" $.Values "name" $svc.name "image" $svc.image "tag" $svc.tag) }}
           # IfNotPresent is correct ONLY for immutable tags: CI writes
