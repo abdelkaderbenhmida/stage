@@ -29,7 +29,17 @@ def run_gitleaks(
                     "--report-format", "json",
                     "--report-path", "/tmp/report.json",
                     "--no-banner",
-                    "--redact", "true",
+                    # A bare flag, not "--redact true": gitleaks' --redact
+                    # takes an OPTIONAL uint (percent, default 100 when the
+                    # flag is present with no value) — "true" is not a valid
+                    # uint, and gitleaks exits with "invalid argument \"true\"
+                    # for \"--redact\" flag" before it scans anything.
+                    #
+                    # Every finding gitleaks reports is a committed secret, so
+                    # printing an unredacted one to a job log the tenant's
+                    # whole team can read is exactly the leak this scan exists
+                    # to catch — redaction is not optional here.
+                    "--redact",
                 ],
                 image=SANDBOX_IMAGE,
                 workspace=repo_path,

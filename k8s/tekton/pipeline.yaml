@@ -118,7 +118,14 @@ spec:
         # NOTE: no `set -e`. gitleaks exits 1 when it finds leaks — that is
         # the gate firing, not a crash — and the explicit check below is what
         # distinguishes "found something" from "did not run".
-        gitleaks detect           --source "$(workspaces.source.path)/repo"           --report-format json           --report-path /tmp/report.json           --no-banner --redact=true
+        # A bare --redact, not --redact=true: the flag takes an OPTIONAL
+        # uint (percent, default 100 when present with no value) -- "true" is
+        # not a valid uint, and gitleaks exits before it scans anything with
+        # 'invalid argument "true" for "--redact" flag'. Every finding here
+        # is a committed secret, and printing one unredacted into a job log
+        # the tenant's whole team can read is the leak this scan exists to
+        # catch, so redaction is not optional.
+        gitleaks detect --source "$(workspaces.source.path)/repo" --report-format json --report-path /tmp/report.json --no-banner --redact
         RC=$?
 
         # Fails closed, matching every other gate in this pipeline: a
@@ -187,13 +194,17 @@ spec:
           exit 1
         fi
         echo "pip-audit: no known-vulnerable pinned dependencies."
+      # 512Mi was not enough: `pip install pip-audit` into python:3.12-slim,
+      # then running it, OOMKilled the step (exit 137) with no output at all
+      # to explain why — a cgroup kill produces no stack trace, no log line,
+      # nothing but the exit code. Observed live against this exact pipeline.
       computeResources:
         requests:
           cpu: 50m
-          memory: 256Mi
+          memory: 384Mi
         limits:
           cpu: 500m
-          memory: 512Mi
+          memory: 1Gi
 ---
 apiVersion: tekton.dev/v1
 kind: Task
