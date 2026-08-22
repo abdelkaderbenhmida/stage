@@ -220,8 +220,16 @@ data:
     # ServiceAccount has no TokenReview permission — so every login fails with
     # a bare "permission denied" that names neither TokenReview nor the
     # missing right. vault-sa is bound to system:auth-delegator (see the
-    # ClusterRoleBinding below) precisely so it can be the reviewer, and this
-    # Job runs as vault-sa, so its own mounted token is the one to use.
+    # ClusterRoleBinding below) precisely so it can be the reviewer.
+    #
+    # It reads the token from the `vault-sa-token` Secret, NOT from this pod's
+    # own /var/run/secrets mount. That mount is a *bound* projected token, tied
+    # to the lifetime of the pod holding it — and this runs in a Job, whose pod
+    # completes immediately. Kubernetes then invalidates the token, so Vault's
+    # stored reviewer JWT was dead within seconds of every run: logins worked
+    # briefly after each cron tick and returned 403 the rest of the time. A
+    # legacy ServiceAccount token Secret does not expire and is what this
+    # needs.
     #
     # disable_iss_validation: Kubernetes 1.21+ issues bound service account
     # tokens whose issuer is the cluster's own URL rather than the legacy
@@ -231,7 +239,7 @@ data:
     vault write auth/kubernetes/config \
       kubernetes_host="https://kubernetes.default.svc.cluster.local" \
       kubernetes_ca_cert=@/var/run/secrets/kubernetes.io/serviceaccount/ca.crt \
-      token_reviewer_jwt=@/var/run/secrets/kubernetes.io/serviceaccount/token \
+      token_reviewer_jwt=@/vault-sa/token \
       disable_iss_validation=true || true
 
     # ── Per-service provisioning — discovery-driven ────────────────────────
@@ -311,6 +319,29 @@ data:
     echo "!! Secrets are auto-generated — DATABASE_URL points at a not-yet-existing postgres-<svc> host."
 ---
 # Job — Runs the setup script once Vault is running
+# A non-expiring ServiceAccount token for vault-sa, used as Vault's
+# token_reviewer_jwt.
+#
+# Since Kubernetes 1.24 a ServiceAccount no longer gets a token Secret
+# automatically, and the token a pod mounts is *bound* — it dies with the pod.
+# Vault needs a credential that outlives the Job that configured it, so this
+# asks for the legacy kind explicitly. Kubernetes populates `.data.token`.
+#
+# It is a real cluster credential with TokenReview rights, so nothing but Vault
+# should be able to read it; it lives in the `vault` namespace with no other
+# reader.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: vault-sa-token
+  namespace: vault
+  labels:
+    app.kubernetes.io/name: vault-sa-token
+    app.kubernetes.io/part-of: devops-platform
+  annotations:
+    kubernetes.io/service-account.name: vault-sa
+type: kubernetes.io/service-account-token
+---
 # CronJob — re-applies the same configuration on a schedule.
 #
 # Vault runs in dev mode, which forces `inmem` storage: every restart of the
@@ -399,6 +430,9 @@ spec:
                 - name: setup-script
                   mountPath: /scripts
                   readOnly: true
+                - name: vault-sa-token
+                  mountPath: /vault-sa
+                  readOnly: true
                 - name: tmp
                   mountPath: /tmp
           volumes:
@@ -406,6 +440,9 @@ spec:
               configMap:
                 name: vault-setup
                 defaultMode: 0755
+            - name: vault-sa-token
+              secret:
+                secretName: vault-sa-token
             - name: tmp
               emptyDir: {}
 ---
@@ -473,6 +510,9 @@ spec:
             - name: setup-script
               mountPath: /scripts
               readOnly: true
+            - name: vault-sa-token
+              mountPath: /vault-sa
+              readOnly: true
             - name: tmp
               mountPath: /tmp
       volumes:
@@ -480,6 +520,9 @@ spec:
           configMap:
             name: vault-setup
             defaultMode: 0755
+        - name: vault-sa-token
+          secret:
+            secretName: vault-sa-token
         - name: tmp
           emptyDir: {}
 ---
