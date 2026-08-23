@@ -27,6 +27,7 @@ from controlplane.core.app_config import (
     store_secrets,
     validate_env,
 )
+from controlplane.core.config import settings
 from controlplane.core.repo_url import InvalidRepoUrl, validate_repo_url
 from controlplane.core.validation import k8s_namespace
 from controlplane.models import Deployment, Project, User, WebhookSubscription
@@ -165,6 +166,39 @@ def project_workloads(
         "pods": pods.get("pods", []),
         "pods_reachable": pods.get("reachable", False),
     }
+
+
+@router.get("/projects/{project_id}/quota")
+def project_quota(
+    project_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    scope: Scope = Depends(get_scope),
+):
+    """Used vs hard for this project's namespace ResourceQuota.
+
+    Same tenancy rule as /workloads: the namespace is derived from the
+    project id server-side, never from the client.
+    """
+    project = _require_project(db, scope, project_id)
+    namespace = k8s_namespace(project.id)
+    return {"namespace": namespace, **platform_ops.namespace_quota_usage(namespace)}
+
+
+@router.get("/projects/{project_id}/tekton")
+def project_tekton(
+    project_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    scope: Scope = Depends(get_scope),
+):
+    """Tekton PipelineRuns in this project's own namespace.
+
+    Same tenancy rule as /workloads and /quota: the namespace is derived
+    server-side from the project id.
+    """
+    project = _require_project(db, scope, project_id)
+    namespace = k8s_namespace(project.id)
+    return {"namespace": namespace, "tekton_enabled": settings.tekton_enabled,
+            **platform_ops.namespace_pipelineruns(namespace)}
 
 
 @router.get("/projects/{project_id}/secrets")

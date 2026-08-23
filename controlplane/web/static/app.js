@@ -725,7 +725,11 @@ function namespaceQuotaPanel(project) {
   const vcpu = nodes.reduce((a, n) => a + n.vcpu, 0);
   const memMb = nodes.reduce((a, n) => a + n.memory_mb, 0);
   const diskGb = nodes.reduce((a, n) => a + n.disk_gb, 0);
-  const row = (k, v) => `<tr><td>${esc(k)}</td><td class="mono">${esc(v)}</td></tr>`;
+  // data-key ties each row to the ResourceQuota field loadQuotaUsage fills
+  // in asynchronously below — the limit column renders immediately from the
+  // project's own spec, the used column arrives once kubectl answers.
+  const row = (k, v, key) =>
+    `<tr data-key="${esc(key)}"><td>${esc(k)}</td><td class="mono">${esc(v)}</td><td class="mono used-cell">…</td></tr>`;
 
   return `
       <h2>Namespace quota</h2>
@@ -735,17 +739,35 @@ function namespaceQuotaPanel(project) {
           no node addresses. Pods are capped by this quota and isolated by a
           default-deny NetworkPolicy.
         </p>
-        <table>
-          <thead><tr><th>Resource</th><th>Limit</th></tr></thead>
+        <table id="quota-table">
+          <thead><tr><th>Resource</th><th>Limit</th><th>Used</th></tr></thead>
           <tbody>
-            ${row("CPU", `${vcpu} cores (requests ${Math.floor(vcpu / 2) || 1})`)}
-            ${row("Memory", `${(memMb / 1024).toFixed(1)} GB (requests ${(memMb / 2 / 1024).toFixed(1)} GB)`)}
-            ${row("Storage", `${diskGb} GB`)}
-            ${row("Pods", "40")}
-            ${row("Services", "20 (no NodePort or LoadBalancer)")}
+            ${row("CPU", `${vcpu} cores (requests ${Math.floor(vcpu / 2) || 1})`, "requests.cpu")}
+            ${row("Memory", `${(memMb / 1024).toFixed(1)} GB (requests ${(memMb / 2 / 1024).toFixed(1)} GB)`, "requests.memory")}
+            ${row("Storage", `${diskGb} GB`, "requests.storage")}
+            ${row("Pods", "40", "pods")}
+            ${row("Services", "20 (no NodePort or LoadBalancer)", "services")}
           </tbody>
         </table>
       </div>`;
+}
+
+/* Fills the "Used" column of #quota-table from the live ResourceQuota
+   object — separate from the panel render above because it depends on a
+   reachable cluster, and the rest of the project page must not block on it. */
+async function loadQuotaUsage(id) {
+  const table = $("#quota-table");
+  if (!table) return;
+  try {
+    const data = await api(`/projects/${id}/quota`);
+    table.querySelectorAll("tr[data-key]").forEach((tr) => {
+      const cell = tr.querySelector(".used-cell");
+      const entry = data.resources ? data.resources[tr.dataset.key] : null;
+      cell.textContent = data.reachable && entry ? `${entry.used} / ${entry.hard}` : "—";
+    });
+  } catch {
+    table.querySelectorAll(".used-cell").forEach((cell) => { cell.textContent = "—"; });
+  }
 }
 
 /* -------------------------------------------------------- project detail */
@@ -854,6 +876,14 @@ async function renderProject(id) {
         <div class="empty">Loading what is running in this environment…</div>
       </div>
 
+      ${isNamespace ? `
+      <div class="between"><h2>Tekton pipeline</h2>
+        <button class="small" id="tekton-btn">Refresh</button></div>
+      <div class="panel" id="project-tekton">
+        <div class="empty">Loading pipeline runs in this environment's own namespace…</div>
+      </div>
+      ` : ""}
+
       <div class="between"><h2>CI — your repositories</h2>
         <button class="small" id="ci-btn">Refresh</button></div>
       <div class="panel" id="project-ci">
@@ -943,6 +973,51 @@ async function renderProject(id) {
     };
     $("#workloads-btn").onclick = loadWorkloads;
     loadWorkloads();
+    if (isNamespace) loadQuotaUsage(id);
+
+    /* ------------------------------------------------------ tekton panel */
+
+    /* Every namespace-mode project gets the Pipeline/Task objects installed
+       at provision time, but a run only exists in here if TEKTON_ENABLED
+       was on when this project deployed — most deploys go through the
+       sandbox path instead. Say that plainly rather than showing a bare
+       empty table that reads as broken. */
+    const loadTekton = async () => {
+      const box = $("#project-tekton");
+      if (!box) return;
+      box.innerHTML = `<div class="empty">Loading…</div>`;
+      try {
+        const data = await api(`/projects/${id}/tekton`);
+        if (!data.reachable) {
+          box.innerHTML = `<div class="empty">Cluster unreachable: ${esc(data.error || "unknown error")}</div>`;
+          return;
+        }
+        if (!data.runs.length) {
+          box.innerHTML = `<div class="empty">
+            No Tekton PipelineRuns in <span class="mono">${esc(data.namespace)}</span> yet.
+            ${data.tekton_enabled
+              ? "The pipeline is installed here — it runs on the next deploy."
+              : "This platform currently deploys through the sandbox build path, not Tekton (TEKTON_ENABLED is off) — the pipeline is installed in this namespace but nothing submits a run against it."}
+          </div>`;
+          return;
+        }
+        box.innerHTML = `<table class="table"><thead><tr>
+            <th>Run</th><th>Status</th><th>Started</th><th>Finished</th>
+          </tr></thead><tbody>${data.runs.map((r) => `
+            <tr>
+              <td class="mono">${esc(r.name)}</td>
+              <td>${pill(r.status)}</td>
+              <td class="muted">${fmtDate(r.started_at)}</td>
+              <td class="muted">${fmtDate(r.finished_at)}</td>
+            </tr>`).join("")}</tbody></table>`;
+      } catch (err) {
+        box.innerHTML = `<div class="empty">${esc(err.message)}</div>`;
+      }
+    };
+    if (isNamespace) {
+      $("#tekton-btn").onclick = loadTekton;
+      loadTekton();
+    }
 
     /* ----------------------------------------------------------- CI panel */
 
@@ -1468,7 +1543,7 @@ async function renderSecurity(projectId) {
                     <td class="mono">${esc(f.package_name || "—")}</td>
                     <td class="mono">${esc(f.installed_version || "—")}</td>
                     <td class="mono">${esc(f.fixed_version || "no fix")}</td>
-                    <td class="mono">${esc(f.file_path ? `${f.file_path}:${f.line_number ?? ""}` : "—")}</td>
+                    <td class="mono">${esc(f.file_path ? (f.line_number ? `${f.file_path}:${f.line_number}` : f.file_path) : "—")}</td>
                   </tr>`).join("")}
 </tbody></table>`}
       </div>
@@ -1797,11 +1872,11 @@ let activeStream;
 
 function fmtMetric(value, unit) {
   if (value === null || value === undefined) return "—";
-  if (unit === "bytes") {
+  if (unit === "bytes" || unit === "bytes/s") {
     const units = ["B", "KiB", "MiB", "GiB", "TiB"];
     let v = value, i = 0;
     while (v >= 1024 && i < units.length - 1) { v /= 1024; i += 1; }
-    return `${v.toFixed(v < 10 ? 2 : 0)} ${units[i]}`;
+    return `${v.toFixed(v < 10 ? 2 : 0)} ${units[i]}${unit === "bytes/s" ? "/s" : ""}`;
   }
   if (unit === "cores") return value.toFixed(value < 1 ? 3 : 2);
   return String(Math.round(value));

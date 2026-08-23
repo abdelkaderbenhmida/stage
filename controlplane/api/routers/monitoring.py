@@ -70,6 +70,19 @@ _PANELS: dict[str, dict[str, str]] = {
             " or vector(0)"
         ),
     },
+    # cadvisor scrapes via the kubelet, which carries the pod's real
+    # namespace directly — no honor_labels split like the kube-state-metrics
+    # panels above.
+    "network_rx": {
+        "title": "Network in",
+        "unit": "bytes/s",
+        "query": 'sum(rate(container_network_receive_bytes_total{{namespace="{ns}"}}[5m]))',
+    },
+    "network_tx": {
+        "title": "Network out",
+        "unit": "bytes/s",
+        "query": 'sum(rate(container_network_transmit_bytes_total{{namespace="{ns}"}}[5m]))',
+    },
 }
 
 

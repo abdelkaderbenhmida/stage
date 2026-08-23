@@ -2092,6 +2092,76 @@ def namespace_workloads(namespace: str) -> dict[str, Any]:
     }
 
 
+def namespace_quota_usage(namespace: str) -> dict[str, Any]:
+    """Used vs hard for the ResourceQuota provisioned alongside this namespace.
+
+    The console showed only the static limit (computed client-side from the
+    project's own spec) with no sense of how much of it is actually consumed
+    — a tenant had no way to tell "I'm at 90% of my pod quota" from "I'm at
+    5%" without running kubectl themselves. The ResourceQuota object already
+    tracks both numbers server-side (`status.used`/`status.hard`); this just
+    reads them instead of reinventing the accounting.
+    """
+    res = _run(
+        ["kubectl", "get", "resourcequota", "-n", namespace, "-o", "json"],
+        timeout=KUBECTL_TIMEOUT,
+    )
+    if not res["ok"]:
+        return {"reachable": False, "error": res["stderr"], "resources": {}}
+    try:
+        data = json.loads(res["stdout"])
+    except json.JSONDecodeError:
+        return {"reachable": False, "error": "could not parse kubectl output", "resources": {}}
+
+    resources: dict[str, dict[str, str]] = {}
+    for quota in data.get("items", []):
+        status = quota.get("status", {})
+        hard = status.get("hard", {})
+        used = status.get("used", {})
+        for key in hard:
+            resources[key] = {"used": used.get(key, "0"), "hard": hard[key]}
+    return {"reachable": True, "resources": resources}
+
+
+def namespace_pipelineruns(namespace: str) -> dict[str, Any]:
+    """Tekton PipelineRuns in this tenant's own namespace, newest first.
+
+    `_install_tenant_pipeline` installs the Pipeline/Task objects into every
+    namespace-mode project at provision time regardless of TEKTON_ENABLED —
+    only whether a deploy actually *submits* a run against them is gated by
+    that setting. So this can be empty (no run yet, or the sandbox path is
+    what's actually deploying) without meaning anything is broken; the caller
+    decides how to word that, this just reports what is there.
+    """
+    from controlplane.core.tekton_status import condition_status
+
+    res = _run(
+        ["kubectl", "get", "pipelineruns.tekton.dev", "-n", namespace,
+         "-o", "json", "--sort-by=.metadata.creationTimestamp"],
+        timeout=KUBECTL_TIMEOUT,
+    )
+    if not res["ok"]:
+        return {"reachable": False, "error": res["stderr"], "runs": []}
+    try:
+        data = json.loads(res["stdout"])
+    except json.JSONDecodeError:
+        return {"reachable": False, "error": "could not parse kubectl output", "runs": []}
+
+    runs = []
+    for item in reversed(data.get("items", [])):
+        meta = item.get("metadata", {})
+        condition = ((item.get("status") or {}).get("conditions") or [{}])
+        reason = next((c.get("reason") for c in condition if c.get("type") == "Succeeded"), None)
+        runs.append({
+            "name": meta.get("name"),
+            "status": condition_status(item),
+            "reason": reason,
+            "started_at": (item.get("status") or {}).get("startTime"),
+            "finished_at": (item.get("status") or {}).get("completionTime"),
+        })
+    return {"reachable": True, "runs": runs}
+
+
 def pods_status(namespace: str | None = None) -> dict[str, Any]:
     cmd = ["kubectl", "get", "pods", "-o", "json"]
     cmd += ["-n", namespace] if namespace else ["-A"]

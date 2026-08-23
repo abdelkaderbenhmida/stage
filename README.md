@@ -278,13 +278,13 @@ on scrape configuration.
 
 ## API reference
 
-All endpoints are under `/api/v1`. 115 endpoints; grouped by router:
+All endpoints are under `/api/v1`. 117 endpoints; grouped by router:
 
 | Router | Endpoints |
 | --- | --- |
 | **auth** | `POST /register`, `POST /login`, `POST /refresh`, `POST /logout`, `GET /me`, `GET /oidc/login`, `GET /oidc/callback` |
 | **projects** | `GET/POST /projects`, `GET/PATCH/DELETE /projects/{id}`, `POST /projects/{id}/provision`, `/extend`, `/destroy`, `GET /projects/{id}/nodes`, `/plan` |
-| **deployments** | `GET/POST /projects/{id}/deployments`, `GET/DELETE /deployments/{id}`, `POST /deployments/{id}/redeploy`, `GET /deployments/{id}/webhook` |
+| **deployments** | `GET/POST /projects/{id}/deployments`, `GET/DELETE /deployments/{id}`, `POST /deployments/{id}/redeploy`, `GET /deployments/{id}/webhook`, `GET /projects/{id}/quota`, `GET /projects/{id}/tekton` |
 | **scans** | `GET/POST /projects/{id}/scans`, `GET /scans/{id}`, `GET /scans/{id}/findings`, `GET /projects/{id}/security/summary` |
 | **jobs** | `GET /jobs/{id}`, `GET /jobs/{id}/logs`, `POST /jobs/{id}/cancel`, `POST /jobs/{id}/stream-token` |
 | **teams** | `GET/POST /teams`, `GET /teams/{id}`, `POST/DELETE /teams/{id}/members`, `GET /teams/{id}/costs`, `GET/PUT/DELETE /teams/{id}/git-credential` |
