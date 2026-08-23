@@ -125,7 +125,16 @@ spec:
         # is a committed secret, and printing one unredacted into a job log
         # the tenant's whole team can read is the leak this scan exists to
         # catch, so redaction is not optional.
-        gitleaks detect --source "$(workspaces.source.path)/repo" --report-format json --report-path /tmp/report.json --no-banner --redact
+        # --no-git is required: `detect` without it scans git HISTORY, and
+        # the clone Task removes .git before this runs (on purpose — a
+        # tenant Dockerfile's COPY . . must not bake it into the image).
+        # Without .git, gitleaks fails git-log discovery, logs an error, and
+        # reports "no leaks found" regardless of what the files contain — a
+        # scan that never ran, indistinguishable from a clean one. Every
+        # deploy through this Task passed the gate unconditionally until
+        # this was caught by actually running one instead of trusting a
+        # green PipelineRun.
+        gitleaks detect --source "$(workspaces.source.path)/repo" --report-format json --report-path /tmp/report.json --no-banner --redact --no-git
         RC=$?
 
         # Fails closed, matching every other gate in this pipeline: a
