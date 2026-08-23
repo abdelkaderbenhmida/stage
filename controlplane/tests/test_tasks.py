@@ -260,6 +260,61 @@ def test_deploy_task_gates_pass_when_clean(session, project, user, stub_runners,
     assert deployment.live_url.endswith(".devops.local")
 
 
+def test_deploy_task_persists_its_gate_scans(session, project, user, stub_runners, monkeypatch):
+    """The console's Security page reads Scan rows via GET /projects/{id}/scans.
+
+    Before this fix, deploy_task ran gitleaks/pip-audit/trivy as pure gates —
+    it logged their summaries to the job log and then discarded the results,
+    so the exact scans that block every deploy never appeared there. A tenant
+    had to separately click "Run scan" and pay for a second, redundant scan
+    just to see what the deploy pipeline had already found.
+    """
+    deployment = Deployment(
+        project_id=project.id,
+        service_name="users-service",
+        repo_url="https://github.com/org/users.git",
+        branch="main",
+        port=8000,
+        replicas=2,
+        status="queued",
+    )
+    session.add(deployment)
+    session.commit()
+    job = Job(project_id=project.id, deployment_id=deployment.id, type="deploy", status="queued")
+    session.add(job)
+    session.commit()
+
+    monkeypatch.setattr(tasks, "kubectl", lambda args, *a, **k: _StubResult(exit_code=0, output="ok"))
+    monkeypatch.setattr(tasks, "kubectl_apply", lambda *a, **k: None)
+
+    def _fake_clone_with_requirements(*a, **k):
+        import pathlib
+        import tempfile
+
+        repo = pathlib.Path(tempfile.mkdtemp(prefix="fake-repo-")) / "repo"
+        repo.mkdir(parents=True, exist_ok=True)
+        (repo / "Dockerfile").write_text("FROM scratch\n")
+        (repo / "requirements.txt").write_text("requests==2.31.0\n")
+        return repo
+
+    monkeypatch.setattr(tasks, "_clone_repo", _fake_clone_with_requirements)
+
+    stub_runners.deploy_task(str(job.id), str(deployment.id), str(project.id), str(user.id))
+
+    session.refresh(deployment)
+    assert deployment.status == "live"
+
+    scans = session.scalars(
+        sa.select(Scan).where(Scan.project_id == project.id).order_by(Scan.tool)
+    ).all()
+    tools = {s.tool for s in scans}
+    assert tools == {"gitleaks", "pip_audit", "trivy"}
+    for scan in scans:
+        assert scan.status == "completed"
+        assert scan.deployment_id == deployment.id
+        assert scan.summary is not None
+
+
 def test_undeploy_task_deletes_manifests(session, project, user, stub_runners, monkeypatch):
     calls = []
 

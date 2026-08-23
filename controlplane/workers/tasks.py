@@ -1049,6 +1049,19 @@ def _run_secret_scan_gate(
     text = Path(raw).read_text() if raw and Path(raw).exists() else "[]"
     parsed = parse_gitleaks(text)
     count = sum(parsed.summary.values())
+    # Persisted so this gate's result shows up on the project's Security page
+    # and in /security/summary — the same scan that blocks the deploy, not
+    # only a copy of it a tenant has to separately click "Run scan" to see.
+    scan_repo = ScanRepository(db, Scope.system())
+    scan = scan_repo.create(deployment.project_id, "gitleaks", str(cloned), deployment_id=deployment.id)
+    scan_repo.set_result(
+        scan, "completed",
+        raw_output=_safe_json(text),
+        summary=parsed.summary,
+        duration_seconds=result.duration_seconds,
+    )
+    scan_repo.add_findings(scan, parsed.findings)
+    db.commit()
     if count:
         repo.set_status(deployment, "blocked")
         db.commit()
@@ -1108,6 +1121,19 @@ def _run_dependency_scan_gate(
         "pip-audit: "
         + ", ".join(f"{parsed.summary.get(level, 0)} {level}" for level in ("critical", "high", "medium", "low")),
     )
+    # Persisted for the same reason as the gitleaks gate above: this is the
+    # scan that actually blocks the deploy, and it needs to show up on the
+    # Security page without a tenant re-running it by hand.
+    scan_repo = ScanRepository(db, Scope.system())
+    scan = scan_repo.create(deployment.project_id, "pip_audit", str(requirements), deployment_id=deployment.id)
+    scan_repo.set_result(
+        scan, "completed",
+        raw_output=_safe_json(result.stdout),
+        summary=parsed.summary,
+        duration_seconds=result.duration_seconds,
+    )
+    scan_repo.add_findings(scan, parsed.findings)
+    db.commit()
     if gate:
         repo.set_status(deployment, "blocked")
         db.commit()
@@ -1558,6 +1584,18 @@ def deploy_task(job_id: str, deployment_id: str, project_id: str, user_id: str) 
                         for level in ("critical", "high", "medium", "low")
                     ),
                 )
+                # Persisted for the same reason as the gitleaks/pip-audit gates:
+                # this is the scan that actually blocks the deploy.
+                scan_repo = ScanRepository(db, Scope.system())
+                trivy_scan = scan_repo.create(deployment.project_id, "trivy", scan_ref, deployment_id=deployment.id)
+                scan_repo.set_result(
+                    trivy_scan, "completed",
+                    raw_output=_safe_json(trivy.stdout),
+                    summary=parsed.summary,
+                    duration_seconds=trivy.duration_seconds,
+                )
+                scan_repo.add_findings(trivy_scan, parsed.findings)
+                db.commit()
                 if gate > 0:
                     repo.set_status(deployment, "blocked", image_ref=image_ref)
                     db.commit()
