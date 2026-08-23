@@ -366,8 +366,30 @@ def test_local_auth_flag_blocks_password_login(client, provider):
 def test_auth_config_endpoint(client):
     resp = client.get("/api/v1/auth/config")
     assert resp.status_code == 200
-    assert resp.json() == {"oidc_enabled": True, "local_auth_enabled": True}
+    assert resp.json()["oidc_enabled"] is True
+    assert resp.json()["local_auth_enabled"] is True
     object.__setattr__(settings, "oidc_enabled", False)
     resp = client.get("/api/v1/auth/config")
     assert resp.json()["oidc_enabled"] is False
     object.__setattr__(settings, "oidc_enabled", True)
+
+
+def test_auth_config_test_mode_reflects_environment_and_nothing_else_can(client, settings_override):
+    """The frontend used to decide "test mode" itself, unconditionally,
+    hardcoding a fixed password into the JS in every build — so any real
+    deployment that shipped that static file let anyone log in as any
+    account that had ever registered through the console, by typing only
+    its email. Only the server's own ENVIRONMENT setting may say this is a
+    lab; the endpoint must not take a hint from the client (headers, query
+    params) that could let anyone opt themselves into it."""
+    with settings_override(environment="production"):
+        resp = client.get("/api/v1/auth/config")
+        assert resp.json()["test_mode"] is False
+
+        # A client-controlled signal must not be able to flip this.
+        resp = client.get("/api/v1/auth/config", headers={"X-Test-Mode": "true"})
+        assert resp.json()["test_mode"] is False
+
+    with settings_override(environment="dev"):
+        resp = client.get("/api/v1/auth/config")
+        assert resp.json()["test_mode"] is True

@@ -131,6 +131,16 @@ def auth_config() -> dict:
     return {
         "oidc_enabled": settings.oidc_enabled,
         "local_auth_enabled": settings.local_auth_enabled,
+        # Authoritative, server-side signal for the SPA's password-free
+        # "test mode" login form (docs/TODO.md's lab convenience). The
+        # frontend used to decide this itself by hardcoding a fixed
+        # password into the JS unconditionally, in every build — so any
+        # deployment that shipped that static file, including a
+        # production one, let anyone log in as any account that had ever
+        # registered through the console by typing only its email. The
+        # server is the only thing that can be trusted to say whether
+        # this is actually a lab.
+        "test_mode": settings.is_dev,
     }
 
 

@@ -317,10 +317,28 @@ function showError(err, retry) {
 
 /* ---------------------------------------------------------------- login */
 
-function renderAuth() {
+async function renderAuth() {
   setNav(null);
-  // Test build: no real password storage on a lab machine, so the form is
-  // username-only and the API receives a fixed development password.
+  loading();
+
+  // The server decides whether this is a lab, never the client. The form
+  // used to hardcode a fixed password into the JS and send it unconditionally
+  // for every login and every registration, in every build — so any real
+  // deployment that shipped this static file let anyone log in as any
+  // account that had ever registered through the console, by typing only its
+  // email. No password entry required, because none was ever checked: the
+  // same constant went out regardless of who was typing. Waiting for this
+  // response is what makes a production build render a real password field
+  // instead.
+  let cfg;
+  try {
+    cfg = await api("/auth/config", { auth: false });
+  } catch {
+    cfg = { oidc_enabled: false, local_auth_enabled: true, test_mode: false };
+  }
+  const testMode = cfg.test_mode === true;
+  // Fixed only inside the branch that requires the server to have confirmed
+  // test_mode; the production branch below never reads this.
   const TEST_PASSWORD = "Test!Passw0rd123";
   // Bare usernames are a convenience for the lab, not a rule about which
   // accounts exist: the platform stores real addresses and accounts on other
@@ -329,16 +347,30 @@ function renderAuth() {
   // the API then rejected with "the part after the @-sign contains invalid
   // characters: '@'" — an error that blamed the address rather than the form.
   const DEFAULT_DOMAIN = "example.com";
+
   view().innerHTML = `
     <div class="auth-wrap">
       <div class="panel">
         <h1>Central Platform</h1>
-        <p class="subtitle">Self-service infrastructure, deployments and security scanning.<br><span class="muted small">Test mode — a bare username is completed to @${DEFAULT_DOMAIN}; a full email is used as typed.</span></p>
+        <p class="subtitle">Self-service infrastructure, deployments and security scanning.${
+          testMode
+            ? `<br><span class="muted small">Test mode — a bare username is completed to @${DEFAULT_DOMAIN}; a full email is used as typed. A fixed password is used automatically; nothing you type in a password field here is checked.</span>`
+            : ""
+        }</p>
         <form id="auth-form">
           <div class="field">
-            <label for="email">Username or email</label>
-            <input id="email" type="text" autocomplete="username" placeholder="alice or alice@example.com" required>
+            <label for="email">${testMode ? "Username or email" : "Email"}</label>
+            <input id="email" type="text" autocomplete="username" placeholder="${testMode ? "alice or alice@example.com" : "alice@example.com"}" required>
           </div>
+          ${testMode ? "" : `
+          <div class="field">
+            <label for="password">Password</label>
+            <input id="password" type="password" autocomplete="current-password" required>
+          </div>
+          <div class="field" id="password-confirm-field" hidden>
+            <label for="password-confirm">Confirm password</label>
+            <input id="password-confirm" type="password" autocomplete="new-password">
+          </div>`}
           <div class="row">
             <button class="primary" type="submit" id="submit-btn">Log in</button>
             <button class="link" type="button" id="toggle-mode">Create an account</button>
@@ -355,14 +387,12 @@ function renderAuth() {
 
   // SSO availability (docs/TODO.md Task 3.3). When the platform is
   // SSO-only, the email/password form is pointless — hide it.
-  api("/auth/config", { auth: false }).then((cfg) => {
-    if (cfg.oidc_enabled) {
-      $("#sso-row").hidden = false;
-      if (!cfg.local_auth_enabled) {
-        $("#sso-row").classList.add("sso-only");
-      }
+  if (cfg.oidc_enabled) {
+    $("#sso-row").hidden = false;
+    if (!cfg.local_auth_enabled) {
+      $("#sso-row").classList.add("sso-only");
     }
-  }).catch(() => {});
+  }
 
   $("#sso-btn").onclick = () => {
     window.open("/api/v1/auth/oidc/login", "controlplane-sso", "popup,width=520,height=620");
@@ -373,6 +403,7 @@ function renderAuth() {
     $("#submit-btn").textContent = mode === "register" ? "Create account" : "Log in";
     $("#toggle-mode").textContent = mode === "register" ? "I already have an account" : "Create an account";
     $("#auth-error").textContent = "";
+    if (!testMode) $("#password-confirm-field").hidden = mode !== "register";
   };
 
   $("#auth-form").onsubmit = async (e) => {
@@ -380,21 +411,23 @@ function renderAuth() {
     const emailInput = $("#email");
     clearFieldError(emailInput);
     const typed = emailInput.value.trim();
-    const email = typed.includes("@") ? typed : `${typed}@${DEFAULT_DOMAIN}`;
+    const email = testMode && !typed.includes("@") ? `${typed}@${DEFAULT_DOMAIN}` : typed;
+    const password = testMode ? TEST_PASSWORD : $("#password").value;
     $("#auth-error").textContent = "";
     $("#submit-btn").disabled = true;
     try {
       if (mode === "register") {
+        const passwordConfirm = testMode ? TEST_PASSWORD : $("#password-confirm").value;
         await api("/auth/register", {
           auth: false,
           method: "POST",
-          body: { email, password: TEST_PASSWORD, password_confirm: TEST_PASSWORD },
+          body: { email, password, password_confirm: passwordConfirm },
         });
       }
       const tokens = await api("/auth/login", {
         auth: false,
         method: "POST",
-        body: { email, password: TEST_PASSWORD },
+        body: { email, password },
       });
       setTokens(tokens.access_token, tokens.refresh_token);
       refreshWhoami();
