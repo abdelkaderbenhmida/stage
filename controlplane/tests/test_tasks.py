@@ -315,6 +315,70 @@ def test_deploy_task_persists_its_gate_scans(session, project, user, stub_runner
         assert scan.summary is not None
 
 
+def test_kubectl_apply_scopes_every_object_to_the_tenant_namespace(project, monkeypatch, tmp_path):
+    """A manifest with no metadata.namespace of its own (like
+    k8s/tekton/pipeline.yaml — a static, unrendered file) must not fall back
+    to kubectl's default namespace.
+
+    Before this fix, `kubectl apply -f` ran with no `-n` at all, so every
+    tenant's "private" Tekton Pipeline/Task install landed in the same
+    shared "default" namespace instead of its own — silently overwriting the
+    previous tenant's copy on every provision, the opposite of the isolation
+    `_install_tenant_pipeline`'s own docstring promises. Caught by inspecting
+    a real cluster after two provisions: both tenants' objects were sitting
+    in `default`, dated to each provision, while their own namespaces had
+    none.
+    """
+    from controlplane.runners.sandbox import SandboxResult
+
+    commands = []
+
+    def _fake_run_sandbox(run):
+        commands.append(run.command)
+        return SandboxResult(exit_code=0, output="", duration_seconds=0.01)
+
+    monkeypatch.setattr(tasks, "run_sandbox", _fake_run_sandbox)
+    manifest = tmp_path / "pipeline.yaml"
+    manifest.write_text("kind: Task\nmetadata:\n  name: clone\n")
+
+    tasks.kubectl_apply([manifest], project, force_namespace=True)
+
+    apply_cmds = [c for c in commands if "apply" in c]
+    assert apply_cmds, "kubectl apply was never invoked"
+    expected_ns = tasks.k8s_namespace(project.id)
+    for cmd in apply_cmds:
+        assert "-n" in cmd, f"apply ran with no namespace flag: {cmd}"
+        assert cmd[cmd.index("-n") + 1] == expected_ns, f"apply scoped to the wrong namespace: {cmd}"
+
+
+def test_kubectl_apply_does_not_force_namespace_by_default(project, monkeypatch, tmp_path):
+    """render_namespace()'s own output must keep working: it deliberately
+    includes a ServiceMonitor addressed to the `monitoring` namespace, not
+    the tenant's — forcing `-n <tenant ns>` on every object in that manifest
+    set makes kubectl reject that one. Reproduced live: the first version of
+    the force-namespace fix broke every new provision with "the namespace
+    from the provided object 'monitoring' does not match the namespace
+    'p-...'" the moment it ran against a real cluster."""
+    from controlplane.runners.sandbox import SandboxResult
+
+    commands = []
+
+    def _fake_run_sandbox(run):
+        commands.append(run.command)
+        return SandboxResult(exit_code=0, output="", duration_seconds=0.01)
+
+    monkeypatch.setattr(tasks, "run_sandbox", _fake_run_sandbox)
+    manifest = tmp_path / "namespace.yaml"
+    manifest.write_text("kind: Namespace\nmetadata:\n  name: p-x\n")
+
+    tasks.kubectl_apply([manifest], project)
+
+    apply_cmds = [c for c in commands if "apply" in c]
+    assert apply_cmds, "kubectl apply was never invoked"
+    for cmd in apply_cmds:
+        assert "-n" not in cmd, f"apply forced a namespace when it must not have: {cmd}"
+
+
 def test_undeploy_task_deletes_manifests(session, project, user, stub_runners, monkeypatch):
     calls = []
 

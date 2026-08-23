@@ -430,7 +430,7 @@ def _install_tenant_pipeline(job_id: str, project: Project, on_line=None) -> Non
         if not manifest.is_file():
             _append_log(job_id, "WARNING: k8s/tekton/pipeline.yaml not found — Tekton deploys will fail")
             return
-        kubectl_apply([manifest], project, on_line)
+        kubectl_apply([manifest], project, on_line, force_namespace=True)
         _append_log(job_id, "Tekton pipeline installed for this namespace.")
     except Exception as exc:  # noqa: BLE001
         _append_log(job_id, f"WARNING: could not install the Tekton pipeline: {exc}")
@@ -2039,7 +2039,20 @@ def _gitops_ship(
     _append_log(job_id, f"ArgoCD Application {namespace}-{service} synced from {settings.gitops_branch}")
 
 
-def kubectl_apply(manifest_paths: list[Path], project: Project, on_line=None) -> None:
+def kubectl_apply(
+    manifest_paths: list[Path], project: Project, on_line=None, force_namespace: bool = False
+) -> None:
+    """Apply manifests for ``project``, optionally forcing them into its namespace.
+
+    ``force_namespace`` must stay off for render_namespace()'s own output: it
+    deliberately includes a ServiceMonitor addressed to the `monitoring`
+    namespace (Prometheus scrapes from there, not the tenant's), so passing
+    `-n <tenant ns>` for every object in that manifest set makes kubectl
+    reject the one that legitimately targets somewhere else. It exists for
+    manifests that carry no metadata.namespace at all — a static file like
+    k8s/tekton/pipeline.yaml — where its absence used to mean "whatever the
+    sandbox kubeconfig's default namespace is", the same one for every tenant.
+    """
     ns = k8s_namespace(project.id)
     with _kubeconfig_path(project) as kubeconfig:
         kubeconfig_mounts = [(kubeconfig, "/kube/config", True)] if kubeconfig.exists() else []
@@ -2056,11 +2069,14 @@ def kubectl_apply(manifest_paths: list[Path], project: Project, on_line=None) ->
         )
         if namespaces.exit_code != 0:
             kubectl(["create", "namespace", ns], project, on_line=on_line)
+        apply_cmd = ["kubectl", "apply"]
+        if force_namespace:
+            apply_cmd += ["-n", ns]
         for manifest in manifest_paths:
             manifest = manifest.resolve()
             result = run_sandbox(
                 SandboxRun(
-                    command=["kubectl", "apply", "-f", str(manifest)],
+                    command=[*apply_cmd, "-f", str(manifest)],
                     # `mounts=` alone doesn't cut it — the container needs the
                     # rendered manifest itself; without a workspace/mount for it,
                     # kubectl sees a path that doesn't exist inside the sandbox.
