@@ -5,6 +5,7 @@ through the sandbox (docs/PLATFORM_SPEC.md §7.2). Job logs are scrubbed
 before they are written to the database (§7.4).
 """
 
+import base64
 import contextlib
 import json
 import os
@@ -159,30 +160,51 @@ def _step(job_id: uuid.UUID, index: int, total: int, name: str) -> None:
     Steps are recorded as rows because the log they used to be parsed from is
     truncated head-first at 200 kB — on a long run the early steps vanish
     from it, and with them the start of the graph.
+
+    A Tekton deploy calls this more than once for the same index: deploy_task
+    opens step 1 itself for its own host-side pre-clone (needed to read
+    .platform.yml before the pipeline shape is known), and the Tekton
+    PipelineRun's own "clone" TaskRun reports through this same index too —
+    (job_id, step_index) is unique, so the second call used to crash the
+    whole deploy with a UniqueViolation the instant a Tekton build actually
+    ran, rather than only on the sandbox path this was written against.
+    Reopening the existing row instead of inserting a second one makes a
+    repeat call at the same index a safe no-op-ish update rather than a
+    collision.
     """
     from datetime import UTC, datetime
 
     with SessionLocal() as db:
-        # Close the previous open step (if any)
-        prev = db.execute(
-            select(JobStep)
-            .where(JobStep.job_id == job_id, JobStep.finished_at.is_(None))
-            .order_by(JobStep.step_index.desc())
+        existing = db.execute(
+            select(JobStep).where(JobStep.job_id == job_id, JobStep.step_index == index)
         ).scalar_one_or_none()
-        if prev:
-            prev.finished_at = datetime.now(UTC)
-            prev.status = "succeeded"
-        # Insert the new step
-        step = JobStep(
-            job_id=job_id,
-            step_index=index,
-            step_total=total,
-            name=name,
-            status="running",
-            started_at=datetime.now(UTC),
-        )
-        db.add(step)
-        db.commit()
+        if existing is not None:
+            existing.step_total = total
+            existing.name = name
+            existing.status = "running"
+            existing.finished_at = None
+            db.commit()
+        else:
+            # Close the previous open step (if any)
+            prev = db.execute(
+                select(JobStep)
+                .where(JobStep.job_id == job_id, JobStep.finished_at.is_(None))
+                .order_by(JobStep.step_index.desc())
+            ).scalar_one_or_none()
+            if prev:
+                prev.finished_at = datetime.now(UTC)
+                prev.status = "succeeded"
+            # Insert the new step
+            step = JobStep(
+                job_id=job_id,
+                step_index=index,
+                step_total=total,
+                name=name,
+                status="running",
+                started_at=datetime.now(UTC),
+            )
+            db.add(step)
+            db.commit()
     # Still emit to log so parseStages keeps working
     _append_log(job_id, f"[{index}/{total}] {name}")
 
@@ -434,6 +456,46 @@ def _install_tenant_pipeline(job_id: str, project: Project, on_line=None) -> Non
         _append_log(job_id, "Tekton pipeline installed for this namespace.")
     except Exception as exc:  # noqa: BLE001
         _append_log(job_id, f"WARNING: could not install the Tekton pipeline: {exc}")
+
+    _install_registry_credentials_secret(job_id, project, on_line)
+
+
+def _install_registry_credentials_secret(job_id: str, project: Project, on_line=None) -> None:
+    """Create the `registry-credentials` Secret Tekton's build Task mounts.
+
+    render_pipelinerun()'s docker-credentials workspace names this Secret by
+    a fixed name in the tenant's own namespace, but nothing ever created it —
+    kaniko's build Pod sat in Init forever with "MountVolume.SetUp failed
+    ... secret 'registry-credentials' not found", reproduced on a real
+    Tekton deploy. settings.registry_user is blank in every environment this
+    has been tested in (a local insecure registry needs no auth at all), so
+    an empty `{"auths": {}}` config is the common case; when real registry
+    credentials are configured, they go in instead.
+    """
+    try:
+        auths = {}
+        if settings.registry_user:
+            host = settings.registry_internal or settings.registry
+            token = base64.b64encode(f"{settings.registry_user}:{settings.registry_password}".encode()).decode()
+            auths = {host: {"username": settings.registry_user, "password": settings.registry_password, "auth": token}}
+        dockerconfigjson = base64.b64encode(json.dumps({"auths": auths}).encode()).decode()
+        secret = {
+            "apiVersion": "v1",
+            "kind": "Secret",
+            "metadata": {"name": "registry-credentials"},
+            "type": "kubernetes.io/dockerconfigjson",
+            "data": {".dockerconfigjson": dockerconfigjson},
+        }
+        tmpdir = Path(tempfile.mkdtemp(prefix="ctl-regcred-"))
+        try:
+            manifest = tmpdir / "registry-credentials.json"
+            manifest.write_text(json.dumps(secret))
+            kubectl_apply([manifest], project, on_line, force_namespace=True)
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+        _append_log(job_id, "Registry credentials secret installed for this namespace.")
+    except Exception as exc:  # noqa: BLE001
+        _append_log(job_id, f"WARNING: could not install the registry credentials secret: {exc}")
 
 
 def _grant_tenant_log_access(db: Session, job_id: str, project: Project) -> None:
@@ -1831,7 +1893,36 @@ def _tekton_kubectl(project: Project):
         _check(result)
         return result.output
 
-    return TektonKubectl(call=call)
+    def apply_manifest(manifest: dict) -> None:
+        # KubectlCaller.apply()'s default writes the manifest to a *host*
+        # tempfile and tells `call` to `apply -f <that path>` — call() runs
+        # kubectl inside a sandbox container, which cannot see a host path
+        # that was never mounted in. Same class of bug as gitleaks' report
+        # file earlier: mount the containing directory, not the file itself
+        # (a single-file mount is an unreliable Docker/host limitation,
+        # reproduced independently of image or code).
+        tmpdir = Path(tempfile.mkdtemp(prefix="ctl-tekton-"))
+        try:
+            (tmpdir / "pipelinerun.json").write_text(json.dumps(manifest))
+            with _kubeconfig_path(project) as kubeconfig:
+                mounts = [(tmpdir, "/tmp/out", False)]
+                if kubeconfig.exists():
+                    mounts.append((kubeconfig, "/kube/config", True))
+                result = run_sandbox(
+                    SandboxRun(
+                        command=["kubectl", "apply", "-f", "/tmp/out/pipelinerun.json"],
+                        mounts=mounts,
+                        env={"KUBECONFIG": "/kube/config"},
+                        network_enabled=True,
+                        network=settings.registry_network,
+                        timeout_seconds=300,
+                    )
+                )
+            _check(result)
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+    return TektonKubectl(call=call, apply_manifest=apply_manifest)
 
 
 def _tekton_build_and_scan(

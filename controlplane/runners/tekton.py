@@ -380,6 +380,15 @@ class KubectlCaller:
     """
 
     call: object
+    # Callable[[dict], None]. Optional because ``call`` alone is enough for
+    # every read (get pipelinerun/taskrun) — only start() needs to hand the
+    # cluster a manifest, and where ``call`` actually runs determines how
+    # that manifest has to get there. The default below assumes ``call``
+    # can see a host tempfile directly, which is true for a fake in tests
+    # but false for a real kubectl running inside a sandbox container — the
+    # real caller (workers/tasks.py:_tekton_kubectl) supplies its own that
+    # mounts the manifest in first.
+    apply_manifest: object = None
 
     def json(self, args: list[str]) -> dict:
         raw = self.call(args)
@@ -388,13 +397,19 @@ class KubectlCaller:
         except (TypeError, json.JSONDecodeError) as exc:
             raise TektonError(f"could not read kubectl output: {str(raw)[:200]}") from exc
 
+    def apply(self, manifest: dict) -> None:
+        if self.apply_manifest is not None:
+            self.apply_manifest(manifest)
+            return
+        with TemporaryDirectory(prefix="ctl-tekton-") as tmp:
+            path = Path(tmp) / "pipelinerun.json"
+            path.write_text(json.dumps(manifest))
+            self.call(["apply", "-f", str(path)])
+
 
 def start(kubectl: KubectlCaller, pipelinerun: dict) -> str:
     """Create the PipelineRun. Returns its name."""
-    with TemporaryDirectory(prefix="ctl-tekton-") as tmp:
-        path = Path(tmp) / "pipelinerun.json"
-        path.write_text(json.dumps(pipelinerun))
-        kubectl.call(["apply", "-f", str(path)])
+    kubectl.apply(pipelinerun)
     return pipelinerun["metadata"]["name"]
 
 

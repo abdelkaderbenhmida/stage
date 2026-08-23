@@ -178,6 +178,15 @@ spec:
         allowPrivilegeEscalation: false
         capabilities:
           drop: ["ALL"]
+      # python:3.12-slim's /etc/passwd has no entry for UID 65532, so pip
+      # resolves no home directory and falls back to installing into "/",
+      # which this non-root user cannot write to: "Permission denied:
+      # '/.local'". /tmp is always writable regardless of UID and is
+      # container-local scratch space, not tenant source — nothing here
+      # needs to survive past this step.
+      env:
+        - name: HOME
+          value: /tmp
       script: |
         #!/bin/sh
         set -eu
@@ -192,6 +201,13 @@ spec:
         fi
 
         pip install --quiet --no-cache-dir pip-audit
+        # `pip install` with no writable system site-packages (HOME=/tmp
+        # above, non-root) falls back to a --user install under
+        # $HOME/.local, which is not on PATH by default — pip-audit then
+        # reports "installed" but the next line fails with "pip-audit: not
+        # found", exit 127, indistinguishable from this script's own view
+        # from a real vulnerability finding without reading the pod log.
+        export PATH="$HOME/.local/bin:$PATH"
         # --strict is the whole gate: it is exactly what the platform's own
         # CI runs (.github/workflows/ci-cd.yml), with no severity floor. Any
         # known-vulnerable pinned dependency blocks, not only CRITICAL/HIGH —

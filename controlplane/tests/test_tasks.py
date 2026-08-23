@@ -379,6 +379,64 @@ def test_kubectl_apply_does_not_force_namespace_by_default(project, monkeypatch,
         assert "-n" not in cmd, f"apply forced a namespace when it must not have: {cmd}"
 
 
+def test_tekton_kubectl_apply_manifest_mounts_the_file_into_the_sandbox(project, monkeypatch):
+    """`kubectl(args, project)` only mounts the kubeconfig — `apply -f <path>`
+    additionally needs the manifest itself visible inside the sandbox
+    container. Before this fix, KubectlCaller's default `apply()` wrote the
+    PipelineRun to a host tempfile and handed the sandboxed kubectl that
+    host path directly, which failed with "the path ... does not exist" on
+    every real Tekton deploy — _tekton_kubectl's apply_manifest must instead
+    mount the containing directory in and reference the mounted path."""
+    from controlplane.runners.sandbox import SandboxResult
+
+    runs = []
+
+    def _fake_run_sandbox(run):
+        runs.append(run)
+        return SandboxResult(exit_code=0, output="", duration_seconds=0.01)
+
+    monkeypatch.setattr(tasks, "run_sandbox", _fake_run_sandbox)
+
+    caller = tasks._tekton_kubectl(project)
+    caller.apply_manifest({"metadata": {"name": "deploy-1"}})
+
+    assert len(runs) == 1
+    run = runs[0]
+    assert "-f" in run.command
+    manifest_arg = run.command[run.command.index("-f") + 1]
+    # The referenced path must be one of the mounted container paths, not a
+    # bare host filesystem path the sandbox has never seen.
+    mounted_container_paths = [dst for _src, dst, _ro in run.mounts]
+    assert any(manifest_arg.startswith(p) for p in mounted_container_paths), (
+        f"apply -f references {manifest_arg!r}, which is not under any mounted path {mounted_container_paths}"
+    )
+
+
+def test_install_registry_credentials_secret_creates_a_usable_dockerconfig(project, monkeypatch):
+    """render_pipelinerun()'s docker-credentials workspace names a Secret
+    called `registry-credentials` in the tenant's own namespace, but nothing
+    ever created it — kaniko's build Pod sat in Init forever with
+    "MountVolume.SetUp failed ... secret 'registry-credentials' not found",
+    reproduced on a real Tekton deploy against this platform's own local
+    registry (which needs no auth at all)."""
+    import base64
+    import json
+    import uuid as _uuid
+
+    calls = []
+    monkeypatch.setattr(tasks, "kubectl_apply", lambda paths, *a, **k: calls.append(paths[0].read_text()))
+
+    tasks._install_registry_credentials_secret(str(_uuid.uuid4()), project)
+
+    assert len(calls) == 1
+    secret = json.loads(calls[0])
+    assert secret["kind"] == "Secret"
+    assert secret["metadata"]["name"] == "registry-credentials"
+    assert secret["type"] == "kubernetes.io/dockerconfigjson"
+    dockerconfig = json.loads(base64.b64decode(secret["data"][".dockerconfigjson"]))
+    assert "auths" in dockerconfig
+
+
 def test_undeploy_task_deletes_manifests(session, project, user, stub_runners, monkeypatch):
     calls = []
 
@@ -650,6 +708,29 @@ def test_step_records_rows_with_indexes_totals_and_timestamps(session, project, 
         assert s.started_at is not None
         assert s.finished_at is not None
         assert s.finished_at >= s.started_at
+
+
+def test_step_reopening_the_same_index_updates_rather_than_crashes(session, project, user):
+    """A Tekton deploy calls _step at the same index more than once:
+    deploy_task opens step 1 itself for its own pre-clone (reading
+    .platform.yml before the pipeline shape is known), and Tekton's own
+    "clone" TaskRun reports through that same index again via
+    _tekton_build_and_scan's report() callback. (job_id, step_index) is
+    unique, so the second call used to raise a UniqueViolation and crash the
+    whole deploy — reproduced on a real Tekton deploy, where the pipeline
+    itself had already succeeded by the time the job was reported "failed"."""
+    from controlplane.models import JobStep
+
+    job = _new_job(session, project, "deploy")
+    tasks._step(job.id, 1, 9, "cloning repository")
+    tasks._step(job.id, 1, 9, "cloning repository")  # must not raise
+
+    session.expire_all()
+    steps = session.scalars(
+        sa.select(JobStep).where(JobStep.job_id == job.id, JobStep.step_index == 1)
+    ).all()
+    assert len(steps) == 1
+    assert steps[0].status == "running"
 
 
 def test_step_emits_n_of_n_markers_to_the_log(session, project, user):

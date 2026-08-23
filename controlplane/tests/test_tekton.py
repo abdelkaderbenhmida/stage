@@ -230,6 +230,40 @@ def test_taskruns_are_filtered_to_this_run():
     assert "tekton.dev/pipelineRun=deploy-1" in taskrun_call
 
 
+def test_start_uses_the_injected_apply_when_one_is_given():
+    """The real caller (workers/tasks.py:_tekton_kubectl) supplies its own
+    apply_manifest because its `call` runs kubectl inside a sandbox
+    container, which cannot see a host tempfile that was never mounted in —
+    the bug this replaced: `start()` used to always write to a host
+    tempfile and hand `call` that path directly, and the sandboxed kubectl
+    failed with "the path ... does not exist" on every real Tekton deploy.
+    start() must prefer apply_manifest over the call-based fallback whenever
+    one is given."""
+    applied = []
+    caller = tekton.KubectlCaller(call=lambda args: (_ for _ in ()).throw(AssertionError(
+        f"call() must not be used for apply when apply_manifest is set: {args}"
+    )), apply_manifest=applied.append)
+
+    name = tekton.start(caller, {"metadata": {"name": "deploy-1"}})
+
+    assert name == "deploy-1"
+    assert applied == [{"metadata": {"name": "deploy-1"}}]
+
+
+def test_start_falls_back_to_call_when_no_apply_manifest_is_given():
+    """Every existing test in this file constructs KubectlCaller with just a
+    `call`, so the fallback must keep working for a caller that genuinely can
+    see a host tempfile (true of a fake in tests)."""
+    applied = []
+    caller = tekton.KubectlCaller(call=lambda args: applied.append(args))
+
+    name = tekton.start(caller, {"metadata": {"name": "deploy-1"}})
+
+    assert name == "deploy-1"
+    assert len(applied) == 1
+    assert applied[0][:2] == ["apply", "-f"]
+
+
 def test_unreadable_kubectl_output_is_an_error_not_an_empty_run():
     """Parsing failure must not look like "the run has no steps and is
     pending" — that would poll forever against a broken cluster."""
