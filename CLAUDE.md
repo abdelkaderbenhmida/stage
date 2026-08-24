@@ -76,9 +76,12 @@ only (a VM-mode project's own cluster has neither ArgoCD nor Tekton in it):
   the AppProject is the server-side half and is not optional. Rendered Secrets are never
   committed. `renderers/argocd.py`, `runners/gitops.py`, `k8s/gitops/`.
 - `TEKTON_ENABLED` — clone/build/scan become Pods in the tenant's namespace, built with
-  kaniko. Loses `.platform.yml` stages and Dockerfile autogeneration, both of which read
-  a host checkout that this path never produces. `runners/tekton.py`,
-  `core/tekton_status.py`, `k8s/tekton/`.
+  kaniko. A repository's own `.platform.yml` stages still run, each as its own Task in
+  the submitted PipelineRun; Dockerfile autogeneration is what's lost, since it reads a
+  host checkout this path never produces — a repo without a committed Dockerfile fails
+  here. Needs `REGISTRY_CIDR` set to the registry's own subnet or every build times out
+  reaching it (the tenant namespace's default-deny egress excludes RFC1918 by design).
+  `runners/tekton.py`, `core/tekton_status.py`, `k8s/tekton/`.
 
 `GITOPS_REPO_URL` vs `GITOPS_REPO_URL_INTERNAL` is the same host/in-cluster address split
 as `REGISTRY` vs `REGISTRY_INTERNAL` — setting them equal breaks one side, and the
