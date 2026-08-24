@@ -23,7 +23,7 @@ class UserRepository:
     def get_by_id(self, user_id: uuid.UUID) -> User | None:
         return self.session.get(User, user_id)
 
-    def create(self, email: str, password_hash: str, role: str = "user") -> User:
+    def create(self, email: str, password_hash: str, role: str = "admin") -> User:
         user = User(email=email, password_hash=password_hash, role=role)
         self.session.add(user)
         self.session.flush()
