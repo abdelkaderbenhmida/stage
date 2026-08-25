@@ -772,40 +772,166 @@ async function loadQuotaUsage(id) {
 
 /* -------------------------------------------------------- project detail */
 
+// The three tools do not take the same kind of target: Trivy scans a built
+// image, while Gitleaks and pip-audit scan a source repository. Asking once
+// for "image reference or https repository URL" and sending that one string
+// to all three guaranteed that two of them failed whichever the user typed,
+// so ask for what each tool actually needs. Module-scoped: both the project
+// Overview page and the Security page trigger scans.
+const SCAN_TARGETS = {
+  trivy: { label: "Image reference to scan:", placeholder: "users-service:1.0.0" },
+  repo: { label: "Repository URL to scan (https only):", placeholder: "https://github.com/org/service.git" },
+};
+const TOOL_KIND = { trivy: "trivy", gitleaks: "repo", pip_audit: "repo" };
+
+async function runScanFlow(id) {
+  const choice = $("#scan-tool").value;
+  // tool -> target, so each request carries the target that tool accepts.
+  const requests = [];
+
+  if (choice === "all") {
+    const image = await modalPrompt("New scan", SCAN_TARGETS.trivy.label, {
+      placeholder: SCAN_TARGETS.trivy.placeholder,
+    });
+    if (!image) return;
+    const repo = await modalPrompt("New scan", SCAN_TARGETS.repo.label, {
+      placeholder: SCAN_TARGETS.repo.placeholder,
+    });
+    if (!repo) return;
+    requests.push({ tool: "trivy", target: image });
+    requests.push({ tool: "gitleaks", target: repo });
+    requests.push({ tool: "pip_audit", target: repo });
+  } else {
+    const kind = SCAN_TARGETS[TOOL_KIND[choice]];
+    const target = await modalPrompt("New scan", kind.label, { placeholder: kind.placeholder });
+    if (!target) return;
+    requests.push({ tool: choice, target });
+  }
+
+  try {
+    for (const body of requests) {
+      await api(`/projects/${id}/scans`, { method: "POST", body });
+    }
+    toast(requests.length > 1 ? `${requests.length} scans queued.` : "Scan queued.");
+  } catch (err) { toast(err.message, true); }
+}
+
+/* ------------------------------------------------- project sub-nav shell */
+
+/* The project detail page used to be one long scroll through nine sections
+   — quota, deployments, security, workloads, pipeline, CI, config,
+   monitoring, logs — each fetching independently the moment the page
+   loaded, whether or not anyone scrolled that far. Split into its own route
+   per section instead, all sharing this same header + tab strip. */
+function projectTabs(project, active) {
+  const isNamespace = (project.infra_spec || {}).mode === "namespace";
+  const tabs = [
+    ["overview", "Overview", `#/projects/${project.id}`],
+    ["security", "Security", `#/security/${project.id}`],
+    ["workloads", "Workloads", `#/projects/${project.id}/workloads`],
+    ...(isNamespace ? [["pipeline", "Pipeline", `#/projects/${project.id}/pipeline`]] : []),
+    ["ci", "CI", `#/projects/${project.id}/ci`],
+    ["config", "Config", `#/projects/${project.id}/config`],
+    ["monitoring", "Monitoring", `#/projects/${project.id}/monitoring`],
+    ["logs", "Logs", `#/projects/${project.id}/logs`],
+  ];
+  return `<div class="proj-tabs">${tabs.map(([key, label, href]) => `
+    <a class="proj-tab ${key === active ? "active" : ""}" href="${href}">${label}</a>`).join("")}</div>`;
+}
+
+function projectHeader(project, active) {
+  const isNamespace = (project.infra_spec || {}).mode === "namespace";
+  return `
+    <div class="between">
+      <div>
+        <h1>${esc(project.name)} ${pill(project.status)} ${ttlBadge(project)}</h1>
+        <p class="subtitle">${esc(project.description || "No description")}</p>
+      </div>
+      <div class="row">
+        ${project.expires_at ? `<button id="extend-btn">Extend</button>` : ""}
+        ${isNamespace ? "" : `<button id="plan-btn">Preview plan</button>`}
+        <button class="primary" id="provision-btn">Provision</button>
+        <button class="danger" id="destroy-btn">Destroy</button>
+      </div>
+    </div>
+    ${project.expiry_warned
+      ? `<div class="panel"><p class="error">This environment expires soon and will be destroyed automatically. Extend it if you still need it.</p></div>`
+      : ""}
+    ${projectTabs(project, active)}`;
+}
+
+/* Wires the header's own buttons (Provision/Plan/Destroy/Extend) — every
+   sub-page renders the same header, so every sub-page calls this once. */
+function bindProjectHeaderActions(id, project) {
+  $("#provision-btn").onclick = async () => {
+    try {
+      const { job_id } = await api(`/projects/${id}/provision`, { method: "POST" });
+      toast("Provisioning started.");
+      location.hash = `#/jobs/${job_id}`;
+    } catch (err) { toast(err.message, true); }
+  };
+
+  // Absent in namespace mode, where there is no Terraform workspace.
+  if ($("#plan-btn")) $("#plan-btn").onclick = async () => {
+    toast("Running terraform plan…");
+    try {
+      const result = await api(`/projects/${id}/plan`);
+      view().insertAdjacentHTML("beforeend",
+        `<h2>Plan output</h2><div class="panel"><div class="log">${esc(result.output)}</div></div>`);
+    } catch (err) { toast(err.message, true); }
+  };
+
+  $("#destroy-btn").onclick = async () => {
+    // Destroying is irreversible, so require the project name to be typed.
+    const typed = await modalPrompt(
+      "Destroy environment",
+      `This permanently destroys all infrastructure for "${project.name}". This cannot be undone. Type the project name to confirm:`,
+      { placeholder: project.name },
+    );
+    if (typed === null || typed === "") return;
+    if (typed !== project.name) return toast("Name did not match — nothing was destroyed.", true);
+    try {
+      const { job_id } = await api(`/projects/${id}/destroy`, {
+        method: "POST", body: { confirm_name: typed },
+      });
+      toast("Destroy started.");
+      location.hash = `#/jobs/${job_id}`;
+    } catch (err) { toast(err.message, true); }
+  };
+
+  const extendBtn = $("#extend-btn");
+  if (extendBtn) {
+    extendBtn.onclick = async () => {
+      const hours = await modalPrompt(
+        "Extend environment",
+        "Extend this environment by how many hours?",
+        { value: "24", type: "number", placeholder: "24" },
+      );
+      if (hours === null || hours === "") return;
+      try {
+        await api(`/projects/${id}/extend`, {
+          method: "POST", body: { hours: Number(hours) },
+        });
+        toast("Environment extended.");
+        route(); // re-render whichever sub-page is current; the header is shared
+      } catch (err) { toast(err.message, true); }
+    };
+  }
+}
+
+/* --------------------------------------------------------------- overview */
+
 async function renderProject(id) {
   setNav("projects");
   loading();
   try {
-    const [project, deployments, scans] = await Promise.all([
+    const [project, deployments] = await Promise.all([
       api(`/projects/${id}`),
       api(`/projects/${id}/deployments`).catch(() => []),
-      api(`/projects/${id}/scans`).catch(() => []),
     ]);
-
-    // Namespace mode carves a quota-bounded slice out of a shared cluster:
-    // there are no VMs, no IPs and no Terraform state. Showing a node table
-    // and a "terraform plan" button for it describes infrastructure that
-    // does not exist — the plan call even fails, because there is no
-    // workspace to plan (see renderers/namespace.py vs render_terraform).
     const isNamespace = (project.infra_spec || {}).mode === "namespace";
 
-    view().innerHTML = `
-      <div class="between">
-        <div>
-          <h1>${esc(project.name)} ${pill(project.status)} ${ttlBadge(project)}</h1>
-          <p class="subtitle">${esc(project.description || "No description")}</p>
-        </div>
-        <div class="row">
-          ${project.expires_at ? `<button id="extend-btn">Extend</button>` : ""}
-          ${isNamespace ? "" : `<button id="plan-btn">Preview plan</button>`}
-          <button class="primary" id="provision-btn">Provision</button>
-          <button class="danger" id="destroy-btn">Destroy</button>
-        </div>
-      </div>
-      ${project.expiry_warned
-        ? `<div class="panel"><p class="error">This environment expires soon and will be destroyed automatically. Extend it if you still need it.</p></div>`
-        : ""}
-
+    view().innerHTML = projectHeader(project, "overview") + `
       ${isNamespace ? namespaceQuotaPanel(project) : `
       <h2>Infrastructure</h2>
       <div class="panel table-wrap">
@@ -841,89 +967,48 @@ async function renderProject(id) {
                   <td><button class="small redeploy" data-id="${d.id}">Redeploy</button></td>
                 </tr>`).join("")}
               </tbody></table>`}
-      </div>
+      </div>`;
 
-      <div class="between"><h2>Security scans</h2>
-        <div class="row">
-          <select id="scan-tool" style="width:auto">
-            <option value="all">All tools</option>
-            <option value="trivy">Trivy only</option>
-            <option value="gitleaks">Gitleaks only</option>
-            <option value="pip_audit">pip-audit only</option>
-          </select>
-          <button class="small" id="scan-btn">Run scan</button>
-          <a href="#/security/${project.id}">View report</a>
-        </div></div>
-      <div class="panel table-wrap">
-        ${scans.length === 0
-          ? `<div class="empty">No scans run yet.</div>`
-          : `<table>
-              <thead><tr><th>Tool</th><th>Target</th><th>Status</th><th>Findings</th><th>When</th></tr></thead>
-              <tbody>${scans.slice(0, 10).map((s) => `
-                <tr>
-                  <td class="mono">${esc(s.tool)}</td>
-                  <td class="mono">${esc(s.target)}</td>
-                  <td>${pill(s.status)}</td>
-                  <td>${s.summary ? severityInline(s.summary) : "—"}</td>
-                  <td class="muted">${fmtDate(s.created_at)}</td>
-                </tr>`).join("")}
-              </tbody></table>`}
-      </div>
+    bindProjectHeaderActions(id, project);
+    if (isNamespace) loadQuotaUsage(id);
 
+    $("#deploy-btn").onclick = () => renderDeployForm(project);
+
+    view().querySelectorAll(".redeploy").forEach((btn) => {
+      btn.onclick = async () => {
+        try {
+          await api(`/deployments/${btn.dataset.id}/redeploy`, { method: "POST" });
+          toast("Redeploy queued.");
+          renderProject(id);
+        } catch (err) { toast(err.message, true); }
+      };
+    });
+
+    autoRefresh(renderProject, id, [project.status, ...deployments.map((d) => d.status)]);
+  } catch (err) {
+    showError(err, route);
+  }
+}
+
+/* -------------------------------------------------------------- workloads */
+
+/* What is actually running in this project's namespace. The operator
+   console answers this for the platform's own services via ArgoCD; tenant
+   apps are applied with plain kubectl, so their answer comes from the
+   namespace itself. */
+async function renderProjectWorkloads(id) {
+  setNav("projects");
+  loading();
+  try {
+    const project = await api(`/projects/${id}`);
+    view().innerHTML = projectHeader(project, "workloads") + `
       <div class="between"><h2>Running workloads</h2>
         <button class="small" id="workloads-btn">Refresh</button></div>
       <div class="panel" id="project-workloads">
         <div class="empty">Loading what is running in this environment…</div>
-      </div>
-
-      ${isNamespace ? `
-      <div class="between"><h2>Tekton pipeline</h2>
-        <button class="small" id="tekton-btn">Refresh</button></div>
-      <div class="panel" id="project-tekton">
-        <div class="empty">Loading pipeline runs in this environment's own namespace…</div>
-      </div>
-      ` : ""}
-
-      <div class="between"><h2>CI — your repositories</h2>
-        <button class="small" id="ci-btn">Refresh</button></div>
-      <div class="panel" id="project-ci">
-        <div class="empty">Loading GitHub Actions runs for this project's repositories…</div>
-      </div>
-
-      <div class="between"><h2>Configuration &amp; secrets</h2>
-        <button class="small" id="secrets-btn">Refresh</button></div>
-      <div class="panel" id="project-secrets">
-        <div class="empty">Loading configuration…</div>
-      </div>
-
-      <div class="between"><h2>Monitoring</h2>
-        <div class="row">
-          <select id="metrics-window">
-            <option value="60">last hour</option>
-            <option value="360">last 6 hours</option>
-            <option value="1440">last 24 hours</option>
-          </select>
-          <button class="small" id="metrics-btn">Refresh</button>
-        </div></div>
-      <div class="panel" id="project-metrics">
-        <div class="empty">Loading metrics for this environment…</div>
-      </div>
-
-      <div class="between"><h2>Logs</h2>
-        <div class="row">
-          <input id="logs-search" placeholder="search term (e.g. error)" style="width:16rem">
-          <button class="small" id="logs-btn">Fetch logs</button>
-        </div></div>
-      <div class="panel" id="project-logs">
-        <div class="empty">Fetch recent log lines from Loki for this project's namespace.</div>
       </div>`;
+    bindProjectHeaderActions(id, project);
 
-    /* ------------------------------------------- running workloads panel */
-
-    /* What is actually running in this project's namespace. The operator
-       console answers this for the platform's own services via ArgoCD;
-       tenant apps are applied with plain kubectl, so their answer comes
-       from the namespace itself. */
     const loadWorkloads = async () => {
       const box = $("#project-workloads");
       if (!box) return;
@@ -973,15 +1058,31 @@ async function renderProject(id) {
     };
     $("#workloads-btn").onclick = loadWorkloads;
     loadWorkloads();
-    if (isNamespace) loadQuotaUsage(id);
+  } catch (err) {
+    showError(err, route);
+  }
+}
 
-    /* ------------------------------------------------------ tekton panel */
+/* ---------------------------------------------------------------- pipeline */
 
-    /* Every namespace-mode project gets the Pipeline/Task objects installed
-       at provision time, but a run only exists in here if TEKTON_ENABLED
-       was on when this project deployed — most deploys go through the
-       sandbox path instead. Say that plainly rather than showing a bare
-       empty table that reads as broken. */
+/* Every namespace-mode project gets the Pipeline/Task objects installed at
+   provision time, but a run only exists in here if TEKTON_ENABLED was on
+   when this project deployed — most deploys go through the sandbox path
+   instead. Say that plainly rather than showing a bare empty table that
+   reads as broken. */
+async function renderProjectPipeline(id) {
+  setNav("projects");
+  loading();
+  try {
+    const project = await api(`/projects/${id}`);
+    view().innerHTML = projectHeader(project, "pipeline") + `
+      <div class="between"><h2>Tekton pipeline</h2>
+        <button class="small" id="tekton-btn">Refresh</button></div>
+      <div class="panel" id="project-tekton">
+        <div class="empty">Loading pipeline runs in this environment's own namespace…</div>
+      </div>`;
+    bindProjectHeaderActions(id, project);
+
     const loadTekton = async () => {
       const box = $("#project-tekton");
       if (!box) return;
@@ -1014,15 +1115,30 @@ async function renderProject(id) {
         box.innerHTML = `<div class="empty">${esc(err.message)}</div>`;
       }
     };
-    if (isNamespace) {
-      $("#tekton-btn").onclick = loadTekton;
-      loadTekton();
-    }
+    $("#tekton-btn").onclick = loadTekton;
+    loadTekton();
+  } catch (err) {
+    showError(err, route);
+  }
+}
 
-    /* ----------------------------------------------------------- CI panel */
+/* --------------------------------------------------------------------- ci */
 
-    /* GitHub Actions for the repositories THIS project deploys — not the
-       platform's own pipeline, which is what the operator console shows. */
+/* GitHub Actions for the repositories THIS project deploys — not the
+   platform's own pipeline, which is what the operator console shows. */
+async function renderProjectCi(id) {
+  setNav("projects");
+  loading();
+  try {
+    const project = await api(`/projects/${id}`);
+    view().innerHTML = projectHeader(project, "ci") + `
+      <div class="between"><h2>CI — your repositories</h2>
+        <button class="small" id="ci-btn">Refresh</button></div>
+      <div class="panel" id="project-ci">
+        <div class="empty">Loading GitHub Actions runs for this project's repositories…</div>
+      </div>`;
+    bindProjectHeaderActions(id, project);
+
     const loadCi = async () => {
       const box = $("#project-ci");
       if (!box) return;
@@ -1093,11 +1209,28 @@ async function renderProject(id) {
     };
     $("#ci-btn").onclick = loadCi;
     loadCi();
+  } catch (err) {
+    showError(err, route);
+  }
+}
 
-    /* ------------------------------------------------------ secrets panel */
+/* ---------------------------------------------------------------- config */
 
-    /* Names only — values live in the secret store and no endpoint returns
-       them, so this can show what a service carries without exposing it. */
+/* Names only — values live in the secret store and no endpoint returns
+   them, so this can show what a service carries without exposing it. */
+async function renderProjectConfig(id) {
+  setNav("projects");
+  loading();
+  try {
+    const project = await api(`/projects/${id}`);
+    view().innerHTML = projectHeader(project, "config") + `
+      <div class="between"><h2>Configuration &amp; secrets</h2>
+        <button class="small" id="secrets-btn">Refresh</button></div>
+      <div class="panel" id="project-secrets">
+        <div class="empty">Loading configuration…</div>
+      </div>`;
+    bindProjectHeaderActions(id, project);
+
     const loadSecrets = async () => {
       const box = $("#project-secrets");
       if (!box) return;
@@ -1127,8 +1260,32 @@ async function renderProject(id) {
     };
     $("#secrets-btn").onclick = loadSecrets;
     loadSecrets();
+  } catch (err) {
+    showError(err, route);
+  }
+}
 
-    /* ---------------------------------------------------- monitoring panel */
+/* ------------------------------------------------------------ monitoring */
+
+async function renderProjectMonitoring(id) {
+  setNav("projects");
+  loading();
+  try {
+    const project = await api(`/projects/${id}`);
+    view().innerHTML = projectHeader(project, "monitoring") + `
+      <div class="between"><h2>Monitoring</h2>
+        <div class="row">
+          <select id="metrics-window">
+            <option value="60">last hour</option>
+            <option value="360">last 6 hours</option>
+            <option value="1440">last 24 hours</option>
+          </select>
+          <button class="small" id="metrics-btn">Refresh</button>
+        </div></div>
+      <div class="panel" id="project-metrics">
+        <div class="empty">Loading metrics for this environment…</div>
+      </div>`;
+    bindProjectHeaderActions(id, project);
 
     const loadMetrics = async () => {
       const box = $("#project-metrics");
@@ -1155,88 +1312,28 @@ async function renderProject(id) {
     $("#metrics-btn").onclick = loadMetrics;
     $("#metrics-window").onchange = loadMetrics;
     loadMetrics();
+  } catch (err) {
+    showError(err, route);
+  }
+}
 
-    $("#provision-btn").onclick = async () => {
-      try {
-        const { job_id } = await api(`/projects/${id}/provision`, { method: "POST" });
-        toast("Provisioning started.");
-        location.hash = `#/jobs/${job_id}`;
-      } catch (err) { toast(err.message, true); }
-    };
+/* ------------------------------------------------------------------ logs */
 
-    // Absent in namespace mode, where there is no Terraform workspace.
-    if ($("#plan-btn")) $("#plan-btn").onclick = async () => {
-      toast("Running terraform plan…");
-      try {
-        const result = await api(`/projects/${id}/plan`);
-        view().insertAdjacentHTML("beforeend",
-          `<h2>Plan output</h2><div class="panel"><div class="log">${esc(result.output)}</div></div>`);
-      } catch (err) { toast(err.message, true); }
-    };
-
-    $("#destroy-btn").onclick = async () => {
-      // Destroying is irreversible, so require the project name to be typed.
-      const typed = await modalPrompt(
-        "Destroy environment",
-        `This permanently destroys all infrastructure for "${project.name}". This cannot be undone. Type the project name to confirm:`,
-        { placeholder: project.name },
-      );
-      if (typed === null || typed === "") return;
-      if (typed !== project.name) return toast("Name did not match — nothing was destroyed.", true);
-      try {
-        const { job_id } = await api(`/projects/${id}/destroy`, {
-          method: "POST", body: { confirm_name: typed },
-        });
-        toast("Destroy started.");
-        location.hash = `#/jobs/${job_id}`;
-      } catch (err) { toast(err.message, true); }
-    };
-
-    // The three tools do not take the same kind of target: Trivy scans a
-    // built image, while Gitleaks and pip-audit scan a source repository.
-    // Asking once for "image reference or https repository URL" and sending
-    // that one string to all three guaranteed that two of them failed
-    // whichever the user typed, so ask for what each tool actually needs.
-    const SCAN_TARGETS = {
-      trivy: { label: "Image reference to scan:", placeholder: "users-service:1.0.0" },
-      repo: { label: "Repository URL to scan (https only):", placeholder: "https://github.com/org/service.git" },
-    };
-    const TOOL_KIND = { trivy: "trivy", gitleaks: "repo", pip_audit: "repo" };
-
-    $("#scan-btn").onclick = async () => {
-      const choice = $("#scan-tool").value;
-      // tool -> target, so each request carries the target that tool accepts.
-      const requests = [];
-
-      if (choice === "all") {
-        const image = await modalPrompt("New scan", SCAN_TARGETS.trivy.label, {
-          placeholder: SCAN_TARGETS.trivy.placeholder,
-        });
-        if (!image) return;
-        const repo = await modalPrompt("New scan", SCAN_TARGETS.repo.label, {
-          placeholder: SCAN_TARGETS.repo.placeholder,
-        });
-        if (!repo) return;
-        requests.push({ tool: "trivy", target: image });
-        requests.push({ tool: "gitleaks", target: repo });
-        requests.push({ tool: "pip_audit", target: repo });
-      } else {
-        const kind = SCAN_TARGETS[TOOL_KIND[choice]];
-        const target = await modalPrompt("New scan", kind.label, { placeholder: kind.placeholder });
-        if (!target) return;
-        requests.push({ tool: choice, target });
-      }
-
-      try {
-        for (const body of requests) {
-          await api(`/projects/${id}/scans`, { method: "POST", body });
-        }
-        toast(requests.length > 1 ? `${requests.length} scans queued.` : "Scan queued.");
-        renderProject(id);
-      } catch (err) { toast(err.message, true); }
-    };
-
-    $("#deploy-btn").onclick = () => renderDeployForm(project);
+async function renderProjectLogs(id) {
+  setNav("projects");
+  loading();
+  try {
+    const project = await api(`/projects/${id}`);
+    view().innerHTML = projectHeader(project, "logs") + `
+      <div class="between"><h2>Logs</h2>
+        <div class="row">
+          <input id="logs-search" placeholder="search term (e.g. error)" style="width:16rem">
+          <button class="small" id="logs-btn">Fetch logs</button>
+        </div></div>
+      <div class="panel" id="project-logs">
+        <div class="empty">Fetch recent log lines from Loki for this project's namespace.</div>
+      </div>`;
+    bindProjectHeaderActions(id, project);
 
     const loadLogs = async (search) => {
       const el = $("#project-logs");
@@ -1260,41 +1357,6 @@ async function renderProject(id) {
     $("#logs-search").onkeydown = (ev) => {
       if (ev.key === "Enter") loadLogs(ev.target.value.trim());
     };
-
-    const extendBtn = $("#extend-btn");
-    if (extendBtn) {
-      extendBtn.onclick = async () => {
-        const hours = await modalPrompt(
-          "Extend environment",
-          "Extend this environment by how many hours?",
-          { value: "24", type: "number", placeholder: "24" },
-        );
-        if (hours === null || hours === "") return;
-        try {
-          await api(`/projects/${id}/extend`, {
-            method: "POST", body: { hours: Number(hours) },
-          });
-          toast("Environment extended.");
-          renderProject(id);
-        } catch (err) { toast(err.message, true); }
-      };
-    }
-
-    view().querySelectorAll(".redeploy").forEach((btn) => {
-      btn.onclick = async () => {
-        try {
-          await api(`/deployments/${btn.dataset.id}/redeploy`, { method: "POST" });
-          toast("Redeploy queued.");
-          renderProject(id);
-        } catch (err) { toast(err.message, true); }
-      };
-    });
-
-    autoRefresh(renderProject, id, [
-      project.status,
-      ...deployments.map((d) => d.status),
-      ...scans.map((s) => s.status),
-    ]);
   } catch (err) {
     showError(err, route);
   }
@@ -1453,6 +1515,20 @@ async function renderSecurity(projectId) {
     view().innerHTML = `
       <h1>Security — ${esc(project.name)}</h1>
       <p class="subtitle">Current findings from the most recent scan of each tool.</p>
+      ${projectTabs(project, "security")}
+
+      <div class="between">
+        <span></span>
+        <div class="row">
+          <select id="scan-tool" style="width:auto">
+            <option value="all">All tools</option>
+            <option value="trivy">Trivy only</option>
+            <option value="gitleaks">Gitleaks only</option>
+            <option value="pip_audit">pip-audit only</option>
+          </select>
+          <button class="small" id="scan-btn">Run scan</button>
+        </div>
+      </div>
 
       <div class="sev-grid">
         ${SEVERITIES.map((s) => `
@@ -1504,6 +1580,11 @@ async function renderSecurity(projectId) {
               </tbody></table>`}
       </div>
       <div id="findings"></div>`;
+
+    $("#scan-btn").onclick = async () => {
+      await runScanFlow(projectId);
+      renderSecurity(projectId);
+    };
 
     // The findings endpoint supports severity filtering and pagination; keep
     // the current selection when re-rendering so a filter survives paging.
@@ -2098,6 +2179,12 @@ const ROUTES = [
   [/^\/projects$/, renderProjects],
   [/^\/projects\/new$/, renderNewProject],
   [/^\/projects\/([0-9a-f-]{36})$/, renderProject],
+  [/^\/projects\/([0-9a-f-]{36})\/workloads$/, renderProjectWorkloads],
+  [/^\/projects\/([0-9a-f-]{36})\/pipeline$/, renderProjectPipeline],
+  [/^\/projects\/([0-9a-f-]{36})\/ci$/, renderProjectCi],
+  [/^\/projects\/([0-9a-f-]{36})\/config$/, renderProjectConfig],
+  [/^\/projects\/([0-9a-f-]{36})\/monitoring$/, renderProjectMonitoring],
+  [/^\/projects\/([0-9a-f-]{36})\/logs$/, renderProjectLogs],
   [/^\/catalogue$/, renderCatalogue],
   [/^\/teams$/, renderTeams],
   [/^\/security$/, () => renderSecurity(null)],

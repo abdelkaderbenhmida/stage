@@ -224,6 +224,25 @@ label {
   user-select: none;
 }
 
+/* Project detail sub-nav — Overview/Security/Workloads/etc, each its own
+   route (#/projects/:id/…) rather than one long scrolling page. Mirrors
+   #platform-root .cfg-tabs's look, un-prefixed since the control-plane half
+   has no equivalent namespacing root of its own. */
+.proj-tabs {
+  display: flex; gap: 2px; margin: 16px 0 24px; border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+
+.proj-tab {
+  color: var(--muted); font-size: 12px; font-weight: 600; text-decoration: none;
+  padding: 10px 14px; text-transform: uppercase; letter-spacing: .4px;
+  border-bottom: 2px solid transparent; transition: all .15s;
+}
+
+.proj-tab:hover { color: var(--accent); }
+
+.proj-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+
 /* The control-plane half renders into a pane inside the platform layout, so
    it must not re-establish a page-height flex column of its own. */
 #cp-root {
