@@ -122,6 +122,18 @@ class Settings:
     # Worker sandbox
     sandbox_image: str = field(default_factory=lambda: _env(
         "SANDBOX_IMAGE", "platform/sandbox:latest"))
+    # A tenant's .platform.yml stage that names no image of its own falls
+    # back to this. Under the sandbox path that's sandbox_image — fine
+    # there, since `docker run` on the control-plane host already has it
+    # cached locally. Under Tekton the same fallback is a Pod pull request
+    # from inside the cluster, and sandbox_image is never pushed anywhere a
+    # cluster can reach — reproduced live as "pull access denied,
+    # repository does not exist" the first time a tenant deploy ran a stage
+    # with no image of its own under Tekton. A small, universally-pullable
+    # public image is the correct default here, not this platform's own
+    # multi-gigabyte build image.
+    tekton_default_stage_image: str = field(default_factory=lambda: _env(
+        "TEKTON_DEFAULT_STAGE_IMAGE", "python:3.12-alpine"))
     sandbox_network_enabled: bool = field(
         default_factory=lambda: _env("SANDBOX_NETWORK_ENABLED", "true").lower() == "true")
     provision_timeout_seconds: int = field(

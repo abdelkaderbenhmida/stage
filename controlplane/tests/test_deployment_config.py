@@ -127,7 +127,7 @@ def test_secret_values_are_not_rendered_into_the_deployment_manifest(tmp_path, m
 
     monkeypatch.setattr(app_config, "load_secrets", lambda *a: {"TOKEN": SECRET_VALUE})
     monkeypatch.setattr(tasks, "load_secrets", lambda *a: {"TOKEN": SECRET_VALUE})
-    monkeypatch.setattr(tasks, "deployment_manifests_dir", lambda pid, mode: tmp_path)
+    monkeypatch.setattr(tasks, "deployment_manifests_dir", lambda pid, mode, did: tmp_path)
 
     project = type("P", (), {
         "id": project_id, "name": "t", "team_id": team_id,
@@ -160,7 +160,7 @@ def test_the_rendered_secret_is_not_world_readable(tmp_path, monkeypatch):
     from controlplane.workers import tasks
 
     monkeypatch.setattr(tasks, "load_secrets", lambda *a: {"TOKEN": SECRET_VALUE})
-    monkeypatch.setattr(tasks, "deployment_manifests_dir", lambda pid, mode: tmp_path)
+    monkeypatch.setattr(tasks, "deployment_manifests_dir", lambda pid, mode, did: tmp_path)
 
     project = type("P", (), {
         "id": uuid.uuid4(), "name": "t", "team_id": uuid.uuid4(),

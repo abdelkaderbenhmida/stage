@@ -340,7 +340,7 @@ def render_pipelinerun(
             },
         },
         "spec": {
-            "pipelineSpec": build_pipeline_spec(stages, settings.sandbox_image),
+            "pipelineSpec": build_pipeline_spec(stages, settings.tekton_default_stage_image),
             # The tenant's own ServiceAccount, so the build holds exactly the
             # permissions the tenant has and nothing the control plane has.
             "taskRunTemplate": {"serviceAccountName": service_account},

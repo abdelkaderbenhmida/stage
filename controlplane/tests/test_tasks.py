@@ -379,6 +379,97 @@ def test_kubectl_apply_does_not_force_namespace_by_default(project, monkeypatch,
         assert "-n" not in cmd, f"apply forced a namespace when it must not have: {cmd}"
 
 
+def test_persist_tekton_scan_results_reads_the_report_out_of_pod_logs(session, project):
+    """Before this, deploying through Tekton left the Scan table completely
+    empty: gitleaks/pip-audit/trivy run as Pods in the tenant's own
+    namespace and nothing ever read their output back — reproduced live,
+    six real Tekton deploys, zero rows in `scans`. Each scan Task echoes its
+    JSON report between markers in its own log specifically so this can
+    find it, since there is no other channel back once the Pod is gone."""
+    from controlplane.models import Deployment
+
+    deployment = Deployment(
+        project_id=project.id, service_name="svc", repo_url="https://github.com/org/repo.git",
+        branch="main", port=8000, replicas=1, status="building",
+    )
+    session.add(deployment)
+    session.commit()
+
+    gitleaks_report = "===SCAN_REPORT_BEGIN===\n[]\n===SCAN_REPORT_END==="
+    pip_audit_report = '===SCAN_REPORT_BEGIN===\n{"dependencies": []}\n===SCAN_REPORT_END==='
+    trivy_report = '===SCAN_REPORT_BEGIN===\n{"Results": []}\n===SCAN_REPORT_END==='
+    logs_by_pod = {
+        "secret-scan-pod": gitleaks_report,
+        "dependency-scan-pod": pip_audit_report,
+        "scan-pod": trivy_report,
+    }
+
+    def fake_call(args):
+        if args[0] == "get" and args[1] == "taskrun":
+            return json.dumps({"items": [
+                {"metadata": {"labels": {"tekton.dev/pipelineTask": "secret-scan"}},
+                 "status": {"podName": "secret-scan-pod"}},
+                {"metadata": {"labels": {"tekton.dev/pipelineTask": "dependency-scan"}},
+                 "status": {"podName": "dependency-scan-pod"}},
+                {"metadata": {"labels": {"tekton.dev/pipelineTask": "scan"}},
+                 "status": {"podName": "scan-pod"}},
+                {"metadata": {"labels": {"tekton.dev/pipelineTask": "build"}},
+                 "status": {"podName": "build-pod"}},
+            ]})
+        if args[0] == "logs":
+            return logs_by_pod[args[1]]
+        return ""
+
+    caller = type("C", (), {"call": staticmethod(fake_call)})()
+    tasks._persist_tekton_scan_results(session, caller, "p-x", "deploy-abc", deployment, "img:tag")
+
+    scans = session.scalars(
+        sa.select(Scan).where(Scan.project_id == project.id).order_by(Scan.tool)
+    ).all()
+    assert {s.tool for s in scans} == {"gitleaks", "pip_audit", "trivy"}
+    for scan in scans:
+        assert scan.status == "completed"
+        assert scan.deployment_id == deployment.id
+
+
+def test_delete_tekton_workspace_pvc_finds_the_pvc_by_owner_reference():
+    """The PVC a PipelineRun's "source" workspace creates carries no label
+    tying it to the run — only an ownerReference — so it has to be found by
+    scanning every PVC in the namespace. Left uncleaned, one 2Gi PVC
+    accumulates per deploy attempt (success or fail) against the tenant's
+    fixed persistentvolumeclaims quota: reproduced live deploying six
+    services with a couple of retries each — the ninth PipelineRun's PVC
+    creation failed with "exceeded quota ... used: 8, limited: 8" and every
+    deploy after that failed the same way, with no self-service recovery."""
+    calls = []
+
+    def fake_call(args):
+        calls.append(args)
+        if args[:2] == ["get", "pvc"]:
+            return json.dumps({"items": [
+                {"metadata": {"name": "pvc-unrelated", "ownerReferences": [
+                    {"kind": "PipelineRun", "name": "some-other-run"},
+                ]}},
+                {"metadata": {"name": "pvc-target", "ownerReferences": [
+                    {"kind": "PipelineRun", "name": "deploy-abc"},
+                ]}},
+            ]})
+        return ""
+
+    caller = type("C", (), {"call": staticmethod(fake_call)})()
+    tasks._delete_tekton_workspace_pvc(caller, "p-x", "deploy-abc")
+
+    delete_calls = [c for c in calls if c[:2] == ["delete", "pvc"]]
+    assert delete_calls == [["delete", "pvc", "pvc-target", "--namespace=p-x", "--ignore-not-found"]]
+
+
+def test_delete_tekton_workspace_pvc_is_best_effort(monkeypatch):
+    """Must never raise and turn a successful deploy into a failed job over
+    freeing scratch space."""
+    caller = type("C", (), {"call": staticmethod(lambda args: (_ for _ in ()).throw(RuntimeError("kubectl down")))})()
+    tasks._delete_tekton_workspace_pvc(caller, "p-x", "deploy-abc")  # must not raise
+
+
 def test_tekton_kubectl_apply_manifest_mounts_the_file_into_the_sandbox(project, monkeypatch):
     """`kubectl(args, project)` only mounts the kubeconfig — `apply -f <path>`
     additionally needs the manifest itself visible inside the sandbox

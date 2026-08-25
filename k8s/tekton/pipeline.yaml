@@ -137,6 +137,14 @@ spec:
         gitleaks detect --source "$(workspaces.source.path)/repo" --report-format json --report-path /tmp/report.json --no-banner --redact --no-git
         RC=$?
 
+        # The control plane has no other way to reach this Task's report —
+        # its Pod is gone by the time the worker notices the PipelineRun
+        # finished. Printed unconditionally, before either exit branch below,
+        # so the Security page can show what ran even when the gate blocks.
+        echo "===SCAN_REPORT_BEGIN==="
+        cat /tmp/report.json 2>/dev/null || echo "[]"
+        echo "===SCAN_REPORT_END==="
+
         # Fails closed, matching every other gate in this pipeline: a
         # checkout that could not be scanned is not one known secret-free.
         if [ "$RC" -ne 0 ] && [ "$RC" -ne 1 ]; then
@@ -197,6 +205,9 @@ spec:
         done
         if [ -z "$REQ" ]; then
           echo "pip-audit: no requirements.txt found — skipping dependency scan."
+          echo "===SCAN_REPORT_BEGIN==="
+          echo "{}"
+          echo "===SCAN_REPORT_END==="
           exit 0
         fi
 
@@ -214,7 +225,24 @@ spec:
         # this repository estimates a severity from the CVSS vector for the
         # summary shown in the UI (parse_pip_audit), but the gate itself has
         # never had a floor, so this Task does not invent one either.
-        if ! pip-audit --requirement "$REQ" --strict; then
+        # --format json --output, not stdout: pip-audit's human-readable
+        # table and its JSON report cannot both go to the same stream, and
+        # the control plane needs the JSON to reach the Security page the
+        # same way the sandbox path's does.
+        # set -e is active for the rest of this script (the file checks
+        # above rely on it); pip-audit exiting 1 on findings is expected,
+        # not a crash, so it has to be exempted here the same way the
+        # gitleaks and trivy scripts are never run under set -e at all.
+        set +e
+        pip-audit --requirement "$REQ" --strict --format json --output /tmp/report.json
+        RC=$?
+        set -e
+
+        echo "===SCAN_REPORT_BEGIN==="
+        cat /tmp/report.json 2>/dev/null || echo "{}"
+        echo "===SCAN_REPORT_END==="
+
+        if [ "$RC" -ne 0 ]; then
           echo "Deploy blocked: pip-audit found known-vulnerable pinned dependencies."
           exit 1
         fi
@@ -327,8 +355,21 @@ spec:
         # clean one — which is how an unscanned image once shipped as passing.
         if [ "$RC" -ne 0 ] || [ ! -s /tmp/report.json ]; then
           echo "Image could not be scanned, so it was not deployed (trivy exited $RC)."
+          echo "===SCAN_REPORT_BEGIN==="
+          echo "{}"
+          echo "===SCAN_REPORT_END==="
           exit 1
         fi
+
+        # Only reaches the console's Security page via this log — trivy's
+        # own Pod is gone by the time the worker parses the PipelineRun's
+        # result, so there is no other path back to the Scan table. Filtered
+        # to CRITICAL/HIGH only (the --severity flag above), so a persisted
+        # summary from this Task never carries a MEDIUM or LOW count, unlike
+        # the sandbox path's unfiltered scan.
+        echo "===SCAN_REPORT_BEGIN==="
+        cat /tmp/report.json
+        echo "===SCAN_REPORT_END==="
 
         COUNT=$(grep -o '"Severity":"\(CRITICAL\|HIGH\)"' /tmp/report.json | wc -l)
         printf '%s' "$COUNT" > "$(results.blocking.path)"

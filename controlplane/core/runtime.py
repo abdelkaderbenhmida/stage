@@ -21,12 +21,21 @@ def namespace_workspace(project_id: uuid.UUID) -> Path:
     return Path(settings.workspace_root) / "namespaces" / str(project_id)
 
 
-def deployment_manifests_dir(project_id: uuid.UUID, mode: str) -> Path:
+def deployment_manifests_dir(project_id: uuid.UUID, mode: str, deployment_id: uuid.UUID) -> Path:
     """Where rendered deployment manifests land, kept inside the project's
     workspace. Namespace-mode projects get the namespace root; VM-mode keeps
-    the historical `workspace/manifests` layout."""
+    the historical `workspace/manifests` layout.
+
+    Scoped by deployment_id, not just project_id: two services in one
+    project deploying at the same time used to render into the exact same
+    `manifests/deployment.yaml` etc, and whichever job's `kubectl apply` ran
+    second read whatever the other job had written last — reproduced live
+    deploying six services at once, where one service's rollout applied
+    under a completely different service's name and failed with
+    "deployments.apps '<other-service>' already exists".
+    """
     base = namespace_workspace(project_id) if mode == "namespace" else project_workspace(project_id)
-    return base / "manifests"
+    return base / "manifests" / str(deployment_id)
 
 
 def terraform_runtime(user_id: uuid.UUID) -> TerraformRuntimeConfig:

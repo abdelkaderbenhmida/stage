@@ -1802,7 +1802,7 @@ def _render_manifests(project: Project, deployment: Deployment, image_ref: str) 
     mode = "vm"
     if isinstance(project.infra_spec, dict):
         mode = project.infra_spec.get("mode", "vm")
-    out_dir = deployment_manifests_dir(project.id, mode)
+    out_dir = deployment_manifests_dir(project.id, mode, deployment.id)
     out_dir.mkdir(parents=True, exist_ok=True)
     written = []
     # Progressive delivery (docs/TODO.md Task 5.2): a canary/bluegreen
@@ -1883,6 +1883,101 @@ def _tekton_applies_to(project: Project) -> bool:
         return False
     mode = project.infra_spec.get("mode") if isinstance(project.infra_spec, dict) else None
     return mode == "namespace"
+
+
+def _delete_tekton_workspace_pvc(caller, namespace: str, run_name: str) -> None:
+    """Delete the PVC a finished PipelineRun's "source" workspace created.
+
+    Best-effort: a failure here must never turn a successful deploy into a
+    failed job over freeing 2Gi of scratch space. The PVC carries no label
+    tying it to the run, only an ownerReference (confirmed via
+    `kubectl get pvc -o jsonpath=.metadata.ownerReferences`), so it has to be
+    found by scanning every PVC in the namespace rather than a single
+    `-l` selector.
+    """
+    try:
+        raw = caller.call(["get", "pvc", f"--namespace={namespace}", "-o", "json"])
+        pvcs = json.loads(raw).get("items", [])
+        for pvc in pvcs:
+            owners = pvc.get("metadata", {}).get("ownerReferences") or []
+            if any(o.get("kind") == "PipelineRun" and o.get("name") == run_name for o in owners):
+                pvc_name = pvc["metadata"]["name"]
+                caller.call(["delete", "pvc", pvc_name, f"--namespace={namespace}", "--ignore-not-found"])
+                return
+    except Exception:  # noqa: BLE001
+        pass
+
+
+_TEKTON_SCAN_STEPS = {
+    "secret-scan": "gitleaks",
+    "dependency-scan": "pip_audit",
+    "scan": "trivy",
+}
+_SCAN_REPORT_RE = re.compile(r"===SCAN_REPORT_BEGIN===\n(.*?)\n===SCAN_REPORT_END===", re.DOTALL)
+
+
+def _persist_tekton_scan_results(
+    db: Session, caller, namespace: str, run_name: str, deployment: Deployment, image_ref: str
+) -> None:
+    """Pull each scan Task's report out of its Pod's log and persist it.
+
+    Before this, deploying through Tekton left the Scan table completely
+    empty — gitleaks/pip-audit/trivy run as Pods in the tenant's own
+    namespace and nothing ever read their output back into the database, so
+    the Security page showed nothing for any Tekton-deployed project even
+    though the gates were genuinely running and genuinely blocking. Confirmed
+    live: six real deploys through Tekton, zero rows in `scans`.
+
+    k8s/tekton/pipeline.yaml's three scan Tasks each echo their JSON report
+    between ``===SCAN_REPORT_BEGIN===``/``===SCAN_REPORT_END===`` markers
+    specifically so this can find it in `kubectl logs` — there is no other
+    channel back to the control plane once the Pod is gone. Best-effort:
+    scan visibility must never turn a build that actually succeeded, or
+    failed for its own good reason, into a job failure over a log a
+    tenant already has independent evidence of (the deploy's own status).
+    """
+    from controlplane.parsers.gitleaks_parser import parse_gitleaks
+    from controlplane.parsers.pip_audit_parser import parse_pip_audit
+    from controlplane.parsers.trivy_parser import parse_trivy
+
+    parsers = {"gitleaks": parse_gitleaks, "pip_audit": parse_pip_audit, "trivy": parse_trivy}
+    targets = {
+        "gitleaks": deployment.repo_url,
+        "pip_audit": deployment.repo_url,
+        "trivy": image_ref,
+    }
+    try:
+        raw = caller.call(["get", "taskrun", f"--namespace={namespace}",
+                            "-l", f"tekton.dev/pipelineRun={run_name}", "-o", "json"])
+        taskruns = json.loads(raw).get("items", [])
+    except Exception:  # noqa: BLE001
+        return
+
+    by_task = {}
+    for tr in taskruns:
+        task_name = (tr.get("metadata", {}).get("labels") or {}).get("tekton.dev/pipelineTask")
+        pod_name = (tr.get("status") or {}).get("podName")
+        if task_name in _TEKTON_SCAN_STEPS and pod_name:
+            by_task[task_name] = pod_name
+
+    scan_repo = ScanRepository(db, Scope.system())
+    for task_name, tool in _TEKTON_SCAN_STEPS.items():
+        pod_name = by_task.get(task_name)
+        if pod_name is None:
+            continue
+        try:
+            logs = caller.call(["logs", pod_name, f"--namespace={namespace}", "--all-containers"])
+            match = _SCAN_REPORT_RE.search(logs)
+            if match is None:
+                continue
+            report_text = match.group(1)
+            parsed = parsers[tool](report_text)
+            scan = scan_repo.create(deployment.project_id, tool, targets[tool], deployment_id=deployment.id)
+            scan_repo.set_result(scan, "completed", raw_output=_safe_json(report_text), summary=parsed.summary)
+            scan_repo.add_findings(scan, parsed.findings)
+            db.commit()
+        except Exception:  # noqa: BLE001
+            db.rollback()
 
 
 def _tekton_kubectl(project: Project):
@@ -2019,23 +2114,43 @@ def _tekton_build_and_scan(
             if step.name == "build" and step.status == "succeeded":
                 _step(job_id, tekton_push_index(stages), total, "pushing image to registry")
 
-    result = tekton_wait(caller, namespace, name, on_state=report, declared=declared)
+    try:
+        result = tekton_wait(caller, namespace, name, on_state=report, declared=declared)
 
-    if result.status == "cancelled":
-        raise RuntimeError(f"PipelineRun {name} was cancelled.")
-    if result.status != "succeeded":
-        # The scan task's message is the one that explains a blocked image,
-        # and it is what the tenant needs to read. Falling back to the
-        # PipelineRun's own message keeps a build failure legible too.
-        failed = next((step for step in result.steps if step.status == "failed"), None)
-        detail = (failed.error_message if failed and failed.error_message else result.message) or ""
-        if failed is not None and failed.name == "scan":
-            repo.set_status(deployment, "blocked", image_ref=image_ref)
-            db.commit()
-        where = labels.get(failed.name, failed.name) if failed else "unknown"
-        raise RuntimeError(f"Tekton pipeline failed at {where}: {detail[-400:]}")
+        if result.status == "cancelled":
+            raise RuntimeError(f"PipelineRun {name} was cancelled.")
+        if result.status != "succeeded":
+            # The scan task's message is the one that explains a blocked image,
+            # and it is what the tenant needs to read. Falling back to the
+            # PipelineRun's own message keeps a build failure legible too.
+            failed = next((step for step in result.steps if step.status == "failed"), None)
+            detail = (failed.error_message if failed and failed.error_message else result.message) or ""
+            if failed is not None and failed.name == "scan":
+                repo.set_status(deployment, "blocked", image_ref=image_ref)
+                db.commit()
+            where = labels.get(failed.name, failed.name) if failed else "unknown"
+            raise RuntimeError(f"Tekton pipeline failed at {where}: {detail[-400:]}")
 
-    _append_log(job_id, f"Tekton PipelineRun {name} succeeded — image built, pushed and scanned")
+        _append_log(job_id, f"Tekton PipelineRun {name} succeeded — image built, pushed and scanned")
+    finally:
+        # Every PipelineRun's "source" workspace is a fresh 2Gi PVC
+        # (volumeClaimTemplate) that nothing else ever deletes — the built
+        # image is already in the registry by the time the run ends, so it
+        # is pure scratch space by then. Left alone, they accumulate one per
+        # deploy attempt, success or fail, against the tenant's fixed
+        # persistentvolumeclaims quota (8): reproduced live deploying six
+        # services with a couple of retries each — the ninth PipelineRun of
+        # the run failed immediately with "exceeded quota ... used: 8,
+        # limited: 8" and every deploy after that failed the same way with
+        # no self-service recovery, since Destroy tears down the whole
+        # namespace rather than individual stale PVCs.
+        #
+        # The PipelineRun/TaskRun/Pod objects are deliberately left in place
+        # — the console's Tekton panel reads PipelineRun history from the
+        # live cluster, and deleting them here would make every run vanish
+        # the moment it finished.
+        _delete_tekton_workspace_pvc(caller, namespace, name)
+        _persist_tekton_scan_results(db, caller, namespace, name, deployment, image_ref)
 
 
 def _gitops_applies_to(project: Project) -> bool:

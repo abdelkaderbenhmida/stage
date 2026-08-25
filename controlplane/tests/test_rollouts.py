@@ -44,11 +44,12 @@ def _render(tmp_path, strategy: str, mode: str = "vm", settings_override=None):
                 "infra_spec": {"version": 1, "project": "tenant-a", "network": {}, "nodes": [], "mode": mode},
             },
         )()
+        did = uuid.uuid4()
         deployment = type(
             "D",
             (),
             {
-                "id": uuid.uuid4(),
+                "id": did,
                 "service_name": "users-service",
                 "repo_url": "https://github.com/org/users.git",
                 "branch": "main",
@@ -63,7 +64,7 @@ def _render(tmp_path, strategy: str, mode: str = "vm", settings_override=None):
             },
         )()
         manifests = tasks._render_manifests(project, deployment, "registry/img:commit-abc123")
-        out_dir = deployment_manifests_dir(pid, mode)
+        out_dir = deployment_manifests_dir(pid, mode, did)
     return manifests, out_dir, k8s_namespace(pid)
 
 
@@ -119,13 +120,27 @@ def test_default_strategy_renders_plain_deployment(tmp_path, settings_override):
     assert doc["kind"] == "Deployment"
 
 
+def test_two_services_in_one_project_get_distinct_manifest_dirs(settings_override, tmp_path):
+    """Two services in the same project used to render into the exact same
+    `manifests/deployment.yaml` etc — whichever one's `kubectl apply` ran
+    second read whatever the other had written last. Reproduced live
+    deploying six services in one project at once: one service's rollout
+    applied under a completely different service's name and failed with
+    "deployments.apps '<other-service>' already exists"."""
+    with settings_override(workspace_root=str(tmp_path)):
+        pid = uuid.uuid4()
+        first = deployment_manifests_dir(pid, "namespace", uuid.uuid4())
+        second = deployment_manifests_dir(pid, "namespace", uuid.uuid4())
+        assert first != second
+
+
 def test_namespace_mode_renders_outside_project_workspace(tmp_path, settings_override):
     """Namespace-mode projects have no Terraform workspace; their manifests
     must land under the namespace root, not pretend one exists (docs/TODO.md
     §8 item 1)."""
     manifests, out, ns = _render(tmp_path, "canary", mode="namespace", settings_override=settings_override)
     assert {p.name for p in manifests} == {"rollout.yaml", "analysis.yaml", "service.yaml", "ingress.yaml"}
-    assert out.parts[-3:] == ("namespaces", out.parts[-2], "manifests")
+    assert out.parts[-4:-1] == ("namespaces", out.parts[-3], "manifests")
     assert all(p.exists() for p in manifests)
 
 
