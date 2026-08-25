@@ -432,6 +432,27 @@ def test_persist_tekton_scan_results_reads_the_report_out_of_pod_logs(session, p
         assert scan.deployment_id == deployment.id
 
 
+def test_delete_tekton_run_pods_uses_the_pipelinerun_label():
+    """Every stage Pod (clone/build/scan/etc) still mounts the run's "source"
+    workspace PVC, so deleting the PVC before these are gone never actually
+    finishes: pvc-protection refuses to release it while any Pod, even a
+    finished one, still references it. Reproduced live: every deploy's PVC
+    sat stuck "Terminating" for hours, still counted against the tenant's
+    fixed persistentvolumeclaims quota, while the leftover Pods themselves
+    piled up as noise on the console's own Workloads page."""
+    calls = []
+    caller = type("C", (), {"call": staticmethod(lambda args: calls.append(args))})()
+
+    tasks._delete_tekton_run_pods(caller, "p-x", "deploy-abc")
+
+    assert calls == [["delete", "pods", "--namespace=p-x", "-l", "tekton.dev/pipelineRun=deploy-abc", "--ignore-not-found"]]
+
+
+def test_delete_tekton_run_pods_is_best_effort():
+    caller = type("C", (), {"call": staticmethod(lambda args: (_ for _ in ()).throw(RuntimeError("kubectl down")))})()
+    tasks._delete_tekton_run_pods(caller, "p-x", "deploy-abc")  # must not raise
+
+
 def test_delete_tekton_workspace_pvc_finds_the_pvc_by_owner_reference():
     """The PVC a PipelineRun's "source" workspace creates carries no label
     tying it to the run — only an ownerReference — so it has to be found by

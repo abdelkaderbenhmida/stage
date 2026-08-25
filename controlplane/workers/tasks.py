@@ -1885,6 +1885,32 @@ def _tekton_applies_to(project: Project) -> bool:
     return mode == "namespace"
 
 
+def _delete_tekton_run_pods(caller, namespace: str, run_name: str) -> None:
+    """Delete a finished PipelineRun's own Pods — clone/build/scan/etc.
+
+    Every one of them still mounts the run's "source" workspace PVC, so
+    `kubectl delete pvc` right after this alone never actually finishes: the
+    PVC's `kubernetes.io/pvc-protection` finalizer refuses to release it
+    while any Pod, even a Completed or Failed one nobody is using, still
+    lists it as a volume. Reproduced live: every deploy's PVC sat stuck in
+    "Terminating" for hours, still counted against the tenant's fixed
+    persistentvolumeclaims quota, while the leftover Pods themselves piled
+    up on the console's own Workloads page as noise dozens of entries deep.
+
+    Deleting the Pods here does not lose the history the console's Tekton
+    panel shows: `condition_status()` reads the PipelineRun/TaskRun API
+    objects' own `.status`, not their Pod, and those are deliberately left
+    alone (see the comment beside this call).
+    """
+    try:
+        caller.call([
+            "delete", "pods", f"--namespace={namespace}",
+            "-l", f"tekton.dev/pipelineRun={run_name}", "--ignore-not-found",
+        ])
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _delete_tekton_workspace_pvc(caller, namespace: str, run_name: str) -> None:
     """Delete the PVC a finished PipelineRun's "source" workspace created.
 
@@ -1893,7 +1919,8 @@ def _delete_tekton_workspace_pvc(caller, namespace: str, run_name: str) -> None:
     tying it to the run, only an ownerReference (confirmed via
     `kubectl get pvc -o jsonpath=.metadata.ownerReferences`), so it has to be
     found by scanning every PVC in the namespace rather than a single
-    `-l` selector.
+    `-l` selector. Must run after _delete_tekton_run_pods — see that
+    function's docstring for why the PVC cannot actually go otherwise.
     """
     try:
         raw = caller.call(["get", "pvc", f"--namespace={namespace}", "-o", "json"])
@@ -2145,12 +2172,16 @@ def _tekton_build_and_scan(
         # no self-service recovery, since Destroy tears down the whole
         # namespace rather than individual stale PVCs.
         #
-        # The PipelineRun/TaskRun/Pod objects are deliberately left in place
-        # — the console's Tekton panel reads PipelineRun history from the
-        # live cluster, and deleting them here would make every run vanish
-        # the moment it finished.
-        _delete_tekton_workspace_pvc(caller, namespace, name)
+        # The PipelineRun/TaskRun objects are deliberately left in place —
+        # the console's Tekton panel reads PipelineRun history from the live
+        # cluster, and deleting them here would make every run vanish the
+        # moment it finished. Their Pods are not: scans must be read out of
+        # them first (below), then they're deleted so the PVC's
+        # pvc-protection finalizer can actually let go of it — see
+        # _delete_tekton_run_pods's docstring.
         _persist_tekton_scan_results(db, caller, namespace, name, deployment, image_ref)
+        _delete_tekton_run_pods(caller, namespace, name)
+        _delete_tekton_workspace_pvc(caller, namespace, name)
 
 
 def _gitops_applies_to(project: Project) -> bool:
