@@ -1577,24 +1577,43 @@ async function renderLogsTab(body) {
           ${svcOptions}
         </select>
         <input id="log-query" placeholder="filter text (optional)…" data-enter="searchLogs">
+        <select id="log-since" style="background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:7px 12px;color:var(--text);font-family:var(--mono);font-size:12.5px">
+          <option value="now-1h">last hour</option>
+          <option value="now-24h">last 24h</option>
+          <option value="now-7d">last 7 days</option>
+          <option value="now-90d">last 90 days</option>
+        </select>
         <button class="btn sm" data-act="searchLogs">Search</button>
       </div>
       <div id="log-results" class="empty">enter a query and press Search</div>
     </div>`;
 }
 
+// The window is part of the answer, not a hidden default. It used to be
+// fixed at now-1h with nothing on screen saying so, so a search over an index
+// the same panel reports as holding 363k documents came back "0 matches" and
+// looked broken — filebeat had stopped, and the newest document was days old.
+const SINCE_LABELS = { "now-1h": "the last hour", "now-24h": "the last 24 hours", "now-7d": "the last 7 days", "now-90d": "the last 90 days" };
+
 async function searchLogs() {
   const service = $("log-svc")?.value || "";
   const q = $("log-query")?.value || "";
+  const since = $("log-since")?.value || "now-1h";
   const box = $("log-results");
   if (!box) return;
   box.innerHTML = `<div class="cfg-loading">searching…</div>`;
   try {
-    const r = await api("GET", `/api/v1/platform/live/logs/search?service=${encodeURIComponent(service)}&q=${encodeURIComponent(q)}&limit=100`);
+    const r = await api("GET", `/api/v1/platform/live/logs/search?service=${encodeURIComponent(service)}&q=${encodeURIComponent(q)}&limit=100&since=${encodeURIComponent(since)}`);
     if (!r.reachable) { box.innerHTML = offlineCard("elasticsearch", r.error); return; }
+    const window_ = SINCE_LABELS[since] || since;
+    if (!r.lines.length) {
+      box.innerHTML = `<div class="empty">No log line matches this search in ${esc(window_)}.
+        ${r.newest ? `The newest document in the index is from ${esc(r.newest)} — widen the range above.` : ""}</div>`;
+      return;
+    }
     box.innerHTML = `
-      <div class="muted small mb">${r.hits} matches (showing up to 100)</div>
-      <pre class="cfg-code" style="max-height:50vh;overflow:auto">${esc(r.lines.join("\n")) || "(no results)"}</pre>`;
+      <div class="muted small mb">${r.hits} matches in ${esc(window_)} (showing up to 100)</div>
+      <pre class="cfg-code" style="max-height:50vh;overflow:auto">${esc(r.lines.join("\n"))}</pre>`;
   } catch (e) { box.innerHTML = offlineCard("elasticsearch", e.message); }
 }
 

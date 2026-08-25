@@ -2928,8 +2928,12 @@ def service_drilldown(service: str, namespace: str = "devops-platform") -> dict[
 
 def ci_run_logs(run_id: str) -> dict[str, Any]:
     slug = _repo_slug()
+    # --log-failed first, because on a failed run it is the part anyone opening
+    # this actually wants. On a SUCCESSFUL run it prints nothing and still
+    # exits 0, so gating the fallback on the exit code meant every green run
+    # rendered as "(empty)" in the log viewer. Empty output is the signal.
     res = _run(["gh", "run", "view", run_id, "--repo", slug, "--log-failed"], timeout=GH_TIMEOUT)
-    if not res["stdout"] and not res["ok"]:
+    if not res["stdout"].strip():
         res = _run(["gh", "run", "view", run_id, "--repo", slug, "--log"], timeout=GH_TIMEOUT)
     if not res["ok"] and not res["stdout"]:
         return {"reachable": False, "error": res["stderr"], "log": ""}
@@ -3141,7 +3145,36 @@ def es_search_logs(service: str, query: str = "", limit: int = 100, since: str =
         msg = str(src.get("message", "")).strip()
         lines.append(f"{ts}  {pod}  {msg}")
     total = data.get("hits", {}).get("total", {})
-    return {"reachable": True, "hits": total.get("value", len(hits)) if isinstance(total, dict) else total, "lines": lines}
+    result = {
+        "reachable": True,
+        "hits": total.get("value", len(hits)) if isinstance(total, dict) else total,
+        "lines": lines,
+        "since": since,
+    }
+    if not lines:
+        # An empty window and an empty index look identical on screen. Say
+        # which one it is: the shipper can be down with the index still
+        # holding days of history, which is exactly the state that made a
+        # working search look broken.
+        result["newest"] = _es_newest_timestamp(pw)
+    return result
+
+
+def _es_newest_timestamp(pw: str) -> str | None:
+    res = _run(
+        ["kubectl", "exec", "-i", "-n", "monitoring", "elasticsearch-0", "--",
+         "curl", "-s", "-u", f"elastic:{pw}", "-H", "Content-Type: application/json",
+         "-X", "POST", "http://localhost:9200/filebeat-*/_search", "-d", "@-"],
+        timeout=15,
+        input_=json.dumps({"size": 1, "sort": [{"@timestamp": "desc"}], "_source": ["@timestamp"]}),
+    )
+    if not res["ok"]:
+        return None
+    try:
+        hits = json.loads(res["stdout"]).get("hits", {}).get("hits", [])
+    except json.JSONDecodeError:
+        return None
+    return hits[0].get("_source", {}).get("@timestamp") if hits else None
 
 
 def log_pipeline_health() -> dict[str, Any]:

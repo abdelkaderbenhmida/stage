@@ -20,8 +20,25 @@ spec:
     - name: slo-availability-recording
       interval: 5m
       rules:
+        # Per service, not per pod IP, and only pods that still exist.
+        #
+        # The bare avg_over_time kept one series per `instance`, so every pod
+        # that had ever been scheduled stayed in the 30d window with its old
+        # address — a deleted pod's samples end at 0 and never recover, and
+        # each one became a permanent SLOAvailabilityBreach nothing could
+        # resolve. That is how a five-service platform accumulated 572 firing
+        # critical alerts while every service was healthy.
+        #
+        # `and on (instance)` keeps only series whose instance is still being
+        # scraped now; the average then answers the question the alert asks —
+        # how available is this service — instead of how many pods it has
+        # been through.
         - record: service:availability_30d:ratio
-          expr: avg_over_time(up{part_of="devops-platform"}[30d])
+          expr: |
+            avg by (job) (
+              avg_over_time(up{part_of="devops-platform"}[30d])
+              and on (instance) up{part_of="devops-platform"}
+            )
     - name: slo-availability
       interval: 5m
       rules:
