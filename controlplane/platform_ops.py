@@ -1087,11 +1087,21 @@ def service_pipeline(service: str) -> dict[str, Any]:
     if stages[-1]["state"] != "ok":
         return _pipeline_result(service, stages)
 
-    # 9. serving /readyz
+    # 9. serving /readyz — asked of the container over its own loopback.
+    #
+    # Two things made this stage lie about every service. The exec had no -c,
+    # so it landed on the `vault-token-refresh` sidecar, whose image has no
+    # python: `exec: "python": executable file not found in $PATH`. With that
+    # fixed it still failed, because it fetched the ClusterIP Service from
+    # inside the pod and this namespace runs a default-deny egress policy —
+    # the request timed out even though kubelet's own probe against the same
+    # endpoint was passing. 127.0.0.1:<containerPort> asks the process what
+    # this stage is actually about: is it serving.
+    port = _container_port("devops-platform", service) or 8000
     readyz = _run(
-        ["kubectl", "exec", "-n", "devops-platform", f"deploy/{service}", "--",
+        ["kubectl", "exec", "-n", "devops-platform", f"deploy/{service}", "-c", service, "--",
          "python", "-c",
-         f"import urllib.request; urllib.request.urlopen('http://{service}.devops-platform.svc.cluster.local:80/readyz', timeout=5)"],
+         f"import urllib.request; urllib.request.urlopen('http://127.0.0.1:{port}/readyz', timeout=5)"],
         timeout=KUBECTL_TIMEOUT,
     )
     if readyz["ok"]:
@@ -1243,7 +1253,7 @@ def _tfstate_resources() -> dict[tuple[str, str], list[dict[str, Any]]]:
 
 def _terraform_plan() -> dict[str, Any]:
     res = _run(
-        ["terraform", "plan", "-input=false", "-detailed-exitcode"],
+        ["terraform", "plan", "-input=false", "-detailed-exitcode", "-no-color"],
         timeout=90, cwd=str(TF_DIR),
     )
     # -detailed-exitcode: 0 = no changes, 2 = changes (valid plan), 1 = error.
@@ -1417,7 +1427,7 @@ def terraform_reconcile() -> dict[str, Any]:
         raise ServiceError(f"cannot rewrite tfvars: {exc}") from exc
 
     if not (TF_DIR / ".terraform").is_dir():
-        init = _run(["terraform", "init", "-input=false"], timeout=90, cwd=str(TF_DIR))
+        init = _run(["terraform", "init", "-input=false", "-no-color"], timeout=90, cwd=str(TF_DIR))
         if not init["ok"]:
             raise ServiceError(init["stderr"] or "terraform init failed")
         steps.append("terraform init")
@@ -1594,13 +1604,31 @@ KUBECTL_TIMEOUT = 6
 GH_TIMEOUT = 25
 
 
+# Colour codes any tool may emit; stripped from everything the console shows.
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
+
+
 def _run(cmd: list[str], timeout: int = KUBECTL_TIMEOUT, input_: str | None = None, cwd: str | None = None) -> dict[str, Any]:
+    """Run a command and return its output with ANSI colour codes removed.
+
+    Stripping happens here rather than at each call site because everything
+    captured this way ends up rendered as text in the console. Some tools
+    colour their output whenever they think a terminal is watching, and
+    terraform in particular ignores that heuristic for errors — its preflight
+    failure reached the UI as `ESC[31mError: ...` and painted the panel with
+    literal `[31m` fragments around every word.
+    """
     try:
         out = subprocess.run(
             cmd, capture_output=True, text=True, timeout=timeout,
             cwd=cwd or str(ROOT), input=input_,
         )
-        return {"ok": out.returncode == 0, "stdout": out.stdout, "stderr": out.stderr.strip(), "code": out.returncode}
+        return {
+            "ok": out.returncode == 0,
+            "stdout": _ANSI_RE.sub("", out.stdout),
+            "stderr": _ANSI_RE.sub("", out.stderr).strip(),
+            "code": out.returncode,
+        }
     except FileNotFoundError:
         return {"ok": False, "stdout": "", "stderr": f"{cmd[0]} not found on PATH", "code": -1}
     except subprocess.TimeoutExpired:
@@ -2499,14 +2527,83 @@ def alerts_firing() -> dict[str, Any]:
 # without permanently exposing anything.
 # ──────────────────────────────────────────────────────────────
 
+# No scheme is declared here: what a service speaks on its port is probed once
+# the forward is up (_detect_scheme). A hardcoded wrong scheme produces an
+# iframe that stays blank with nothing in the console, because the browser
+# fails the connection instead of the request — Vault was declared https while
+# it runs dev mode over plain HTTP (k8s/vault/manifests.yaml).
+#
+# ArgoCD is reached over its `http` port, not 443: 443 speaks TLS with a
+# self-signed cert, and a certificate interstitial cannot be shown inside an
+# iframe, so that port can never be embedded no matter what the scheme says.
+# Port 80 serves the UI directly once argocd-server runs with --insecure
+# (k8s/argocd/install/anonymous-access-patch.yaml); without that flag it
+# 307s to https and _detect_scheme follows it back into the same dead end.
 DASHBOARDS = {
-    "argocd": {"namespace": "argocd", "service": "svc/argocd-server", "remote_port": 443, "scheme": "https", "label": "ArgoCD"},
-    "grafana": {"namespace": "monitoring", "service": "svc/grafana", "remote_port": 3000, "scheme": "http", "label": "Grafana"},
-    "prometheus": {"namespace": "monitoring", "service": "svc/prometheus", "remote_port": 9090, "scheme": "http", "label": "Prometheus"},
-    "alertmanager": {"namespace": "monitoring", "service": "svc/alertmanager", "remote_port": 9093, "scheme": "http", "label": "Alertmanager"},
-    "vault": {"namespace": "vault", "service": "svc/vault-service", "remote_port": 8200, "scheme": "https", "label": "Vault"},
-    "kibana": {"namespace": "monitoring", "service": "svc/kibana", "remote_port": 5601, "scheme": "http", "label": "Kibana"},
+    "argocd": {"namespace": "argocd", "service": "svc/argocd-server", "remote_port": 80, "label": "ArgoCD"},
+    "grafana": {"namespace": "monitoring", "service": "svc/grafana", "remote_port": 3000, "label": "Grafana"},
+    "prometheus": {"namespace": "monitoring", "service": "svc/prometheus", "remote_port": 9090, "label": "Prometheus"},
+    "alertmanager": {"namespace": "monitoring", "service": "svc/alertmanager", "remote_port": 9093, "label": "Alertmanager"},
+    "vault": {"namespace": "vault", "service": "svc/vault-service", "remote_port": 8200, "label": "Vault"},
+    "kibana": {"namespace": "monitoring", "service": "svc/kibana", "remote_port": 5601, "label": "Kibana"},
 }
+
+
+def _probe_forward(port: int) -> tuple[str, bool]:
+    """Ask the forwarded port what it speaks and whether it may be framed.
+
+    Returns ``(scheme, embeddable)``. Both answers come from the service
+    itself rather than from a table here, because both are deployment
+    choices that change without this file changing:
+
+    * scheme — a plain-HTTP request to a TLS listener gets no HTTP response
+      at all, so "did this answer with HTTP/" is the whole test. A redirect
+      to https on the same port means the service wants TLS even though it
+      accepted the plain request, which is argocd-server without --insecure.
+    * embeddable — ``X-Frame-Options`` or a CSP ``frame-ancestors`` that
+      excludes us. Vault always sends ``frame-ancestors 'none'`` and cannot
+      be iframed at any scheme; Grafana sends nothing only when
+      GF_SECURITY_ALLOW_EMBEDDING is on. An iframe refused this way renders
+      as an empty grey box with no console error, so the caller has to know
+      before it builds one.
+    """
+    import http.client
+
+    try:
+        path = "/"
+        # Follow the tool's own redirects: the frame-blocking headers are on
+        # the page it actually serves, not on the redirect. Vault answers "/"
+        # with a bare 307 to /ui/ and only /ui/ carries frame-ancestors 'none'
+        # — probing one hop deep is the difference between "embeddable" and
+        # the blank box it really produces.
+        for _ in range(4):
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=3)
+            conn.request("GET", path)
+            resp = conn.getresponse()
+            location = resp.getheader("Location") or ""
+            xfo = (resp.getheader("X-Frame-Options") or "").lower()
+            csp = (resp.getheader("Content-Security-Policy") or "").lower()
+            resp.read()
+            conn.close()
+            if 300 <= resp.status < 400 and location.startswith("/"):
+                path = location
+                continue
+            break
+        if 300 <= resp.status < 400 and location.startswith("https://"):
+            # Wants TLS; its certificate is self-signed and a cert
+            # interstitial cannot render inside a frame either.
+            return "https", False
+        frame_ancestors = ""
+        for directive in csp.split(";"):
+            if directive.strip().startswith("frame-ancestors"):
+                frame_ancestors = directive.strip()
+        blocked = bool(xfo) or (bool(frame_ancestors) and "*" not in frame_ancestors)
+        return "http", not blocked
+    except Exception:
+        # No HTTP answer: either a TLS listener or a service that is not up
+        # yet. Either way an embed of it is a blank box.
+        return "https", False
+
 
 _port_forwards: dict[str, dict[str, Any]] = {}
 
@@ -2518,7 +2615,12 @@ def open_dashboard(tool: str) -> dict[str, Any]:
 
     existing = _port_forwards.get(tool)
     if existing and existing["proc"].poll() is None:
-        return {"ok": True, "url": existing["url"], "message": f"{cfg['label']} already forwarded"}
+        return {
+            "ok": True,
+            "url": existing["url"],
+            "embeddable": existing["embeddable"],
+            "message": f"{cfg['label']} already forwarded",
+        }
 
     local_port = 18000 + (abs(hash(tool)) % 900)
     proc = subprocess.Popen(
@@ -2531,9 +2633,15 @@ def open_dashboard(tool: str) -> dict[str, Any]:
         err = proc.stderr.read() if proc.stderr else ""
         raise ServiceError(f"port-forward failed: {err.strip() or 'process exited'}")
 
-    url = f"{cfg['scheme']}://127.0.0.1:{local_port}"
-    _port_forwards[tool] = {"proc": proc, "url": url, "port": local_port}
-    return {"ok": True, "url": url, "message": f"{cfg['label']} forwarded to {url}"}
+    scheme, embeddable = _probe_forward(local_port)
+    url = f"{scheme}://127.0.0.1:{local_port}"
+    _port_forwards[tool] = {"proc": proc, "url": url, "port": local_port, "embeddable": embeddable}
+    return {
+        "ok": True,
+        "url": url,
+        "embeddable": embeddable,
+        "message": f"{cfg['label']} forwarded to {url}",
+    }
 
 
 def close_dashboard(tool: str) -> dict[str, Any]:
@@ -2557,8 +2665,32 @@ def dashboard_status() -> dict[str, Any]:
 
 # ─── Pod operations — logs + restart, real kubectl ───
 
+def _pod_app_container(namespace: str, pod: str) -> str | None:
+    """Which container of `pod` is the workload, for `kubectl logs -c`.
+
+    kubectl defaults to the first container, and every service pod here leads
+    with the `vault-token-refresh` sidecar — so "view logs" showed the
+    sidecar's output for every service, and nobody could see their own app.
+    """
+    res = _run(
+        ["kubectl", "get", "pod", pod, "-n", namespace,
+         "-o", "jsonpath={range .spec.containers[*]}{.name}{'\\n'}{end}"],
+        timeout=10,
+    )
+    if not res["ok"]:
+        return None
+    names = [n for n in res["stdout"].splitlines() if n.strip()]
+    workload = re.sub(r"-[a-z0-9]+-[a-z0-9]+$", "", pod)
+    picked = _app_container([{"name": n} for n in names], workload).get("name")
+    return picked
+
+
 def pod_logs(namespace: str, pod: str, tail: int = 200) -> dict[str, Any]:
-    res = _run(["kubectl", "logs", pod, "-n", namespace, f"--tail={tail}"], timeout=10)
+    cmd = ["kubectl", "logs", pod, "-n", namespace, f"--tail={tail}"]
+    container = _pod_app_container(namespace, pod)
+    if container:
+        cmd += ["-c", container]
+    res = _run(cmd, timeout=10)
     if not res["ok"] and not res["stdout"]:
         return {"reachable": False, "error": res["stderr"], "log": ""}
     return {"reachable": True, "log": res["stdout"] or res["stderr"]}
@@ -2659,6 +2791,46 @@ def pod_metrics(namespace: str) -> dict[str, Any]:
     return {"reachable": True, "metrics": _parse_top_output(res["stdout"])}
 
 
+def _app_container(containers: list[dict[str, Any]], workload: str) -> dict[str, Any]:
+    """The container that IS the service, not one of its sidecars.
+
+    Position is not that answer. Vault's injector prepends `vault-agent` to
+    every annotated pod, so containers[0] on users-service is
+    `hashicorp/vault:1.15.2` — which is what the rollout history displayed for
+    all 11 revisions of every service, making them look like they were running
+    Vault. The container carrying the workload's own name is; failing that,
+    the first container that is not a known sidecar.
+    """
+    if not containers:
+        return {}
+    by_name = {c.get("name"): c for c in containers}
+    if workload in by_name:
+        return by_name[workload]
+    # `vault-` covers both shapes the injector produces here: the agent
+    # sidecar and the `vault-token-refresh` container the chart adds, which
+    # sorts first in every service pod.
+    sidecars = ("vault-", "istio-proxy", "linkerd-proxy", "envoy", "filebeat")
+    for c in containers:
+        if not (c.get("name") or "").startswith(sidecars):
+            return c
+    return containers[0]
+
+
+def _container_port(namespace: str, service: str) -> int | None:
+    """The port the service's own container listens on, per its Deployment."""
+    res = _run(
+        ["kubectl", "get", "deploy", service, "-n", namespace, "-o",
+         "jsonpath={.spec.template.spec.containers[?(@.name=='" + service + "')].ports[0].containerPort}"],
+        timeout=10,
+    )
+    if not res["ok"]:
+        return None
+    try:
+        return int(res["stdout"].strip())
+    except ValueError:
+        return None
+
+
 def _parse_rollout_history(text: str) -> list[dict[str, Any]]:
     """Parses `kubectl rollout history deploy/<d>` tabular output."""
     revisions = []
@@ -2692,7 +2864,7 @@ def rollout_history(namespace: str, deployment: str) -> dict[str, Any]:
                 rev = rs.get("metadata", {}).get("annotations", {}).get("deployment.kubernetes.io/revision")
                 containers = rs.get("spec", {}).get("template", {}).get("spec", {}).get("containers", [])
                 if rev and containers:
-                    images_by_rev[int(rev)] = containers[0].get("image")
+                    images_by_rev[int(rev)] = _app_container(containers, deployment).get("image")
         except (json.JSONDecodeError, ValueError, TypeError):
             pass
     for r in revisions:
@@ -2804,7 +2976,6 @@ SCRIPTS: dict[str, dict[str, Any]] = {
 }
 
 MAX_SCRIPT_LINES = 4000
-_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
 _jobs: dict[str, dict[str, Any]] = {}
 _jobs_lock = threading.Lock()
 

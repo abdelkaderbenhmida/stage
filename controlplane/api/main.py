@@ -98,17 +98,37 @@ def create_app() -> FastAPI:
         build markup as template literals carrying `style="..."` attributes
         in a few hundred places. That is a formatting concern, not a script
         execution one.
+
+        frame-src exists because the operator console embeds Grafana/
+        Prometheus/Alertmanager/Vault/ArgoCD dashboards in an iframe
+        (platform/app.js:showEmbeddedDashboard) via a backend-managed
+        `kubectl port-forward` on an ephemeral 127.0.0.1 port — with no
+        frame-src at all it inherits default-src 'self', which blocks
+        embedding ANY other origin including that one, since the port
+        differs from the API's own. Every "open X dashboard" button failed
+        silently: the browser never even issued the request, no console
+        error either — reproduced live. The port is only ever ephemeral and
+        loopback-only (never a real external host), so the port wildcard is
+        the whole exception surface, not a specific host.
         """
         response = await call_next(request)
         response.headers.setdefault(
             "Content-Security-Policy",
             "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
-            "img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; "
-            "base-uri 'self'; form-action 'self'",
+            "img-src 'self' data:; connect-src 'self'; "
+            "frame-src 'self' http://127.0.0.1:* https://127.0.0.1:*; "
+            "frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
         )
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
         response.headers.setdefault("X-Frame-Options", "DENY")
         response.headers.setdefault("Referrer-Policy", "no-referrer")
+        # The console has no bundler, so /static/app.js keeps its name across
+        # every deploy and a heuristically-cached copy can outlive the code it
+        # belongs to — the same staleness that kept a stale CSP alive on the
+        # shell (web/router.py). no-cache still revalidates rather than
+        # refetches, so an unchanged file costs a 304.
+        if request.url.path.startswith("/static/"):
+            response.headers.setdefault("Cache-Control", "no-cache, must-revalidate")
         if not settings.is_dev:
             response.headers.setdefault(
                 "Strict-Transport-Security", "max-age=31536000; includeSubDomains"

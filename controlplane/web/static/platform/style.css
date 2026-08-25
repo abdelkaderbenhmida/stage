@@ -344,8 +344,12 @@
 
 #platform-root .app-head .sp { flex: 1; }
 
+/* flex-wrap, because these rows sit in an auto-fit grid whose columns get as
+   narrow as 180px: without it the name, meta, pill and both buttons were laid
+   out on one unbreakable line that ran past the card edge, clipping "delete"
+   and giving the page a horizontal scrollbar. */
 #platform-root .svc-row {
-  display: flex; align-items: center; gap: 10px;
+  display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
   background: var(--panel2); border: 1px solid var(--border);
   border-radius: 9px; padding: 8px 12px;
   transition: border-color var(--duration-fast);
@@ -355,11 +359,11 @@
 
 #platform-root .svc-row .svc-name { font-family: var(--mono); font-weight: 700; font-size: 13px; }
 
-#platform-root .svc-row .svc-meta { font-size: 11px; color: var(--dim); }
+#platform-root .svc-row .svc-meta { font-size: 11px; color: var(--dim); min-width: 0; }
 
 #platform-root .svc-row .sp { flex: 1; }
 
-#platform-root .add-svc { display: flex; gap: 8px; }
+#platform-root .add-svc { display: flex; flex-wrap: wrap; gap: 8px; }
 
 #platform-root .add-svc input {
   flex: 1; background: var(--panel2); border: 1px solid var(--border);
@@ -491,7 +495,15 @@
 
 #platform-root .cfg-item span:first-child { flex: 1; color: var(--muted); }
 
-#platform-root .cfg-item .val { color: var(--accent); font-family: var(--mono); font-size: 11px; flex-shrink: 0; text-align: right; }
+/* min-width:0 + wrapping, because this column also carries raw kubectl error
+   text: a single unbreakable 2000px line (an exec failure quoting a container
+   id) could not shrink, so the Platform Health blocker list ran off the card
+   and gave the whole page a horizontal scrollbar. Short values still sit on
+   one line — there is room for them, so nothing shrinks that does not have to. */
+#platform-root .cfg-item .val {
+  color: var(--accent); font-family: var(--mono); font-size: 11px;
+  flex-shrink: 1; min-width: 0; text-align: right; overflow-wrap: anywhere;
+}
 
 #platform-root .cfg-item .val.accent { color: var(--accent2); }
 

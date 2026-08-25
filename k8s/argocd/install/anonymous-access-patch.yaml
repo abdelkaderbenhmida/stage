@@ -17,6 +17,15 @@ data:
 ---
 # Disable frame-blocking headers so the platform UI can embed the ArgoCD
 # console in an iframe (view-only, matches the anonymous role:readonly above).
+#
+# --insecure serves that UI over plain HTTP on the service's `http` port. It
+# downgrades nothing reachable: argocd-server is ClusterIP-only and the
+# platform reaches it through an on-demand `kubectl port-forward` bound to
+# 127.0.0.1, so the hop is loopback plus the API server's own TLS. Without the
+# flag port 80 answers 307 to https, and the https port presents ArgoCD's
+# self-signed certificate — which a browser can only accept through an
+# interstitial, and interstitials do not render inside an iframe. The embed is
+# a silent blank box in that state, which is exactly how it failed.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -30,3 +39,4 @@ spec:
             - /usr/local/bin/argocd-server
             - --x-frame-options=
             - --content-security-policy=
+            - --insecure

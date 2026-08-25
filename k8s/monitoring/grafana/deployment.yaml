@@ -54,8 +54,17 @@ spec:
               value: /etc/grafana-secrets/admin-password
             - name: GF_USERS_ALLOW_SIGN_UP
               value: "false"
+            # Anonymous access is read-only (Viewer) and exists so the operator
+            # console's embedded Grafana renders a dashboard instead of a login
+            # form: the iframe is same-purpose with the ArgoCD anonymous
+            # readonly role, and Grafana is ClusterIP-only, reached through an
+            # on-demand loopback port-forward. Editing, alerting and admin all
+            # still require the admin login below.
             - name: GF_AUTH_ANONYMOUS_ENABLED
-              value: "false"
+              value: "true"
+            - name: GF_AUTH_ANONYMOUS_ORG_ROLE
+              value: Viewer
+            # Without this Grafana refuses to be framed at all.
             - name: GF_SECURITY_ALLOW_EMBEDDING
               value: "true"
           volumeMounts:

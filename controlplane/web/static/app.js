@@ -1711,6 +1711,7 @@ async function renderCatalogue() {
           (!team || e.team_id === team)
         ),
         teamById,
+        Boolean(status || sev || team),
       );
     };
     $("#cat-filter-status").onchange = apply;
@@ -1721,9 +1722,14 @@ async function renderCatalogue() {
   }
 }
 
-function catalogueRows(entries, teamById) {
+function catalogueRows(entries, teamById, filtered = false) {
   if (entries.length === 0) {
-    return `<div class="empty">Nothing deployed yet. Create an environment and deploy an app to see it here.</div>`;
+    // An empty catalogue and an empty filter result are different situations:
+    // telling someone with seven live services to "create an environment"
+    // because they picked Findings=critical reads as though the page lost them.
+    return filtered
+      ? `<div class="empty">No service matches these filters.</div>`
+      : `<div class="empty">Nothing deployed yet. Create an environment and deploy an app to see it here.</div>`;
   }
   return `<table>
     <thead><tr><th>Service</th><th>Project</th><th>Owner</th><th>Team</th><th>Status</th><th>Findings</th><th>Live URL</th><th>Logs</th><th>Updated</th></tr></thead>
@@ -1931,6 +1937,7 @@ async function renderJobs() {
           <input id="job-id" placeholder="Job ID" style="max-width:340px">
           <button class="primary" type="submit">Open job</button>
         </form>
+        <p id="job-lookup-err" class="error"></p>
       </div>
       ${projects.length
         ? `<div class="panel"><table><tbody>${projects.map((p) =>
@@ -1940,7 +1947,16 @@ async function renderJobs() {
     $("#job-lookup").onsubmit = (e) => {
       e.preventDefault();
       const id = $("#job-id").value.trim();
-      if (id) location.hash = `#/jobs/${id}`;
+      if (!id) return;
+      // The route table only matches a 36-char UUID, and an unmatched hash
+      // falls through to #/projects — so submitting a mistyped id used to
+      // bounce back to the project list saying nothing at all. Reject it here
+      // instead, where the field that produced it is still on screen.
+      if (!/^[0-9a-f-]{36}$/i.test(id)) {
+        $("#job-lookup-err").textContent = "That is not a job ID — expected a 36-character UUID.";
+        return;
+      }
+      location.hash = `#/jobs/${id}`;
     };
   } catch (err) {
     showError(err, route);

@@ -30,6 +30,11 @@ spec:
         prometheus.io/scrape: "true"
         prometheus.io/port: "{{ $port }}"
         prometheus.io/path: "/metrics"
+        # `vault-token-refresh` is declared first, so kubectl logs/exec without
+        # -c lands on the sidecar: the console showed sidecar logs for every
+        # service, and an exec into "the pod" ran in an image with no python.
+        # This annotation makes the workload the default for every such client.
+        kubectl.kubernetes.io/default-container: {{ $svc.name }}
     spec:
       serviceAccountName: {{ $svc.name }}-sa
       # kubernetes-auth needs the SA token to present at auth/kubernetes/login;

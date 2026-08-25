@@ -10,6 +10,12 @@ static stylesheet can express. That is a formatting concern, not a script
 execution one, and script-src staying strict is what the last test guards.
 
 HSTS is prod-only: dev traffic runs over plain HTTP on localhost.
+
+frame-src is the one host exception in the policy: the operator console embeds
+Grafana/Prometheus/Alertmanager/Kibana through a backend-managed
+`kubectl port-forward` on an ephemeral 127.0.0.1 port, which is a different
+origin from the API's own and so is not covered by 'self'. Loopback with a
+port wildcard is the entire widening — no external host is ever framed.
 """
 
 import re
@@ -18,8 +24,9 @@ import pytest
 
 CSP = (
     "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
-    "img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; "
-    "base-uri 'self'; form-action 'self'"
+    "img-src 'self' data:; connect-src 'self'; "
+    "frame-src 'self' http://127.0.0.1:* https://127.0.0.1:*; "
+    "frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
 )
 
 

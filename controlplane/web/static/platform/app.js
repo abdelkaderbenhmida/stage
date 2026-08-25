@@ -30,11 +30,22 @@ function toast(msg, ok = true) {
   toastTimer = setTimeout(() => { t.className = "toast"; }, 5000);
 }
 
+// The spinner is the toast showing "…". It has to clear itself the way a real
+// toast does: `loading(false)` used to be a no-op, so the only thing that ever
+// took "…" off the screen was a later toast() call. Any handler that returned
+// without one — an early `return` on an unreachable backend, a throw the
+// caller swallowed — left the console looking busy forever.
 function loading(show = true) {
   const t = $("platform-toast");
+  clearTimeout(toastTimer);
   if (show) {
     t.textContent = "…";
     t.className = "toast show";
+    // Backstop only: a request that neither resolves nor rejects still stops
+    // claiming to be in flight.
+    toastTimer = setTimeout(() => { t.className = "toast"; }, 30000);
+  } else {
+    t.className = "toast";
   }
 }
 
@@ -645,6 +656,11 @@ function renderOverview() {
 
 function renderServices() {
   const d = state.data;
+  // Whether the filter box is being typed into has to be read BEFORE the
+  // view is replaced: tearing down a focused element fires its blur handler,
+  // so anything the blur sets is already stale by the time the replacement
+  // exists.
+  const wasTyping = document.activeElement && document.activeElement.id === "svc-search";
   const q = state.search.toLowerCase();
   const list = d.services.filter((s) => !q || s.name.toLowerCase().includes(q) || s.title.toLowerCase().includes(q));
 
@@ -703,6 +719,16 @@ function renderServices() {
 
   const input = $("svc-search");
   if (input) {
+    // renderServices() replaces this whole view, including the input being
+    // typed into, so the fresh one starts unfocused: the first keystroke
+    // filtered and every later one went nowhere, which reads as a search box
+    // that only accepts one character. Restore focus and caret on the
+    // replacement element.
+    if (wasTyping) {
+      input.focus();
+      const end = input.value.length;
+      input.setSelectionRange(end, end);
+    }
     input.oninput = () => { state.search = input.value; renderServices(); };
   }
 }
@@ -769,27 +795,45 @@ async function loadConfigTab(tab) {
 
 function refreshConfigTab() { loadConfigTab(state.configTab); }
 
-/* ─── shared: embed real dashboard inline, no login, no new tab ─── */
+/* ─── shared: embed real dashboard inline where the tool allows it ─── */
 
 async function openDashboard(tool, label) {
   try {
     loading(true);
     const r = await api("POST", `/api/v1/platform/live/dashboard/${tool}/open`);
     toast(`✓ ${label} live`, true);
-    showEmbeddedDashboard(tool, label, r.url);
+    showEmbeddedDashboard(tool, label, r.url, r.embeddable !== false);
   } catch (e) { toast("✕ " + e.message, false); }
 }
 
-function showEmbeddedDashboard(tool, label, url) {
+// `embeddable` is the backend's read of the tool's own frame-blocking headers
+// (platform_ops._probe_forward), not a preference. A refused iframe paints an
+// empty grey rectangle and reports nothing, so a tool that says no gets a link
+// panel instead of a frame that would only ever be blank — Vault hardcodes
+// frame-ancestors 'none' and is permanently in that category.
+function showEmbeddedDashboard(tool, label, url, embeddable = true) {
   $("detail-title").textContent = label;
   $("detail-content").innerHTML = `
     <div class="embed-bar">
       <span class="mono small muted">${esc(url)}</span>
       <a class="act-btn" href="${esc(url)}" target="_blank" rel="noopener">↗ full tab</a>
     </div>
-    <iframe class="embed-frame" src="${esc(url)}" sandbox="allow-scripts allow-same-origin allow-forms allow-popups"></iframe>`;
+    ${embeddable
+      ? `<iframe class="embed-frame" src="${esc(url)}" sandbox="allow-scripts allow-same-origin allow-forms allow-popups"></iframe>`
+      : `<div class="cfg-offline">
+           <span class="status-dot warn"></span>
+           <div>
+             <div class="cfg-offline-title">${esc(label)} refuses to be embedded</div>
+             <div class="cfg-offline-err">It sends frame-blocking headers of its own, so it can only
+               be opened in its own tab. The forward above is live and stays up.</div>
+           </div>
+         </div>`}`;
   $("detail-panel").classList.add("show", "wide");
   $("detail-overlay").classList.add("show");
+  // Opening the panel IS the completion of whatever was loading. Several
+  // callers end here with no toast() of their own, and the spinner has no
+  // other way to learn the request finished.
+  loading(false);
 }
 
 /* ─── shared: log viewer modal ─── */
@@ -799,6 +843,7 @@ function showLogs(title, logText) {
   $("detail-content").innerHTML = `<pre class="cfg-code" style="white-space:pre-wrap;max-height:70vh">${esc(logText || "(empty)")}</pre>`;
   $("detail-panel").classList.add("show");
   $("detail-overlay").classList.add("show");
+  loading(false);
 }
 
 async function viewPodLogs(namespace, pod, label) {
@@ -1232,6 +1277,19 @@ async function loadMonitoringPods() {
   } catch (e) { /* ignore */ }
 }
 
+// A pod may carry sidecars — Vault's injector adds `vault-agent` to every
+// annotated pod and it sorts first, so reading containers[0] reported the
+// sidecar's image, readiness and restart count as if they were the service's.
+// Prefer the container named after the workload, else the first non-sidecar.
+const SIDECAR_PREFIXES = ["vault-", "istio-proxy", "linkerd-proxy", "envoy", "filebeat"];
+function appContainer(containers, workload) {
+  const list = containers || [];
+  if (!list.length) return {};
+  const named = workload && list.find((c) => c.name === workload);
+  if (named) return named;
+  return list.find((c) => !SIDECAR_PREFIXES.some((p) => (c.name || "").startsWith(p))) || list[0];
+}
+
 async function showMonitoringPodDetail(podName) {
   try {
     loading(true);
@@ -1240,7 +1298,7 @@ async function showMonitoringPodDetail(podName) {
       api("GET", `/api/v1/platform/live/pods/monitoring/${podName}/events?limit=15`),
     ]);
     if (!detail.reachable) { toast("✕ " + detail.error, false); return; }
-    const c = detail.containers[0] || {};
+    const c = appContainer(detail.containers, podName.replace(/-[a-z0-9]+-[a-z0-9]+$/, ""));
     const lines = [
       `pod: ${detail.name}`, `phase: ${detail.phase}`, `node: ${detail.node}`, `started: ${detail.start_time}`, "",
       `container: ${c.name}`, `image: ${c.image}`, `ready: ${c.ready}`, `restarts: ${c.restart_count}`,
@@ -1328,7 +1386,13 @@ function viewScriptOutput(key) {
         clearInterval(state.runTimer);
         state.runTimer = null;
         const code = r.exit_code;
-        out.textContent += `\n${code === 0 ? "✓" : "✕"} exit=${code} · ${fmtDur(Math.round(r.duration_s))}\n`;
+        // A script nobody has run yet reports exit_code null and no lines.
+        // Rendering that through the finished-run footer produced
+        // "✕ exit=null · 0s", which reads as a failed run of a script that
+        // never started — the one thing the panel must not claim.
+        out.textContent += code === null && !out.textContent
+          ? "(never run — press ▶ run to start it)\n"
+          : `\n${code === 0 ? "✓" : "✕"} exit=${code} · ${fmtDur(Math.round(r.duration_s || 0))}\n`;
         out.scrollTop = out.scrollHeight;
         // Not refreshConfigTab(): that rebuilds the whole RUN tab from
         // scratch, including the very #run-output-section this just wrote
@@ -1616,7 +1680,7 @@ async function loadServiceRuntime(service) {
 
     const podRows = r.pods.map((p) => {
       if (!p.reachable) return `<div class="app-row"><div class="app-row-main">${offlineCard(p.name || "pod", p.error)}</div></div>`;
-      const c = p.containers[0] || {};
+      const c = appContainer(p.containers, service);
       const m = r.metrics[p.name];
       const notReady = c.waiting_reason && `<span class="val" style="color:var(--red)">${esc(c.waiting_reason)}${c.waiting_message ? ": " + esc(c.waiting_message) : ""}</span>`;
       return `
