@@ -157,11 +157,28 @@ function renderTopbar() {
 
 function render() {
   renderTopbar();
-  renderTopology();
+  // renderTopology()/renderConfig() each kick off their own async fetch
+  // beyond what the SSE snapshot already carries (loadHealthBoard, the
+  // active Operations tab's own API call) and reset their section to a
+  // "loading…" placeholder every time they run. The live stream pushes a
+  // frame every ~2s, and render() used to call both on every single one —
+  // any fetch slower than that (GitHub Actions' API for the CI tab, the
+  // multi-call health board) never won the race against the next tick's
+  // reset, so it sat on "loading live status…" / "fetching workflow
+  // runs…" forever. Reproduced live: every request involved returned 200
+  // with real data, and the page still never showed it. Both keep their
+  // own explicit "↻ refresh" button and switchConfigTab already calls
+  // renderConfig() directly when the user picks a different tab, so
+  // running them once at mount and leaving them alone after that loses
+  // nothing a user could reach through the UI.
+  if (!state.heavyMounted) {
+    renderTopology();
+    renderConfig();
+    state.heavyMounted = true;
+  }
   renderApps();
   renderOverview();
   renderServices();
-  renderConfig();
 }
 
 /* ═══════════ PLATFORM HEALTH ═══════════ */
@@ -1313,7 +1330,14 @@ function viewScriptOutput(key) {
         const code = r.exit_code;
         out.textContent += `\n${code === 0 ? "✓" : "✕"} exit=${code} · ${fmtDur(Math.round(r.duration_s))}\n`;
         out.scrollTop = out.scrollHeight;
-        refreshConfigTab();
+        // Not refreshConfigTab(): that rebuilds the whole RUN tab from
+        // scratch, including the very #run-output-section this just wrote
+        // to — for a script that had already finished before "output" was
+        // clicked, poll()'s first tick sees running:false immediately, so
+        // the refresh used to fire within milliseconds and hide the output
+        // again before anyone could read it. The row's "last: X" pill goes
+        // stale until the tab's own "↻ refresh" is clicked, which is a far
+        // smaller cost than the output never being visible at all.
       }
     } catch (e) { /* keep last output */ }
   };
