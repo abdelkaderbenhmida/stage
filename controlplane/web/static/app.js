@@ -431,7 +431,14 @@ async function renderAuth() {
       });
       setTokens(tokens.access_token, tokens.refresh_token);
       refreshWhoami();
-      location.hash = "#/projects";
+      // Assigning the same hash fires no hashchange, so route() never runs:
+      // signing in from a session that was already sitting on #/projects
+      // (which is what an expired token leaves behind — the router keeps the
+      // path and renders the login form over it) stored the tokens and left
+      // the form on screen. Every further click logged in again, invisibly.
+      const target = "#/projects";
+      if (location.hash === target) route();
+      else location.hash = target;
     } catch (err) {
       applyServerError($("#auth-form"), err.message, { email: "email" });
       if (!emailInput.hasAttribute("aria-invalid")) $("#auth-error").textContent = err.message;
