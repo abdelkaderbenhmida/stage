@@ -2114,6 +2114,13 @@ def _tekton_build_and_scan(
     db.commit()
 
     seen: dict[str, str] = {}
+    # Which tasks have already been announced in the job log. `seen` tracks
+    # status so the DB row is rewritten only on a change; this tracks the
+    # `[n/N] name` line, which must be written once. Without it a task that
+    # was observed running and then succeeded printed the same line twice —
+    # identical text, so the reader could not tell start from finish, and a
+    # ten-step deploy log listed thirteen steps.
+    announced: set[str] = set()
 
     def report(snapshot) -> None:
         # One row per pipeline task, updated as it changes. Writing on every
@@ -2131,14 +2138,21 @@ def _tekton_build_and_scan(
             seen[step.name] = step.status
             if step.status not in ("running", "succeeded", "failed", "cancelled"):
                 continue
-            # The tenant's own wording for their stages, not the sanitised
-            # Tekton object name they had to be given.
-            _step(job_id, index, total, labels.get(step.name, step.name))
+            if step.name not in announced:
+                announced.add(step.name)
+                # The tenant's own wording for their stages, not the sanitised
+                # Tekton object name they had to be given.
+                _step(job_id, index, total, labels.get(step.name, step.name))
             # kaniko builds and pushes in one step, so a succeeded build means
             # the image is in the registry. Recording the push step explicitly
             # keeps the nine-step contract honest instead of leaving a gap the
             # graph would fill from the template with a status it invented.
-            if step.name == "build" and step.status == "succeeded":
+            # Announced separately: `build` is normally seen running first, so
+            # this cannot hang off build's own first sighting.
+            # "push (builtin)" cannot collide with a task name: Tekton task
+            # names are DNS labels, so they contain no spaces or parentheses.
+            if step.name == "build" and step.status == "succeeded" and "push (builtin)" not in announced:
+                announced.add("push (builtin)")
                 _step(job_id, tekton_push_index(stages), total, "pushing image to registry")
 
     try:

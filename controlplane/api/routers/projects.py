@@ -143,9 +143,16 @@ def extend_project(
         created = created.replace(tzinfo=UTC)
     ceiling = created + timedelta(hours=settings.max_ttl_hours)
 
-    base = project.expires_at or datetime.now(UTC)
+    # Measured from now once the expiry is already behind us. Extending from a
+    # stale expires_at meant "extend by 24 hours" on an environment that
+    # lapsed 14 hours ago bought 10 hours, which is not what the prompt says
+    # and not what the caller asked for. The max_ttl ceiling below is what
+    # stops repeated extensions, so nothing is lost by starting from now.
+    now = datetime.now(UTC)
+    base = project.expires_at or now
     if base.tzinfo is None:
         base = base.replace(tzinfo=UTC)
+    base = max(base, now)
 
     proposed = base + timedelta(hours=body.hours)
     if proposed > ceiling:

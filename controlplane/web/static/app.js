@@ -851,7 +851,9 @@ function projectHeader(project, active) {
         ${project.expires_at ? `<button id="extend-btn">Extend</button>` : ""}
         ${isNamespace ? "" : `<button id="plan-btn">Preview plan</button>`}
         <button class="primary" id="provision-btn">Provision</button>
-        <button class="danger" id="destroy-btn">Destroy</button>
+        ${project.status === "destroyed"
+          ? ""
+          : `<button class="danger" id="destroy-btn">Destroy</button>`}
       </div>
     </div>
     ${project.expiry_warned
@@ -881,7 +883,9 @@ function bindProjectHeaderActions(id, project) {
     } catch (err) { toast(err.message, true); }
   };
 
-  $("#destroy-btn").onclick = async () => {
+  // Absent once the project is destroyed — the header omits the button then,
+  // and the API answers 409 for the same reason.
+  if ($("#destroy-btn")) $("#destroy-btn").onclick = async () => {
     // Destroying is irreversible, so require the project name to be typed.
     const typed = await modalPrompt(
       "Destroy environment",
@@ -2062,6 +2066,11 @@ function stageTracker(log, jobStatus) {
 // Module-local currentGraph for live applyLogProgress updates.
 let currentGraph = null;
 
+// A finished job cannot be cancelled, so it must not be offered: the button
+// sat next to a "succeeded" pill and its only possible outcome was an error
+// toast. These are the four of the six status values that are terminal.
+const TERMINAL_JOB_STATUSES = new Set(["succeeded", "failed", "cancelled", "skipped"]);
+
 async function renderJob(jobId) {
   setNav("jobs");
   loading();
@@ -2075,7 +2084,9 @@ async function renderJob(jobId) {
           <h1>${esc(job.type)} job ${pill(job.status)}</h1>
           <p class="subtitle mono">${esc(job.id)}</p>
         </div>
-        <button class="danger" id="cancel-job">Cancel job</button>
+        ${TERMINAL_JOB_STATUSES.has(job.status)
+          ? ""
+          : `<button class="danger" id="cancel-job">Cancel job</button>`}
       </div>
       ${job.error_message ? `<div class="panel"><p class="error">${esc(job.error_message)}</p></div>` : ""}
       <div class="panel" id="pg-job">Loading graph…</div>
@@ -2088,12 +2099,16 @@ async function renderJob(jobId) {
         <div class="log" id="log">${esc(job.log || "Waiting for output…")}</div>
       </div>`;
 
-    $("#cancel-job").onclick = async () => {
-      try {
-        await api(`/jobs/${jobId}/cancel`, { method: "POST" });
-        toast("Cancellation requested.");
-      } catch (err) { toast(err.message, true); }
-    };
+    // Absent on a job that has already finished — see TERMINAL_JOB_STATUSES.
+    const cancelBtn = $("#cancel-job");
+    if (cancelBtn) {
+      cancelBtn.onclick = async () => {
+        try {
+          await api(`/jobs/${jobId}/cancel`, { method: "POST" });
+          toast("Cancellation requested.");
+        } catch (err) { toast(err.message, true); }
+      };
+    }
 
     // Fetch and render pipeline graph — Promise.all per spec
     async function renderGraph() {

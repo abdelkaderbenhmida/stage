@@ -85,6 +85,12 @@ def destroy(
         raise HTTPException(status_code=422, detail="confirmation name does not match the project.") from None
     if repo.get_active_provision_job(project.id):
         raise HTTPException(status_code=409, detail="A provisioning/destroy job is already running.") from None
+    # Destroying what is already destroyed queued a second teardown job and
+    # put the project back into "destroying" for the length of it, so the UI
+    # reported work in progress against a project with nothing left to tear
+    # down. Provisioning it again is the way back — destroy is not.
+    if project.status == "destroyed":
+        raise HTTPException(status_code=409, detail="This project is already destroyed.") from None
 
     job = tasks.queue_destroy(project.id, project.workspace_path, project.name, user.id)
     repo.set_status(project, "destroying")

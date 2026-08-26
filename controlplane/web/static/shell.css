@@ -467,8 +467,10 @@ label {
 }
 .pg-svg {
   display: block;
-  width: 100%;
-  height: auto;
+  /* width/height come from the element's own attributes (graph.js): the graph
+     keeps its natural size and .pg-wrap scrolls, rather than being scaled
+     down to the card width until the labels are unreadable. */
+  max-width: none;
   min-width: 420px;
 }
 .pg-empty {

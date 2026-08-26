@@ -314,8 +314,14 @@ __pgHost.PipelineGraph = (function () {
           ? '<div class="pg-degraded">Live data unavailable: ' + esc(graph.degraded_reason || "source unreachable") + "</div>"
           : "") +
         (graph.detail ? '<div class="pg-detail">' + esc(graph.detail) + "</div>" : "") +
+        // Natural pixel size, not width="100%": the layout is as wide as the
+        // pipeline is long (2508px for a ten-stage deploy), so scaling it to
+        // the card squashed every node to an 18px-tall sliver of unreadable
+        // text. .pg-wrap already scrolls horizontally — this is what gives it
+        // something to scroll.
         '<svg class="pg-svg" viewBox="0 0 ' + laid.width + " " + laid.height + '"' +
-          ' width="100%" preserveAspectRatio="xMinYMin meet"' +
+          ' width="' + laid.width + '" height="' + laid.height + '"' +
+          ' preserveAspectRatio="xMinYMin meet"' +
           ' role="img" aria-labelledby="' + titleId + " " + descId + '" xmlns="http://www.w3.org/2000/svg">' +
           "<title id=\"" + titleId + '">' + title + "</title>" +
           "<desc id=\"" + descId + '">' + desc + "</desc>" +
