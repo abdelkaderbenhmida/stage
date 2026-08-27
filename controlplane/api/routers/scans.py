@@ -155,7 +155,14 @@ def security_summary(
 
     issue_counter = Counter()
     issue_meta: dict[str, dict] = {}
-    for scan in scans:
+    # The SAME scans that produced `current`, not every scan the project has
+    # ever run. Counting all of history put a table of urllib3 advisories
+    # under a row of zeroed severity tiles on a page whose subtitle promises
+    # "the most recent scan of each tool" — the findings had been fixed, and
+    # the page reported both states at once. It also made `count` mean "times
+    # this advisory appeared in any scan", which grew with every re-scan of
+    # an unchanged dependency.
+    for scan in latest_by_tool.values():
         for finding in scan.findings:
             key = finding.identifier or finding.title or finding.package_name or "unknown"
             issue_counter[key] += 1
