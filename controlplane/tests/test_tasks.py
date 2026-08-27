@@ -181,6 +181,38 @@ def test_scan_task_persists_findings(session, project, user, stub_runners):
     assert scan.summary == {"critical": 0, "high": 0, "medium": 0, "low": 0, "unknown": 0}
 
 
+@pytest.mark.parametrize("tool", ["gitleaks", "pip_audit"])
+def test_scan_task_fails_closed_when_the_scanner_errors(
+    session, project, user, stub_runners, monkeypatch, tool
+):
+    """A scanner that crashed is not a target known to be clean.
+
+    Both of these produce no findings when they fail: gitleaks writes no
+    report (read as "[]") and pip-audit writes no JSON (parsed to an empty
+    summary). The pre-deploy gate has always rejected any exit code outside
+    {0, 1}; the on-demand path did not, so a crashed scanner was stored as a
+    completed scan with zero findings and the Security page called the
+    project clean.
+    """
+    runner = "run_gitleaks" if tool == "gitleaks" else "run_pip_audit"
+    monkeypatch.setattr(
+        tasks, runner,
+        lambda *a, **k: RawResult(tool=tool, target="x", exit_code=2, stdout="boom"),
+    )
+    scan = Scan(project_id=project.id, tool=tool, target="https://github.com/org/x.git", status="queued")
+    session.add(scan)
+    session.commit()
+    job = _new_job(session, project, "scan")
+
+    stub_runners.scan_task(str(job.id), str(scan.id), str(project.id), tool, scan.target)
+
+    session.refresh(job)
+    session.refresh(scan)
+    assert job.status == "failed"
+    assert scan.status == "failed"
+    assert scan.summary in (None, {})
+
+
 def test_scan_task_rejects_evil_target(session, project, user, stub_runners, monkeypatch):
     def _no_clone(*a, **k):
         raise ValueError("Repository URL scheme must be https")

@@ -770,6 +770,17 @@ def scan_task(job_id: str, scan_id: str, project_id: str, tool: str, target: str
             elif tool == "gitleaks":
                 cloned = _clone_repo(target, job_id, on_line, team_id=scan_team_id)
                 result = run_gitleaks(cloned, on_line=on_line)
+                # Same exit-code contract the pre-deploy gate applies: 0 is a
+                # clean scan and 1 means leaks were found, so anything else is
+                # a scan that did not run. Without this the on-demand path
+                # read the missing report as "[]" and recorded a completed,
+                # finding-free scan — a clean bill of health on the Security
+                # page from a scanner that had crashed.
+                if result.timed_out or result.exit_code not in (0, 1):
+                    raise RuntimeError(
+                        f"gitleaks could not scan {target}. Exit {result.exit_code}: "
+                        f"{(result.stdout or '')[-400:]}"
+                    )
                 raw = result.artifact_path
                 text = Path(raw).read_text() if raw and Path(raw).exists() else "[]"
                 from controlplane.parsers.gitleaks_parser import parse_gitleaks
@@ -779,6 +790,15 @@ def scan_task(job_id: str, scan_id: str, project_id: str, tool: str, target: str
                 cloned = _clone_repo(target, job_id, on_line, team_id=scan_team_id)
                 requirements = _find_requirements(cloned)
                 result = run_pip_audit(requirements, on_line=on_line)
+                # pip-audit exits 1 when it finds vulnerabilities; the gate
+                # path treats only that and 0 as a scan that ran. An errored
+                # run produces no JSON, which parsed to an empty summary and
+                # was stored as "completed, nothing found".
+                if result.timed_out or result.exit_code not in (0, 1):
+                    raise RuntimeError(
+                        f"pip-audit could not scan {target}. Exit {result.exit_code}: "
+                        f"{(result.stdout or '')[-400:]}"
+                    )
                 from controlplane.parsers.pip_audit_parser import parse_pip_audit
 
                 parsed = parse_pip_audit(result.stdout)
