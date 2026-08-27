@@ -3,6 +3,12 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!-- The console ships one dark theme and no light one. Declaring that here
+       stops the browser (and dark-mode extensions, which re-colour any page
+       that has not said so) from darkening it a second time — Dark Reader
+       rewrote the modal backdrop's rgba(0,0,0,.6) to an opaque colour, which
+       hid the page behind every dialog. -->
+  <meta name="color-scheme" content="dark">
   <title>DevOps Central Platform</title>
   <!-- shell.css owns the palette and the reset; the other two are each scoped
        to the subtree they style (#cp-root / #platform-root) and must load

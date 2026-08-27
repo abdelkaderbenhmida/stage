@@ -1903,6 +1903,14 @@ async function renderTeams() {
       btn.onclick = async () => {
         const email = await modalPrompt("Add member", "Email address of the user to add:");
         if (!email) return;
+        // Checked before the second question, not after it: asking which role
+        // to give "not-an-email" and only then reporting that it is not an
+        // address wasted the answer and buried the real problem in a toast
+        // two steps later.
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+          toast(`"${email}" is not an email address.`, true);
+          return;
+        }
         const role = await modalPrompt(
           "Add member",
           `Role for ${email} (viewer / developer / owner / admin):`,
