@@ -93,6 +93,34 @@ def test_pip_audit_realistic_report():
     assert by_id["PYSEC-2023-74"]["installed_version"] == "2.28.0"
 
 
+def test_pip_audit_reports_one_finding_per_advisory():
+    """pip-audit resolves each dependency against several advisory sources, so
+    the same id arrives more than once with different prose. Counting both
+    inflated a real scan of one pinned urllib3 from 9 findings to 12, and the
+    inflated number is what the Security page's severity tiles showed."""
+    raw = json.dumps({
+        "dependencies": [
+            {
+                "name": "urllib3",
+                "version": "1.26.4",
+                "vulns": [
+                    {"id": "PYSEC-2021-108", "aliases": ["CVE-2021-33503"],
+                     "description": "from osv", "fix_versions": ["1.26.5"]},
+                    {"id": "PYSEC-2021-108", "aliases": ["CVE-2021-33503"],
+                     "description": "the same advisory, other wording", "fix_versions": ["1.26.5"]},
+                    {"id": "PYSEC-2023-192", "aliases": [], "fix_versions": []},
+                ],
+            }
+        ]
+    })
+    parsed = parse_pip_audit(raw)
+    assert [f["identifier"] for f in parsed.findings] == ["PYSEC-2021-108", "PYSEC-2023-192"]
+    assert sum(parsed.summary.values()) == 2
+    # The alias is what a reader can look up; a PYSEC id on its own is not.
+    assert parsed.findings[0]["title"] == "CVE-2021-33503"
+    assert parsed.findings[1]["title"] is None
+
+
 def test_pip_audit_empty():
     parsed = parse_pip_audit(_load("pip_audit_empty.json"))
     assert parsed.findings == []

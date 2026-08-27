@@ -1178,10 +1178,17 @@ def _run_dependency_scan_gate(
     # shown in the UI (parse_pip_audit), but the platform's gate has never
     # been "high enough", so the gate here does not start being one either.
     gate = sum(parsed.summary.values())
+    # `unknown` is listed too. pip-audit publishes no severity, so this is the
+    # bucket nearly every one of its findings lands in — leaving it out of the
+    # line printed a row of zeroes for a scan that is about to block the
+    # deploy, which reads as "nothing found".
     _append_log(
         job_id,
         "pip-audit: "
-        + ", ".join(f"{parsed.summary.get(level, 0)} {level}" for level in ("critical", "high", "medium", "low")),
+        + ", ".join(
+            f"{parsed.summary.get(level, 0)} {level}"
+            for level in ("critical", "high", "medium", "low", "unknown")
+        ),
     )
     # Persisted for the same reason as the gitleaks gate above: this is the
     # scan that actually blocks the deploy, and it needs to show up on the
@@ -1638,12 +1645,17 @@ def deploy_task(job_id: str, deployment_id: str, project_id: str, user_id: str) 
 
                 parsed = parse_trivy(trivy.stdout)
                 gate = parsed.summary.get("critical", 0) + parsed.summary.get("high", 0)
+                # unknown is reported but deliberately not gated on: the gate
+                # is CRITICAL/HIGH (README §security). Printing the count is
+                # what lets an operator see that findings exist outside the
+                # gate rather than reading four zeroes and assuming a clean
+                # image.
                 _append_log(
                     job_id,
                     "trivy: "
                     + ", ".join(
                         f"{parsed.summary.get(level, 0)} {level}"
-                        for level in ("critical", "high", "medium", "low")
+                        for level in ("critical", "high", "medium", "low", "unknown")
                     ),
                 )
                 # Persisted for the same reason as the gitleaks/pip-audit gates:

@@ -68,13 +68,28 @@ def parse_pip_audit(raw_output: str) -> ParsedFindings:
         return ParsedFindings()
     summary = empty_summary()
     findings = []
+    # pip-audit resolves each dependency against several advisory sources, and
+    # the same advisory reached through two of them is reported twice with
+    # different prose. Counting both made one vulnerable urllib3 pin show as
+    # 12 findings where there are 9, and the inflated number is what the
+    # Security page's severity tiles displayed.
+    seen: set[tuple[str, str]] = set()
     for dep in data.get("dependencies", []):
         name = dep.get("name")
         version = dep.get("version")
         for vuln in dep.get("vulns", []):
+            key = (str(name), str(vuln.get("id")))
+            if key in seen:
+                continue
+            seen.add(key)
             severity = _severity_of(vuln)
             summary = bump(summary, severity)
             fix_versions = vuln.get("fix_versions") or []
+            # pip-audit carries no severity of its own, so a PYSEC id is all
+            # these rows would otherwise show. The aliases are what a reader
+            # can actually look up — CVE-2021-33503 says more than
+            # PYSEC-2021-108 to everyone who does not live in OSV.
+            aliases = [a for a in (vuln.get("aliases") or []) if a]
             findings.append(
                 {
                     "severity": severity,
@@ -82,7 +97,7 @@ def parse_pip_audit(raw_output: str) -> ParsedFindings:
                     "package_name": name,
                     "installed_version": version,
                     "fixed_version": fix_versions[0] if fix_versions else None,
-                    "title": None,
+                    "title": ", ".join(aliases) or None,
                     "description": vuln.get("description"),
                     "file_path": None,
                     "line_number": None,

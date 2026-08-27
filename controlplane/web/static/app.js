@@ -1546,6 +1546,14 @@ async function renderSecurity(projectId) {
           <div class="sev ${s}"><div class="n">${summary.current[s] ?? 0}</div><div class="k">${s}</div></div>`
         ).join("")}
       </div>
+      <!-- The tiles alone imply a single CRITICAL/HIGH gate, which is only
+           how the image scan works. A dependency advisory or a committed
+           secret blocks the deploy whatever its severity, and pip-audit
+           publishes no severity at all — so a column of zeroes beside a
+           non-zero UNKNOWN is a blocked deploy, not a clean one. -->
+      <p class="subtitle small">Trivy findings block a deploy at CRITICAL or HIGH.
+        Any gitleaks or pip-audit finding blocks it regardless of severity —
+        pip-audit reports no severity, so those land under UNKNOWN.</p>
 
       ${(summary.failed_tools || []).length
         ? `<div class="panel"><p class="error">The latest
