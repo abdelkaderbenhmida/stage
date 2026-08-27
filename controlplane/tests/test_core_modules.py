@@ -466,3 +466,46 @@ def test_pip_audit_no_severity_at_all():
         )
     )
     assert parsed.summary["unknown"] == 1
+
+def test_a_loopback_kubeconfig_is_refused_with_the_fix_in_the_message(tmp_path):
+    """127.0.0.1 in a kubeconfig is the sandbox container, not the cluster.
+
+    kubectl runs inside a container on the sandbox network, so a kubeconfig
+    written for the host — kind's default — fails with `dial tcp
+    127.0.0.1:PORT: connect: connection refused`, which names nothing an
+    operator can act on. The address is knowable before the run.
+    """
+    import pytest
+    from controlplane.workers import tasks
+
+    kubeconfig = tmp_path / "config"
+    kubeconfig.write_text("clusters:\n- cluster:\n    server: https://127.0.0.1:42827\n")
+    with pytest.raises(RuntimeError) as excinfo:
+        tasks._reject_loopback_kubeconfig(kubeconfig)
+    assert "kind get kubeconfig --internal" in str(excinfo.value)
+
+
+def test_a_reachable_kubeconfig_is_left_alone(tmp_path):
+    from controlplane.workers import tasks
+
+    kubeconfig = tmp_path / "config"
+    kubeconfig.write_text("clusters:\n- cluster:\n    server: https://cluster.internal:6443\n")
+    tasks._reject_loopback_kubeconfig(kubeconfig)
+
+
+def test_an_unwritable_workspace_root_names_the_setting_that_moves_it(tmp_path, settings_override):
+    """The tenant reads this message; "[Errno 13] /var/lib/controlplane" is
+    not something they can act on, and the condition belongs to the install."""
+    import pytest
+    from controlplane.workers import tasks
+
+    blocked = tmp_path / "no-write"
+    blocked.mkdir()
+    blocked.chmod(0o500)
+    try:
+        with settings_override(workspace_root=str(blocked / "workspaces")):
+            with pytest.raises(RuntimeError) as excinfo:
+                tasks._ensure_workspace_root()
+        assert "WORKSPACE_ROOT" in str(excinfo.value)
+    finally:
+        blocked.chmod(0o700)

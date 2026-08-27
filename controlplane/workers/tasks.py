@@ -252,6 +252,30 @@ def queue_provision(project: Project, user_id: uuid.UUID) -> Job:
         db.close()
 
 
+def _ensure_workspace_root() -> None:
+    """Fail with the fix, not with an errno.
+
+    A worker that cannot write settings.workspace_root produces
+    `[Errno 13] Permission denied: '/var/lib/controlplane'` at the first
+    render step, which is where the tenant reads it — a path they have no
+    access to and no way to act on. The condition belongs to the deployment
+    (the directory does not exist, or is not owned by the user the worker
+    runs as), so say that, and name the setting that moves it.
+    """
+    root = Path(settings.workspace_root)
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+        probe = root / ".write-probe"
+        probe.touch()
+        probe.unlink()
+    except OSError as exc:
+        raise RuntimeError(
+            f"The platform cannot write its workspace directory {root} "
+            f"({exc.strerror}). Create it and give it to the user the worker "
+            f"runs as, or point WORKSPACE_ROOT at a directory that user owns."
+        ) from exc
+
+
 @celery_app.task(name="controlplane.workers.tasks.provision_task")
 def provision_task(
     job_id: str,
@@ -277,6 +301,9 @@ def provision_task(
 
         spec = InfraSpec.model_validate(spec_dict)
         on_line = _log_lines(job_id)
+        # Before any rendering: every mode writes into the workspace root, and
+        # a worker that cannot write there fails identically in all of them.
+        _ensure_workspace_root()
 
         # Namespace mode carves a bounded slice out of a shared cluster and
         # skips Terraform and Ansible entirely — seconds instead of minutes.
@@ -1865,6 +1892,38 @@ def _render_manifests(project: Project, deployment: Deployment, image_ref: str) 
     return written
 
 
+_LOOPBACK_SERVER_RE = re.compile(
+    r"^\s*server:\s*https?://(127\.0\.0\.1|localhost|\[::1\])(:\d+)?", re.MULTILINE
+)
+
+
+def _reject_loopback_kubeconfig(kubeconfig: Path) -> None:
+    """Refuse a kubeconfig whose API server is the loopback address.
+
+    kubectl runs inside a sandbox container, where 127.0.0.1 is that
+    container — not the host that published the API server's port. A
+    kubeconfig written for the host (kind's default) therefore fails with
+    `dial tcp 127.0.0.1:PORT: connect: connection refused`, an error that
+    describes the symptom and names nothing that would fix it. The address
+    is knowable before the run, so it is checked here.
+    """
+    try:
+        text = kubeconfig.read_text()
+    except OSError:
+        return
+    match = _LOOPBACK_SERVER_RE.search(text)
+    if not match:
+        return
+    raise RuntimeError(
+        f"The kubeconfig at {kubeconfig} points at {match.group(1)}"
+        f"{match.group(2) or ''}, which inside the platform's sandbox container "
+        "is the container itself, not the cluster. Point KUBECONFIG_PATH at a "
+        "kubeconfig whose server is reachable from the sandbox network "
+        f"({settings.registry_network}) — for kind, "
+        "`kind get kubeconfig --internal`."
+    )
+
+
 @contextlib.contextmanager
 def _kubeconfig_path(project: Project | None):
     """Resolve the kubeconfig to mount for ``project``.
@@ -1894,6 +1953,7 @@ def kubectl(args: list[str], project: Project | None, on_line=None) -> SandboxRe
     with _kubeconfig_path(project) as kubeconfig:
         mounts = []
         if kubeconfig.exists():
+            _reject_loopback_kubeconfig(kubeconfig)
             mounts.append((kubeconfig, "/kube/config", True))
         return run_sandbox(
             SandboxRun(
@@ -2342,6 +2402,8 @@ def kubectl_apply(
     """
     ns = k8s_namespace(project.id)
     with _kubeconfig_path(project) as kubeconfig:
+        if kubeconfig.exists():
+            _reject_loopback_kubeconfig(kubeconfig)
         kubeconfig_mounts = [(kubeconfig, "/kube/config", True)] if kubeconfig.exists() else []
 
         namespaces = run_sandbox(
