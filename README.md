@@ -491,12 +491,16 @@ spends a build slot:
 ```yaml
 stages:
   - name: unit tests
-    image: python:3.11-slim      # the default sandbox has the platform's tooling,
-    run: pip install -r requirements.txt && pytest -q   # not your dependencies
+    image: python:3.11-slim      # name one, or take the default below —
+    run: pip install -r requirements.txt && pytest -q   # neither has your deps
   - name: lint
     image: python:3.11-slim
     run: ruff check .
 ```
+
+A stage that names no `image` runs in `DEFAULT_STAGE_IMAGE` (`python:3.12-alpine`),
+the same on the sandbox path and under Tekton — a `.platform.yml` must not depend on
+which of the two an operator has enabled.
 
 Each stage becomes a step in the job's pipeline graph and log, exactly like a built-in
 one. Stages run in the same sandbox as everything else: an ephemeral container with CPU,

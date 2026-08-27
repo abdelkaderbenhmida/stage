@@ -1525,7 +1525,11 @@ def deploy_task(job_id: str, deployment_id: str, project_id: str, user_id: str) 
                             # ephemeral container with CPU, memory and wall-clock
                             # limits and no docker socket. Never on the host.
                             command=["sh", "-c", stage.run],
-                            image=stage.image or settings.sandbox_image,
+                            # settings.default_stage_image, not sandbox_image:
+                            # the same fallback Tekton uses, so a stage that
+                            # names no image runs in the same place on both
+                            # paths (core/config.py).
+                            image=stage.image or settings.default_stage_image,
                             workspace=cloned,
                             # A CI workspace has to be writable. Test runners
                             # write caches and coverage data next to the code —

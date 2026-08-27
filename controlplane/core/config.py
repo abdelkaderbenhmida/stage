@@ -122,18 +122,27 @@ class Settings:
     # Worker sandbox
     sandbox_image: str = field(default_factory=lambda: _env(
         "SANDBOX_IMAGE", "platform/sandbox:latest"))
-    # A tenant's .platform.yml stage that names no image of its own falls
-    # back to this. Under the sandbox path that's sandbox_image — fine
-    # there, since `docker run` on the control-plane host already has it
-    # cached locally. Under Tekton the same fallback is a Pod pull request
-    # from inside the cluster, and sandbox_image is never pushed anywhere a
-    # cluster can reach — reproduced live as "pull access denied,
-    # repository does not exist" the first time a tenant deploy ran a stage
-    # with no image of its own under Tekton. A small, universally-pullable
-    # public image is the correct default here, not this platform's own
-    # multi-gigabyte build image.
-    tekton_default_stage_image: str = field(default_factory=lambda: _env(
-        "TEKTON_DEFAULT_STAGE_IMAGE", "python:3.12-alpine"))
+    # A tenant's .platform.yml stage that names no image of its own falls back
+    # to this, on BOTH execution paths.
+    #
+    # It was Tekton-only, and the sandbox path fell back to sandbox_image
+    # instead — so one `.platform.yml` behaved differently depending on a
+    # setting the repository's author cannot see. `run: python -m py_compile
+    # main.py` passed under Tekton and failed on the sandbox path with
+    # `sh: 1: python: not found`, because this platform's own build image is
+    # Ubuntu-based and ships python3 without the `python` alias. Same file,
+    # same platform, two answers.
+    #
+    # A small, universally-pullable public image is the right default for
+    # both: under Tekton the fallback is a Pod pull from inside the cluster,
+    # and sandbox_image is never pushed anywhere a cluster can reach — that
+    # was "pull access denied, repository does not exist" the first time a
+    # tenant stage ran there with no image of its own.
+    #
+    # TEKTON_DEFAULT_STAGE_IMAGE is still read, so an operator who set it
+    # keeps their value.
+    default_stage_image: str = field(default_factory=lambda: _env(
+        "DEFAULT_STAGE_IMAGE", _env("TEKTON_DEFAULT_STAGE_IMAGE", "python:3.12-alpine")))
     sandbox_network_enabled: bool = field(
         default_factory=lambda: _env("SANDBOX_NETWORK_ENABLED", "true").lower() == "true")
     provision_timeout_seconds: int = field(

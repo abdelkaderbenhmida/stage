@@ -295,6 +295,12 @@ class DeploymentOut(BaseModel):
     replicas: int
     strategy: str = "deployment"
     created_at: datetime
+    # Set only on the response that creates a deployment, so the caller can
+    # follow the build it just started. Provision has always answered with its
+    # job id and the console jumps straight to it; deploy did not, which left
+    # the person who pressed "Build, scan and deploy" on a page showing
+    # "queued" and no way to reach the log.
+    job_id: uuid.UUID | None = None
 
 
 class ScanRequest(BaseModel):

@@ -49,8 +49,18 @@ def _looks_safe(line: str) -> bool:
     return any(sub in lowered for sub in _OK_SUBSTRINGS)
 
 
+# Colour codes from any tool that thinks it is writing to a terminal. Job logs
+# are read in the browser, where they render as literal "[90m" fragments —
+# gitleaks' own summary reached the deploy log looking like
+# `\x1b[90m7:58PM\x1b[0m \x1b[32mINF\x1b[0m no leaks found`. Stripped here
+# because this is the one funnel every streamed sandbox line passes through
+# (runners/sandbox.py); _run() does the same for captured output.
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
+
+
 def scrub_line(line: str) -> str:
     """Return ``line`` with any matched secret replaced by ``[REDACTED]``."""
+    line = _ANSI_RE.sub("", line)
     for pattern in _SECRET_PATTERNS:
         if pattern.search(line):
             return _REDACTED

@@ -1471,7 +1471,7 @@ function renderDeployForm(project) {
     const repoInput = $("#d-repo");
     clearFieldError(repoInput);
     try {
-      await api(`/projects/${project.id}/deployments`, {
+      const created = await api(`/projects/${project.id}/deployments`, {
         method: "POST",
         body: {
           service_name: $("#d-name").value.trim(),
@@ -1485,7 +1485,12 @@ function renderDeployForm(project) {
         },
       });
       toast("Deployment queued.");
-      renderProject(project.id);
+      // Straight to the build it just started, the way Provision does. The
+      // project page only shows "queued" with no route to the log, so the
+      // pipeline someone had just triggered was the one thing they could not
+      // watch.
+      if (created && created.job_id) location.hash = `#/jobs/${created.job_id}`;
+      else renderProject(project.id);
     } catch (err) {
       applyServerError($("#deploy-form"), err.message, { "d-repo": "url" });
       if (!repoInput.hasAttribute("aria-invalid")) $("#deploy-error").textContent = err.message;

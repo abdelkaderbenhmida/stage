@@ -270,10 +270,12 @@ def create_deployment(
     # so nothing here can hand them back through the API.
     deployment.secret_keys = store_secrets(project.team_id, deployment.id, secrets)
     db.commit()
-    tasks.queue_deploy(deployment, project, user.id)
+    job = tasks.queue_deploy(deployment, project, user.id)
     db.commit()
     audit(db, user.id, "deployment.create", request, resource_type="deployment", resource_id=str(deployment.id), team_id=project.team_id)
-    return deployment
+    out = DeploymentOut.model_validate(deployment)
+    out.job_id = job.id
+    return out
 
 
 @router.get("/deployments/{deployment_id}", response_model=DeploymentOut)
