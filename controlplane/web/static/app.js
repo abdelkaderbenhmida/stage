@@ -2195,7 +2195,11 @@ async function renderJob(jobId) {
 
     // Only stream while the job can still produce output.
     if (job.status === "queued" || job.status === "running") {
-      streamJobLog(jobId, job.status);
+      // The snapshot above is already on screen, so the stream must resume
+      // after it. Without this the first delta was the whole log from byte 0
+      // and landed underneath the copy already rendered — every line the job
+      // had produced before the page opened appeared twice.
+      streamJobLog(jobId, job.status, (job.log || "").length);
     } else {
       $("#stream-state").textContent = "finished";
     }
@@ -2204,7 +2208,7 @@ async function renderJob(jobId) {
   }
 }
 
-function streamJobLog(jobId, jobStatus) {
+function streamJobLog(jobId, jobStatus, after = 0) {
   const logEl = $("#log");
   const stateEl = $("#stream-state");
   stateEl.textContent = "streaming…";
@@ -2218,7 +2222,9 @@ function streamJobLog(jobId, jobStatus) {
       return res.json();
     })
     .then((body) => {
-      const stream = new EventSource(`${API}/jobs/${jobId}/logs?stream_token=${encodeURIComponent(body.message)}`);
+      const stream = new EventSource(
+        `${API}/jobs/${jobId}/logs?stream_token=${encodeURIComponent(body.message)}&after=${after}`,
+      );
       activeStream = stream;
 
       // The server emits named "log" events carrying {"delta": "..."} -- the
