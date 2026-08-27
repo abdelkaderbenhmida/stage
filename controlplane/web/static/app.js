@@ -55,7 +55,13 @@ function applyServerError(form, message, fields = {}) {
     message.toLowerCase().includes(value.toLowerCase()));
   if (first) {
     const input = form.querySelector(`#${first[0]}`);
-    setFieldError(input, message);
+    // The message is about to be printed directly beneath the field it names,
+    // so repeating that name ("name: Use 3 to 30 characters…") is noise. It
+    // stays in the generic string errorText() builds, which is also used for
+    // toasts, where the field is the only clue to what went wrong.
+    const field = first[1];
+    const withoutField = message.replace(new RegExp(`^${field}\\s*:\\s*`, "i"), "");
+    setFieldError(input, withoutField);
   } else if (form) {
     const top = form.querySelector(".error");
     if (top) top.textContent = message;
@@ -122,7 +128,7 @@ function modalHost() {
   return document.getElementById("cp-root") || document.body;
 }
 
-function modalShell(title, body) {
+function modalShell(title, body, { onEscape } = {}) {
   const backdrop = document.createElement("div");
   backdrop.className = "modal-backdrop";
   backdrop.innerHTML = `
@@ -139,7 +145,14 @@ function modalShell(title, body) {
     document.removeEventListener("keydown", onKey);
   };
   const onKey = (event) => {
-    if (event.key === "Escape") close();
+    // Escape has to answer the caller, not just take the dialog off screen.
+    // Every one of these is awaited — modalPrompt/modalConfirm return a
+    // promise a flow is suspended on — so dismissing without resolving left
+    // that flow waiting for an answer that could never arrive.
+    if (event.key === "Escape") {
+      close();
+      if (onEscape) onEscape();
+    }
     if (event.key === "Tab" && backdrop.querySelector(".modal").contains(event.target) === false) {
       event.preventDefault();
       backdrop.querySelector(".modal").focus();
@@ -152,17 +165,28 @@ function modalShell(title, body) {
 /** Ask a free-form question; resolves with the value or null on cancel. */
 function modalPrompt(title, message, options = {}) {
   const value = options.value ?? "";
-  const { backdrop, close, shell } = modalShell(title, `
-    <p>${esc(message)}</p>
-    <input type="${options.type || "text"}" value="${esc(value)}" placeholder="${esc(options.placeholder || "")}">`);
   return new Promise((resolve) => {
+    const { backdrop, close } = modalShell(title, `
+      <p>${esc(message)}</p>
+      <input type="${options.type || "text"}" value="${esc(value)}" placeholder="${esc(options.placeholder || "")}">`,
+      { onEscape: () => resolve(null) });
     const input = backdrop.querySelector("input");
-    backdrop.querySelector('[data-action="ok"]').onclick = () => {
+    const submit = () => {
       const answer = input.value.trim();
       close();
       resolve(answer);
     };
+    backdrop.querySelector('[data-action="ok"]').onclick = submit;
     backdrop.querySelector('[data-action="cancel"]').onclick = () => { close(); resolve(null); };
+    // A one-field dialog that ignores Enter is a dialog people press Enter at
+    // twice and then hunt for the button. There is no <form> here to give it
+    // implicit submission, so it is wired explicitly.
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        submit();
+      }
+    });
     modalHost().appendChild(backdrop);
     input.focus();
     input.select();
@@ -171,9 +195,11 @@ function modalPrompt(title, message, options = {}) {
 
 /** Confirm an irreversible action; resolves true/false. */
 function modalConfirm(title, message, okLabel = "Confirm") {
-  const { backdrop, close, shell } = modalShell(title, `<p>${esc(message)}</p>`);
-  shell.querySelector('[data-action="ok"]').textContent = okLabel;
   return new Promise((resolve) => {
+    const { backdrop, close, shell } = modalShell(
+      title, `<p>${esc(message)}</p>`, { onEscape: () => resolve(false) },
+    );
+    shell.querySelector('[data-action="ok"]').textContent = okLabel;
     backdrop.querySelector('[data-action="ok"]').onclick = () => { close(); resolve(true); };
     backdrop.querySelector('[data-action="cancel"]').onclick = () => { close(); resolve(false); };
     modalHost().appendChild(backdrop);
@@ -198,8 +224,19 @@ function errorText(body, status) {
   const detail = body?.detail;
   if (typeof detail === "string") return detail;
   if (Array.isArray(detail)) {
+    // FastAPI's 422 body is a validation-error list. Two things in it are
+    // plumbing rather than message: pydantic prefixes anything raised by a
+    // custom validator with "Value error, ", and the field name is already
+    // shown by the field the message is attached to. Left in, a form said
+    // "name: Value error, Use 3 to 30 characters…".
     return detail
-      .map((e) => `${(e.loc || []).filter((p) => p !== "body").join(".")}: ${e.msg}`)
+      .map((e) => {
+        const field = (e.loc || []).filter((p) => p !== "body").join(".");
+        const msg = String(e.msg || "").replace(/^Value error,\s*/, "");
+        return field && !msg.toLowerCase().includes(field.toLowerCase())
+          ? `${field}: ${msg}`
+          : msg;
+      })
       .join("; ");
   }
   return `Request failed (HTTP ${status})`;

@@ -2,7 +2,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, model_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
 
 from controlplane.schemas.spec import InfraSpec
 
@@ -52,8 +52,19 @@ class NodeOut(BaseModel):
     last_seen_at: datetime | None
 
 
+PROJECT_NAME_RE = r"^[a-z0-9-]{3,30}$"
+# What the pattern means, for a person. Pydantic's own message for a failed
+# `pattern` is "String should match pattern '^[a-z0-9-]{3,30}$'", and the
+# console renders the server's message under the field verbatim — so that
+# regex is what someone typing "My Cluster" was told to fix.
+PROJECT_NAME_HELP = (
+    "Use 3 to 30 characters: lowercase letters, numbers and hyphens "
+    "(for example my-cluster)."
+)
+
+
 class ProjectCreate(BaseModel):
-    name: str = Field(pattern=r"^[a-z0-9-]{3,30}$")
+    name: str
     description: str | None = None
     # Exactly one of infra_spec / preset. A preset is expanded server-side into
     # a full InfraSpec and then validated identically — it is a convenience,
@@ -64,6 +75,15 @@ class ProjectCreate(BaseModel):
     ttl_hours: int | None = Field(default=None, ge=0, le=168)
     auto_destroy: bool = True
     mode: Literal["namespace", "vm"] | None = None
+
+    @field_validator("name")
+    @classmethod
+    def name_is_a_dns_label(cls, value: str) -> str:
+        import re
+
+        if not re.match(PROJECT_NAME_RE, value or ""):
+            raise ValueError(PROJECT_NAME_HELP)
+        return value
 
     @model_validator(mode="after")
     def exactly_one_source(self) -> "ProjectCreate":
