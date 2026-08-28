@@ -79,6 +79,10 @@ spec:
           allowEmpty: false
         syncOptions:
           - ServerSideApply=true
+          # ignoreDifferences ne couvre que la detection de derive : sans cette
+          # option, chaque synchronisation reelle reapplique spec.replicas et
+          # ecrase le HPA (observe : retour de 5 a 2 repliques a chaque commit).
+          - RespectIgnoreDifferences=true
         retry:
           limit: 5
           backoff:
