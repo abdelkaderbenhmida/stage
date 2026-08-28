@@ -17,15 +17,20 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+import uuid as _uuid
 from collections.abc import Callable
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
+from sqlalchemy.orm import Session
 from sse_starlette.sse import EventSourceResponse
 
 from controlplane import platform_ops
+from controlplane.api.deps import audit, get_current_user
 from controlplane.api.rbac import require_platform_admin, require_platform_admin_sse
+from controlplane.db import get_db
+from controlplane.models import User
 
 router = APIRouter(prefix="/platform", tags=["platform"], dependencies=[Depends(require_platform_admin)])
 
@@ -528,6 +533,52 @@ def api_rollout_undo(body: RolloutRef) -> dict:
 @router.get("/live/ci/{run_id}/logs")
 def api_ci_run_logs(run_id: str) -> dict:
     return platform_ops.ci_run_logs(run_id)
+
+
+# ─── Platform ownership ───
+
+
+class RoleUpdate(BaseModel):
+    role: str
+
+
+@router.put("/users/{user_id}/role", response_model=dict)
+def set_platform_role(
+    user_id: _uuid.UUID,
+    body: RoleUpdate,
+    request: Request,
+    db: Session = Depends(get_db),
+    caller: User = Depends(get_current_user),
+) -> dict:
+    """Grant or withdraw platform ownership.
+
+    "admin" is what opens this console, and this console is about the platform
+    itself — its repository, its own services, Vault, cluster capacity. The
+    first account created owns the platform (repositories/users.py); this is
+    how that owner hands the same access to someone else without going into
+    the database.
+
+    An owner cannot demote themselves: doing so on the only remaining owner
+    would leave an install nobody can administer.
+    """
+    if body.role not in ("admin", "user"):
+        raise HTTPException(status_code=422, detail="Role must be 'admin' or 'user'.")
+    target = db.get(User, user_id)
+    if target is None:
+        raise HTTPException(status_code=404, detail="User not found.")
+    if target.id == caller.id and body.role != "admin":
+        raise HTTPException(
+            status_code=409,
+            detail="You cannot remove your own platform ownership.",
+        )
+    target.role = body.role
+    db.commit()
+    audit(
+        db, caller.id, "platform.role_change", request,
+        resource_type="user", resource_id=str(target.id), detail={"role": body.role},
+    )
+    db.commit()
+    return {"user_id": str(target.id), "email": target.email, "role": target.role}
 
 
 # ─── Ops script runner ───

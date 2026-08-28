@@ -352,3 +352,79 @@ def test_healthz(client):
 
 def test_readyz(client):
     assert client.get("/readyz").status_code == 200
+
+
+def test_the_first_account_owns_the_platform_and_later_ones_do_not(client, session):
+    """The operator console shows the platform's own repository, services,
+    Vault and cluster — never a tenant's. Whoever installs the platform needs
+    to reach it, so the first account is the owner; every account after it is
+    a tenant, and /platform 404s for them (rbac.require_platform_admin)."""
+    from controlplane.models import User
+
+    session.query(User).delete()
+    session.commit()
+
+    owner = client.post("/api/v1/auth/register", json={
+        "email": "owner@example.com",
+        "password": "Sup3rSecret!",
+        "password_confirm": "Sup3rSecret!",
+    })
+    assert owner.status_code == 201, owner.text
+    tenant = client.post("/api/v1/auth/register", json={
+        "email": "tenant@example.com",
+        "password": "Sup3rSecret!",
+        "password_confirm": "Sup3rSecret!",
+    })
+    assert tenant.status_code == 201, tenant.text
+
+    roles = {u.email: u.role for u in session.query(User).all()}
+    assert roles["owner@example.com"] == "admin"
+    assert roles["tenant@example.com"] == "user"
+
+    token = client.post("/api/v1/auth/login", json={
+        "email": "tenant@example.com", "password": "Sup3rSecret!",
+    }).json()["access_token"]
+    hidden = client.get(
+        "/api/v1/platform/live/health", headers={"Authorization": f"Bearer {token}"}
+    )
+    assert hidden.status_code == 404
+
+
+def test_only_an_owner_can_hand_out_platform_ownership(client, session):
+    """The console this role opens is about the platform, not about anyone's
+    apps, so the grant has to come from someone who already owns it — and an
+    owner cannot strip their own access and lock the install out."""
+    from controlplane.core.security import hash_password
+    from controlplane.models import User
+
+    session.query(User).delete()
+    session.commit()
+    owner = User(email="own@example.com", password_hash=hash_password("Sup3rSecret!"), role="admin")
+    tenant = User(email="ten@example.com", password_hash=hash_password("Sup3rSecret!"), role="user")
+    session.add_all([owner, tenant])
+    session.commit()
+
+    def login(email):
+        return client.post("/api/v1/auth/login", json={
+            "email": email, "password": "Sup3rSecret!",
+        }).json()["access_token"]
+
+    tenant_headers = {"Authorization": f"Bearer {login('ten@example.com')}"}
+    owner_headers = {"Authorization": f"Bearer {login('own@example.com')}"}
+
+    # A tenant cannot even see the endpoint, let alone promote themselves.
+    denied = client.put(
+        f"/api/v1/platform/users/{tenant.id}/role", json={"role": "admin"}, headers=tenant_headers,
+    )
+    assert denied.status_code == 404
+
+    granted = client.put(
+        f"/api/v1/platform/users/{tenant.id}/role", json={"role": "admin"}, headers=owner_headers,
+    )
+    assert granted.status_code == 200
+    assert granted.json()["role"] == "admin"
+
+    locked_out = client.put(
+        f"/api/v1/platform/users/{owner.id}/role", json={"role": "user"}, headers=owner_headers,
+    )
+    assert locked_out.status_code == 409

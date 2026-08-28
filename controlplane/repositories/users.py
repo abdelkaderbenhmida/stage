@@ -4,6 +4,7 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from controlplane.core.roles import PLATFORM_ADMIN_ROLE
 from controlplane.models import RefreshToken, User
 
 
@@ -23,7 +24,19 @@ class UserRepository:
     def get_by_id(self, user_id: uuid.UUID) -> User | None:
         return self.session.get(User, user_id)
 
-    def create(self, email: str, password_hash: str, role: str = "admin") -> User:
+    def create(self, email: str, password_hash: str, role: str | None = None) -> User:
+        """Create an account. Without an explicit role, the first one owns the
+        platform and the rest are tenants.
+
+        Someone has to be able to reach the operator console on a fresh
+        install, and that is whoever installed it — the first account. Every
+        account after it is a tenant: the console exposes this repository's
+        CI, its own services, Vault and cluster infrastructure, none of which
+        belongs to them.
+        """
+        if role is None:
+            first_account = self.session.scalar(select(User).limit(1)) is None
+            role = PLATFORM_ADMIN_ROLE if first_account else "user"
         user = User(email=email, password_hash=password_hash, role=role)
         self.session.add(user)
         self.session.flush()
