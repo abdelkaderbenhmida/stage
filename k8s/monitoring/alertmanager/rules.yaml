@@ -115,7 +115,8 @@ spec:
       rules:
         - alert: HPAPinnedAtMaxReplicas
           expr: |
-            kube_hpa_status_current_replicas == kube_hpa_spec_max_replicas
+            kube_horizontalpodautoscaler_status_current_replicas
+              == kube_horizontalpodautoscaler_spec_max_replicas
           for: 15m
           labels:
             severity: warning
