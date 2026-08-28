@@ -94,4 +94,6 @@ def readyz():
 
 @app.get("/users")
 def list_users():
-    return [{"id": 1, "name": "Alice"}, {"id": 2, "name": "Bob"}]
+    # Régression volontaire (scénario 5 du rapport) : le handler lève avant de
+    # répondre, ce qui produit des 5xx et fait franchir le SLO d'erreur.
+    raise RuntimeError("regression volontaire : lecture du referentiel utilisateurs")
