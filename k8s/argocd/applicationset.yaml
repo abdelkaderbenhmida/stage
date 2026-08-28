@@ -61,6 +61,17 @@ spec:
       destination:
         server: https://kubernetes.default.svc
         namespace: devops-platform
+      # The HorizontalPodAutoscaler owns spec.replicas at runtime. The chart also
+      # renders a replicas value, so with selfHeal + ServerSideApply ArgoCD kept
+      # rewriting the field back and the autoscaler never held a scale-up:
+      # `SuccessfulRescale New size: 4` fired 9 times in 22 minutes while the
+      # Deployment stayed at 2. Ignoring the field hands replica count to the HPA
+      # and leaves everything else under GitOps control.
+      ignoreDifferences:
+        - group: apps
+          kind: Deployment
+          jsonPointers:
+            - /spec/replicas
       syncPolicy:
         automated:
           prune: true
