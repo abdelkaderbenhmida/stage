@@ -485,6 +485,49 @@ async function renderAuth() {
   };
 }
 
+/* ------------------------------------------------------------- my apps */
+
+/** Every service the caller owns, with what the cluster says about it.
+ *
+ * The operator console answers "how is the platform"; this answers the same
+ * question about the caller's own apps, which previously took one project at
+ * a time. Rows come from /my/apps, which scopes to the caller's teams and
+ * derives each namespace from its project id server-side.
+ */
+async function renderMyApps() {
+  setNav("apps");
+  loading();
+  try {
+    const data = await api("/my/apps");
+    const apps = data.apps || [];
+    view().innerHTML = `
+      <h1>My apps</h1>
+      <p class="subtitle">Every service you own, across ${data.projects} project${data.projects === 1 ? "" : "s"} — status, pods and the last pipeline.</p>
+      ${apps.length === 0
+        ? `<div class="panel"><div class="empty">
+             <h2>Nothing deployed yet</h2>
+             <p>Deploy a service into one of your projects and it appears here with its rollout, pods and last build.</p>
+           </div></div>`
+        : `<div class="panel table-wrap"><table>
+             <thead><tr><th>Service</th><th>Project</th><th>Branch</th><th>Status</th><th>Pods</th><th>Live URL</th><th>Last build</th></tr></thead>
+             <tbody>${apps.map((a) => `
+               <tr>
+                 <td class="mono">${esc(a.service_name)}</td>
+                 <td><a href="#/projects/${a.project_id}">${esc(a.project_name)}</a></td>
+                 <td class="mono">${esc(a.branch)}</td>
+                 <td>${pill(a.status)}</td>
+                 <td class="mono">${a.pods_total ? `${a.pods_ready}/${a.pods_total}` : "—"}</td>
+                 <td>${a.live_url ? `<a href="${esc(a.live_url)}" target="_blank" rel="noopener">open</a>` : "—"}</td>
+                 <td>${a.last_job_id
+                     ? `<a href="#/jobs/${a.last_job_id}">${esc(a.last_job_status || "view")}</a>`
+                     : "—"}</td>
+               </tr>`).join("")}
+             </tbody></table></div>`}`;
+  } catch (err) {
+    showError(err, route);
+  }
+}
+
 /* ------------------------------------------------------------- projects */
 
 async function renderProjects() {
@@ -2287,6 +2330,7 @@ const ROUTES = [
   [/^\/projects\/([0-9a-f-]{36})\/config$/, renderProjectConfig],
   [/^\/projects\/([0-9a-f-]{36})\/monitoring$/, renderProjectMonitoring],
   [/^\/projects\/([0-9a-f-]{36})\/logs$/, renderProjectLogs],
+  [/^\/apps$/, renderMyApps],
   [/^\/catalogue$/, renderCatalogue],
   [/^\/teams$/, renderTeams],
   [/^\/security$/, () => renderSecurity(null)],

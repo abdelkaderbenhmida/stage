@@ -278,7 +278,7 @@ on scrape configuration.
 
 ## API reference
 
-All endpoints are under `/api/v1`. 118 endpoints; grouped by router:
+All endpoints are under `/api/v1`. 119 endpoints; grouped by router:
 
 | Router | Endpoints |
 | --- | --- |
@@ -290,7 +290,7 @@ All endpoints are under `/api/v1`. 118 endpoints; grouped by router:
 | **teams** | `GET/POST /teams`, `GET /teams/{id}`, `POST/DELETE /teams/{id}/members`, `GET /teams/{id}/costs`, `GET/PUT/DELETE /teams/{id}/git-credential` |
 | **monitoring** | `GET /projects/{id}/metrics` |
 | **logs** | `GET /projects/{id}/logs` |
-| **catalogue** | `GET /catalogue` |
+| **catalogue** | `GET /catalogue`, `GET /my/apps` (every service the caller owns, with its live pod count) |
 | **infrastructure** | `GET /infra/capacity`, `/infra/preflight`, `/infra/terraform`, `POST /infra/terraform/reconcile` |
 | **webhooks** | `POST /webhooks/{provider}` |
 | **platform** (admin) | 63 endpoints: `/overview`, `/health`, `/services`, `/apps`, `/ci`, `/helm`, `/argocd`, `/config`, `/ship/*`, and the `/live/*` family covering pods, logs, alerts, drift, Vault, ArgoCD, CI and scripts, plus `/users/{id}/role` to hand platform ownership to another account |

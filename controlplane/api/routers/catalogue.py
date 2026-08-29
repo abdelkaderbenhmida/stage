@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from controlplane import platform_ops
 from controlplane.api.deps import get_current_user
 from controlplane.api.schemas import CatalogueEntry
 from controlplane.db import get_db
@@ -99,3 +100,76 @@ def catalogue(
             )
         )
     return entries
+
+
+@router.get("/my/apps")
+def my_apps(
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Every service the caller owns, with what the cluster says about it.
+
+    The operator console answers "how is the platform" — its own repository,
+    its own services, its namespace, its Vault. A tenant needs the same shape
+    of answer about *their* apps, and until now had to open one project at a
+    time to get it. This is that page: one row per deployment, across every
+    project the caller can see, with the live pod count read from that
+    project's own namespace.
+
+    Namespaces are derived from the project id server-side, exactly as
+    /projects/{id}/workloads does, so this cannot be pointed at a namespace
+    the caller does not own.
+    """
+    from controlplane.core.validation import k8s_namespace
+
+    scope = Scope.from_session(db, user.id)
+    if not scope.team_ids and not scope.is_system:
+        return {"projects": 0, "apps": []}
+
+    rows = db.execute(
+        select(Deployment, Project)
+        .join(Project, Project.id == Deployment.project_id)
+        .where(scope.project_filter())
+        .order_by(Project.name, Deployment.service_name)
+    ).all()
+
+    latest_job = {
+        deployment_id: (job_id, status)
+        for deployment_id, job_id, status in db.execute(
+            select(Job.deployment_id, Job.id, Job.status)
+            .distinct(Job.deployment_id)
+            .order_by(Job.deployment_id, Job.created_at.desc())
+        ).all()
+    }
+
+    # One kubectl call per namespace, not per deployment: a project with six
+    # services would otherwise shell out six times for the same answer.
+    pods_by_namespace: dict[str, list] = {}
+    apps = []
+    for deployment, project in rows:
+        namespace = k8s_namespace(project.id)
+        if namespace not in pods_by_namespace:
+            pods_by_namespace[namespace] = (
+                platform_ops.pods_status(namespace).get("pods", []) or []
+            )
+        pods = [p for p in pods_by_namespace[namespace] if deployment.service_name in (p.get("name") or "")]
+        job_id, job_status = latest_job.get(deployment.id, (None, None))
+        apps.append({
+            "deployment_id": str(deployment.id),
+            "service_name": deployment.service_name,
+            "project_id": str(project.id),
+            "project_name": project.name,
+            "project_status": project.status,
+            "branch": deployment.branch,
+            "status": deployment.status,
+            "live_url": deployment.live_url,
+            "image_ref": deployment.image_ref,
+            "replicas": deployment.replicas,
+            "pods_ready": sum(1 for p in pods if p.get("ready")),
+            "pods_total": len(pods),
+            "last_job_id": str(job_id) if job_id else None,
+            "last_job_status": job_status,
+            "updated_at": deployment.updated_at,
+        })
+
+    return {"projects": len({a["project_id"] for a in apps}), "apps": apps}
