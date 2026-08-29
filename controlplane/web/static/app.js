@@ -500,29 +500,68 @@ async function renderMyApps() {
   try {
     const data = await api("/my/apps");
     const apps = data.apps || [];
+    const rows = (list, filtered) => list.length === 0
+      ? `<div class="empty">${filtered
+          ? "No service matches these filters."
+          : "Nothing deployed yet — deploy a service into one of your projects and it appears here with its rollout, pods and last build."}</div>`
+      : `<table>
+          <thead><tr><th>Service</th><th>Project</th><th>Branch</th><th>Status</th><th>Pods</th><th>Findings</th><th>Live URL</th><th>Last build</th></tr></thead>
+          <tbody>${list.map((a) => `
+            <tr>
+              <td class="mono">${esc(a.service_name)}</td>
+              <td><a href="#/projects/${a.project_id}">${esc(a.project_name)}</a></td>
+              <td class="mono">${esc(a.branch)}</td>
+              <td>${pill(a.status)}</td>
+              <td class="mono">${a.pods_total ? `${a.pods_ready}/${a.pods_total}` : "—"}</td>
+              <td>${a.critical || a.high
+                  ? `${a.critical ? `<span class="sev-tag critical">${a.critical} critical</span> ` : ""}${a.high ? `<span class="sev-tag high">${a.high} high</span>` : ""}`
+                  : `<span class="muted">clean</span>`}</td>
+              <td>${a.live_url ? `<a href="${esc(a.live_url)}" target="_blank" rel="noopener">open</a>` : "—"}</td>
+              <td>${a.last_job_id
+                  ? `<a href="#/jobs/${a.last_job_id}">${esc(a.last_job_status || "view")}</a>`
+                  : "—"}</td>
+            </tr>`).join("")}
+          </tbody></table>`;
+
     view().innerHTML = `
       <h1>My apps</h1>
-      <p class="subtitle">Every service you own, across ${data.projects} project${data.projects === 1 ? "" : "s"} — status, pods and the last pipeline.</p>
-      ${apps.length === 0
-        ? `<div class="panel"><div class="empty">
-             <h2>Nothing deployed yet</h2>
-             <p>Deploy a service into one of your projects and it appears here with its rollout, pods and last build.</p>
-           </div></div>`
-        : `<div class="panel table-wrap"><table>
-             <thead><tr><th>Service</th><th>Project</th><th>Branch</th><th>Status</th><th>Pods</th><th>Live URL</th><th>Last build</th></tr></thead>
-             <tbody>${apps.map((a) => `
-               <tr>
-                 <td class="mono">${esc(a.service_name)}</td>
-                 <td><a href="#/projects/${a.project_id}">${esc(a.project_name)}</a></td>
-                 <td class="mono">${esc(a.branch)}</td>
-                 <td>${pill(a.status)}</td>
-                 <td class="mono">${a.pods_total ? `${a.pods_ready}/${a.pods_total}` : "—"}</td>
-                 <td>${a.live_url ? `<a href="${esc(a.live_url)}" target="_blank" rel="noopener">open</a>` : "—"}</td>
-                 <td>${a.last_job_id
-                     ? `<a href="#/jobs/${a.last_job_id}">${esc(a.last_job_status || "view")}</a>`
-                     : "—"}</td>
-               </tr>`).join("")}
-             </tbody></table></div>`}`;
+      <p class="subtitle">Every service you own, across ${data.projects} project${data.projects === 1 ? "" : "s"} — what it is running, whether it is healthy, and whether it is safe.</p>
+      ${apps.length === 0 ? "" : `
+        <div class="panel">
+          <div class="row" style="align-items:flex-end">
+            <div class="field">
+              <label for="app-filter-status">Status</label>
+              <select id="app-filter-status">
+                <option value="">All</option>
+                ${[...new Set(apps.map((a) => a.status))].sort().map((s) => `<option value="${esc(s)}">${esc(s)}</option>`).join("")}
+              </select>
+            </div>
+            <div class="field">
+              <label for="app-filter-sev">Findings</label>
+              <select id="app-filter-sev">
+                <option value="">All</option>
+                <option value="critical">Critical</option>
+                <option value="high">High</option>
+                <option value="clean">Clean</option>
+              </select>
+            </div>
+          </div>
+        </div>`}
+      <div class="panel table-wrap"><div id="app-rows">${rows(apps, false)}</div></div>`;
+
+    const apply = () => {
+      const status = $("#app-filter-status").value;
+      const sev = $("#app-filter-sev").value;
+      const list = apps.filter((a) =>
+        (!status || a.status === status) &&
+        (!sev || (sev === "clean" ? !a.critical && !a.high : (sev === "critical" ? a.critical : a.high)))
+      );
+      $("#app-rows").innerHTML = rows(list, Boolean(status || sev));
+    };
+    if ($("#app-filter-status")) {
+      $("#app-filter-status").onchange = apply;
+      $("#app-filter-sev").onchange = apply;
+    }
   } catch (err) {
     showError(err, route);
   }
@@ -1760,100 +1799,6 @@ async function renderSecurity(projectId) {
 
 /* ------------------------------------------------------------ catalogue */
 
-async function renderCatalogue() {
-  setNav("catalogue");
-  loading();
-  try {
-    const [entries, teams] = await Promise.all([api("/catalogue"), api("/teams")]);
-    const teamById = new Map(teams.map((t) => [t.id, t.name]));
-    view().innerHTML = `
-      <h1>Service catalogue</h1>
-      <p class="subtitle">Every service running across your teams, with its current security posture.</p>
-      <div class="panel">
-        <div class="row" style="align-items:flex-end">
-          <div class="field">
-            <label for="cat-filter-status">Status</label>
-            <select id="cat-filter-status">
-              <option value="">All</option>
-              <option value="live">live</option>
-              <option value="building">building</option>
-              <option value="scanning">scanning</option>
-              <option value="failed">failed</option>
-              <option value="undeployed">undeployed</option>
-            </select>
-          </div>
-          <div class="field">
-            <label for="cat-filter-sev">Findings</label>
-            <select id="cat-filter-sev">
-              <option value="">All</option>
-              <option value="critical">Critical</option>
-              <option value="high">High</option>
-              <option value="clean">Clean</option>
-            </select>
-          </div>
-          <div class="field">
-            <label for="cat-filter-team">Team</label>
-            <select id="cat-filter-team">
-              <option value="">All teams</option>
-              ${teams.map((t) => `<option value="${t.id}">${esc(t.name)}</option>`).join("")}
-            </select>
-          </div>
-        </div>
-      </div>
-      <div class="panel table-wrap">
-        <div id="cat-rows">${catalogueRows(entries, teamById)}</div>
-      </div>`;
-
-    const apply = () => {
-      const status = $("#cat-filter-status").value;
-      const sev = $("#cat-filter-sev").value;
-      const team = $("#cat-filter-team").value;
-      $("#cat-rows").innerHTML = catalogueRows(
-        entries.filter((e) =>
-          (!status || e.status === status) &&
-          (!sev || (sev === "clean" ? !e.critical && !e.high : (sev === "critical" ? e.critical : e.high))) &&
-          (!team || e.team_id === team)
-        ),
-        teamById,
-        Boolean(status || sev || team),
-      );
-    };
-    $("#cat-filter-status").onchange = apply;
-    $("#cat-filter-sev").onchange = apply;
-    $("#cat-filter-team").onchange = apply;
-  } catch (err) {
-    showError(err, route);
-  }
-}
-
-function catalogueRows(entries, teamById, filtered = false) {
-  if (entries.length === 0) {
-    // An empty catalogue and an empty filter result are different situations:
-    // telling someone with seven live services to "create an environment"
-    // because they picked Findings=critical reads as though the page lost them.
-    return filtered
-      ? `<div class="empty">No service matches these filters.</div>`
-      : `<div class="empty">Nothing deployed yet. Create an environment and deploy an app to see it here.</div>`;
-  }
-  return `<table>
-    <thead><tr><th>Service</th><th>Project</th><th>Owner</th><th>Team</th><th>Status</th><th>Findings</th><th>Live URL</th><th>Logs</th><th>Updated</th></tr></thead>
-    <tbody>${entries.map((e) => `
-      <tr>
-        <td>${esc(e.service_name)}</td>
-        <td><a href="#/projects/${e.project_id}">${esc(e.project_name)}</a></td>
-        <td class="muted">${esc(e.owner_email || "—")}</td>
-        <td class="muted">${esc(teamById.get(e.team_id) || "")}</td>
-        <td>${pill(e.status)}</td>
-        <td>${e.critical || e.high
-            ? `${e.critical ? `<span class="sev-tag critical">${e.critical} critical</span> ` : ""}${e.high ? `<span class="sev-tag high">${e.high} high</span>` : ""}`
-            : `<span class="muted">clean</span>`}</td>
-        <td>${e.live_url ? `<a href="${esc(e.live_url)}" target="_blank" rel="noopener">open</a>` : "—"}</td>
-        <td>${e.logs_job_id ? `<a href="#/jobs/${e.logs_job_id}">logs</a>` : "—"}</td>
-        <td class="muted">${fmtDate(e.updated_at)}</td>
-      </tr>`).join("")}
-    </tbody></table>`;
-}
-
 /* ---------------------------------------------------------------- teams */
 
 async function renderTeams() {
@@ -2040,10 +1985,10 @@ async function renderJobs() {
   setNav("jobs");
   loading();
   try {
-    const projects = await api("/projects");
     view().innerHTML = `
       <h1>Jobs</h1>
-      <p class="subtitle">Open a project to follow its provisioning and deployment jobs, or paste a job ID below.</p>
+      <p class="subtitle">Paste a job ID to open it. Every service's latest build is linked from
+        <a href="#/apps">My apps</a>, and a project's own jobs are on its pages.</p>
       <div class="panel">
         <form id="job-lookup" class="row">
           <input id="job-id" placeholder="Job ID" style="max-width:340px">
@@ -2051,11 +1996,7 @@ async function renderJobs() {
         </form>
         <p id="job-lookup-err" class="error"></p>
       </div>
-      ${projects.length
-        ? `<div class="panel"><table><tbody>${projects.map((p) =>
-            `<tr><td><a href="#/projects/${p.id}">${esc(p.name)}</a></td><td>${pill(p.status)}</td></tr>`
-          ).join("")}</tbody></table></div>`
-        : ""}`;
+      `;
     $("#job-lookup").onsubmit = (e) => {
       e.preventDefault();
       const id = $("#job-id").value.trim();
@@ -2331,7 +2272,9 @@ const ROUTES = [
   [/^\/projects\/([0-9a-f-]{36})\/monitoring$/, renderProjectMonitoring],
   [/^\/projects\/([0-9a-f-]{36})\/logs$/, renderProjectLogs],
   [/^\/apps$/, renderMyApps],
-  [/^\/catalogue$/, renderCatalogue],
+  // Kept so older links and bookmarks still land somewhere: the catalogue
+  // listed the same services as My apps, without their pods or last build.
+  [/^\/catalogue$/, () => { location.hash = "#/apps"; }],
   [/^\/teams$/, renderTeams],
   [/^\/security$/, () => renderSecurity(null)],
   [/^\/security\/([0-9a-f-]{36})$/, renderSecurity],

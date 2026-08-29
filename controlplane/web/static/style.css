@@ -221,6 +221,11 @@
   text-transform: uppercase;
   padding: .1rem .45rem;
   border-radius: 6px;
+  /* One chip, one line. Without this "1 critical" broke after the number and
+     a two-chip cell became six lines tall, which set the height of the whole
+     row. The cell may still wrap BETWEEN chips. */
+  display: inline-block;
+  white-space: nowrap;
 }
 
 #cp-root .sev-tag.critical { color: var(--critical); background: var(--critical-bg); }

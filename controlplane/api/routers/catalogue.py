@@ -142,6 +142,38 @@ def my_apps(
         ).all()
     }
 
+    # Security posture travels with the row, so "what do I run" and "is it
+    # safe" are one page rather than two that list the same services.
+    #
+    # Counted per DEPLOYMENT, not per project: a scan records the deployment
+    # it gated, and rolling them up by project gave all six services of one
+    # project the same "1 critical, 21 high" — six copies of one number, none
+    # of them about the service on that row.
+    # …and only from each tool's LATEST completed scan of that deployment.
+    # Summing every scan ever run counts a vulnerability once per attempt, so
+    # a service that was fixed still reported the findings of the build that
+    # failed — the same mistake /security/summary made.
+    latest_scans = {
+        (deployment_id, tool): scan_id
+        for scan_id, deployment_id, tool in db.execute(
+            select(Scan.id, Scan.deployment_id, Scan.tool)
+            .where(Scan.deployment_id.is_not(None), Scan.status == "completed")
+            .order_by(Scan.deployment_id, Scan.tool, Scan.created_at.desc())
+            .distinct(Scan.deployment_id, Scan.tool)
+        ).all()
+    }
+    findings: dict[tuple, int] = {}
+    if latest_scans:
+        for scan_id, severity, total in db.execute(
+            select(Scan.id, Finding.severity, func.count(Finding.id))
+            .join(Finding, Finding.scan_id == Scan.id)
+            .where(Scan.id.in_(list(latest_scans.values())))
+            .group_by(Scan.id, Finding.severity)
+        ).all():
+            deployment_id = next(d for (d, _), s in latest_scans.items() if s == scan_id)
+            key = (deployment_id, severity)
+            findings[key] = findings.get(key, 0) + total
+
     # One kubectl call per namespace, not per deployment: a project with six
     # services would otherwise shell out six times for the same answer.
     pods_by_namespace: dict[str, list] = {}
@@ -169,6 +201,8 @@ def my_apps(
             "pods_total": len(pods),
             "last_job_id": str(job_id) if job_id else None,
             "last_job_status": job_status,
+            "critical": findings.get((deployment.id, "critical"), 0),
+            "high": findings.get((deployment.id, "high"), 0),
             "updated_at": deployment.updated_at,
         })
 
