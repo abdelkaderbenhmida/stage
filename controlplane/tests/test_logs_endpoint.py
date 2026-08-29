@@ -11,7 +11,6 @@ import uuid
 import httpx
 import pytest
 from controlplane.api.routers.logs import _escape_logql_string, build_query
-from controlplane.core.config import settings
 from controlplane.core.validation import k8s_namespace
 
 NS_SPEC = {

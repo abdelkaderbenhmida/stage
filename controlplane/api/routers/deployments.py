@@ -214,7 +214,9 @@ def project_secrets(
     the seeding path follows). Values live in the secret store keyed by team,
     so a caller who cannot see the project cannot reach them either.
     """
-    project = _require_project(db, scope, project_id)
+    # Called for its access check, not its value: it 404s a project the
+    # caller cannot see before any deployment of it is read.
+    _require_project(db, scope, project_id)
     deployments = db.scalars(
         select(Deployment).where(Deployment.project_id == project_id)
     ).all()

@@ -4,9 +4,8 @@ import secrets
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from prometheus_fastapi_instrumentator import Instrumentator
-
 from shared.log_config import setup_logging
-from shared.vault_client import get_secret, SecretUnavailable, vault_health
+from shared.vault_client import SecretUnavailable, get_secret, vault_health
 
 # Structured logs from the start. Log format honors LOG_FORMAT (json|plain).
 _LOG = setup_logging("users-service")

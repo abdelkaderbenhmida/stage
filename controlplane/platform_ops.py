@@ -442,8 +442,8 @@ def _matrix_summary(spec: dict[str, Any]) -> dict[str, Any]:
             summary["from_json"] = True
     raw = spec.get("matrix")
     if isinstance(raw, dict):
-        for k, v in raw.items():
-            if isinstance(v, str) and "fromJSON(" in v:
+        for value in raw.values():
+            if isinstance(value, str) and "fromJSON(" in value:
                 summary["from_json"] = True
     return summary
 
@@ -1275,7 +1275,7 @@ def terraform_drift() -> dict[str, Any]:
     state = _tfstate_resources()
     domains = [i.get("attributes", {}).get("name") for (t, n), insts in state.items() if t == "libvirt_domain" for i in insts]
     virsh = _run(["virsh", "list", "--all", "--name"], timeout=10)
-    running = [l.strip() for l in virsh["stdout"].splitlines() if l.strip()] if virsh["ok"] else []
+    running = [line.strip() for line in virsh["stdout"].splitlines() if line.strip()] if virsh["ok"] else []
     missing_from_state = sorted(set(running) - set(domains))
     stale_in_state = sorted(set(domains) - set(running))
 

@@ -1,6 +1,7 @@
 import os
 import re
 import sys
+from pathlib import Path
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, REPO_ROOT)
@@ -14,7 +15,7 @@ os.environ.setdefault("JWT_SECRET", "test-secret-not-used-for-signing-here")
 # The standalone ui/ app was folded into the control plane; its introspection
 # module now lives there and is served over /api/v1/platform/*. Same code, so
 # these tests keep their original name for it.
-from controlplane import platform_ops as introspect  # noqa: E402
+from controlplane import platform_ops as introspect
 
 CONSOLE_STATIC = os.path.join(REPO_ROOT, "controlplane", "web", "static")
 
@@ -53,7 +54,7 @@ def test_git_failure_looks_like_absence():
 def test_config_tab_default_is_a_real_tab():
     """Regression guard: state.configTab must be one of renderConfig's tabs,
     or the Operations view renders blank until the user clicks a tab."""
-    src = open(os.path.join(CONSOLE_STATIC, "platform", "app.js")).read()
+    src = Path(os.path.join(CONSOLE_STATIC, "platform", "app.js")).read_text()
     default = re.search(r'configTab:\s*"([^"]+)"', src).group(1)
     tabs = re.search(r'const tabs = \[([^\]]+)\]', src).group(1)
     tab_list = [t.strip().strip('"') for t in tabs.split(",")]
@@ -227,7 +228,7 @@ def test_shared_app_syncs_all_services():
 def test_ci_tag_backfill_writes_commit_tag_into_markers():
     """C3: after a successful push build, a job pins each marker's tag to the
     commit SHA — must exist in the workflow and be gated on push."""
-    wf = open(os.path.join(REPO_ROOT, ".github/workflows/ci-cd.yml")).read()
+    wf = Path(os.path.join(REPO_ROOT, ".github/workflows/ci-cd.yml")).read_text()
     assert "tag-backfill" in wf or "Write build tag" in wf
     assert "GITHUB_SHA" in wf
     assert "service.yaml" in wf
@@ -490,7 +491,7 @@ def test_rollout_undo_rejects_invalid_deployment_names():
 def test_graph_js_script_tag_present_and_first():
     """graph.js must be loaded before platform/app.js and app.js, since it
     defines window.PipelineGraph that both consumers call."""
-    src = open(os.path.join(CONSOLE_STATIC, "index.html")).read()
+    src = Path(os.path.join(CONSOLE_STATIC, "index.html")).read_text()
     scripts = re.findall(r'<script src="([^"]+)"></script>', src)
     assert "/static/graph.js" in scripts
     assert scripts.index("/static/graph.js") < scripts.index("/static/platform/app.js")
@@ -498,7 +499,7 @@ def test_graph_js_script_tag_present_and_first():
 
 
 def test_graph_js_assigns_exactly_one_global():
-    src = open(os.path.join(CONSOLE_STATIC, "graph.js")).read()
+    src = Path(os.path.join(CONSOLE_STATIC, "graph.js")).read_text()
     assigns = re.findall(r"window\.PipelineGraph\s*=", src)
     assert len(assigns) == 1
     assert "window.PipelineGraph" in src
@@ -508,8 +509,8 @@ def test_graph_js_assigns_exactly_one_global():
 
 
 def test_every_pg_class_used_in_graph_js_has_a_rule_in_shell_css():
-    js = open(os.path.join(CONSOLE_STATIC, "graph.js")).read()
-    css = open(os.path.join(CONSOLE_STATIC, "shell.css")).read()
+    js = Path(os.path.join(CONSOLE_STATIC, "graph.js")).read_text()
+    css = Path(os.path.join(CONSOLE_STATIC, "shell.css")).read_text()
     js_classes = set(re.findall(r"pg-[a-zA-Z0-9-]+", js))
     # ID prefixes "pg-t-" / "pg-d-" are aria id targets, not classes.
     js_classes -= {"pg-t-", "pg-d-"}
@@ -520,15 +521,15 @@ def test_every_pg_class_used_in_graph_js_has_a_rule_in_shell_css():
 
 def test_pg_classes_do_not_leak_into_scoped_stylesheets():
     for path in ["style.css", os.path.join("platform", "style.css")]:
-        css = open(os.path.join(CONSOLE_STATIC, path)).read()
+        css = Path(os.path.join(CONSOLE_STATIC, path)).read_text()
         assert ".pg-" not in css, f"{path} must not define .pg-* classes"
 
 
 def test_graph_data_acts_exist_in_actions():
     """Every data-act emitted by the graph/CI rendering code must be a real
     ACTIONS key, or clicks die silently on the Operations view."""
-    src = open(os.path.join(CONSOLE_STATIC, "platform", "app.js")).read()
+    src = Path(os.path.join(CONSOLE_STATIC, "platform", "app.js")).read_text()
     actions_block = src[src.index("const ACTIONS = {"):]
     acts = {"showCiGraph", "refreshConfigTab", "ciTrigger"}
-    missing = [a for a in acts if re.search(rf"^\s*{a}:", actions_block, re.M) is None]
+    missing = [a for a in acts if re.search(rf"^\s*{a}:", actions_block, re.MULTILINE) is None]
     assert not missing, f"data-act used by graph tab not wired in ACTIONS: {missing}"

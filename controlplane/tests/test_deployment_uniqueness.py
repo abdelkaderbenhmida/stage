@@ -11,7 +11,6 @@ import pytest
 from controlplane.db import SessionLocal
 from controlplane.models import Job, Project
 
-
 SPEC = {
     "version": 1,
     "project": "dupes",

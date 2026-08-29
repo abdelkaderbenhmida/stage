@@ -11,7 +11,6 @@ also be captured by anything that records process invocations.
 import os
 import subprocess
 
-import pytest
 from controlplane.runners import sandbox
 from controlplane.runners.sandbox import SandboxRun, run_sandbox
 
@@ -63,7 +62,9 @@ def test_secret_file_is_private_and_removed(monkeypatch):
     """The file holding the secret must not be world-readable, nor outlive the run."""
     modes: list[int] = []
     paths: list[str] = []
-    seen = _captured_argv(monkeypatch)
+    # Called for the Popen patch it installs; this test asserts on the file's
+    # mode and lifetime, not on the argv it captures.
+    _captured_argv(monkeypatch)
 
     real_chmod = os.chmod
 

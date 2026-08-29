@@ -9,7 +9,6 @@ monkeypatched so no gh/git subprocess ever fires.
 import json
 import shutil
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest
@@ -495,7 +494,6 @@ def test_ci_run_graph_year_0001_timestamp_becomes_null(fake_gh):
 
 def test_job_graph_status_positional_rules():
     from controlplane.core.pipeline_graph import _node_status
-    TERMINAL = ("succeeded", "failed", "cancelled", "interrupted")
 
     # i < current → succeeded
     assert _node_status(1, 3, "running", None) == "succeeded"

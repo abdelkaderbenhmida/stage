@@ -6,8 +6,8 @@ SystemExit (fail-fast) instead of silently falling back to insecure
 defaults — see devops-analysis-report.md P0 #3.
 """
 
-from dataclasses import dataclass
 import os
+from dataclasses import dataclass
 
 
 @dataclass

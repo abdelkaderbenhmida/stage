@@ -8,7 +8,6 @@ asked for and reported success. These tests pin the flag, the credential
 prompt, and the actionable failure text.
 """
 
-from unittest.mock import patch
 
 import pytest
 from controlplane.workers import tasks
