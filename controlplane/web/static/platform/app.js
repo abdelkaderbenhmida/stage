@@ -10,7 +10,12 @@ window.PlatformConsole = (function () {
 const state = { data: null, view: "topology", search: "", timer: null, detail: null, configTab: "ci", runTimer: null, pipelineTimer: null };
 
 const $ = (id) => document.getElementById(id);
-const VIEWS = ["topology", "apps", "overview", "services", "config"];
+const VIEWS = ["topology", "apps", "config"];
+// Each operator view is now one continuous section: Platform health carries
+// its own inventory, Platform apps carries the flat service table. The `view-
+// overview` / `view-services` routes that used to exist map here so old links
+// still resolve instead of falling back to whatever view was open.
+const MERGED_VIEWS = { overview: "topology", services: "apps" };
 
 function esc(s) {
   return String(s ?? "")
@@ -195,7 +200,12 @@ function render() {
 /* ═══════════ PLATFORM HEALTH ═══════════ */
 
 function renderTopology() {
-  $("view-topology").innerHTML = `
+  // One pane, one flow: live status first, inventory directly below it —
+  // no separator, no second page. The "↻ refresh" used to rebuild only the
+  // health half; rebuilding the shell here wipes the inventory block, so it
+  // is refilled immediately rather than left empty until the next stream
+  // tick.
+  $("pane-topology").innerHTML = `
     <div class="head">
       <div>
         <h1>Platform Health</h1>
@@ -203,7 +213,9 @@ function renderTopology() {
       </div>
       <button class="act-btn" data-act="renderTopology">↻ refresh</button>
     </div>
-    <div id="health-body"><div class="cfg-loading">loading live status…</div></div>`;
+    <div id="health-body"><div class="cfg-loading">loading live status…</div></div>
+    <div id="overview-body"></div>`;
+  if (state.data) renderOverview();
   loadHealthBoard();
 }
 
@@ -314,7 +326,7 @@ async function loadHealthBoard() {
 
     <div class="card mb" style="padding:16px 20px">
       <div style="font-weight:700;margin-bottom:4px">Need to fix something running right now?</div>
-      <div class="muted small">Open <b>Operations</b> in the sidebar — trigger a CI rerun, sync an ArgoCD app, restart a pod, or open the real Grafana/Prometheus/ArgoCD dashboards.</div>
+      <div class="muted small">Open <b>Platform tools</b> in the sidebar — trigger a CI rerun, sync an ArgoCD app, restart a pod, or open the real Grafana/Prometheus/ArgoCD dashboards.</div>
     </div>
 
     <div class="card">
@@ -505,7 +517,7 @@ function renderApps() {
       </div>`;
   }).join("");
 
-  $("view-apps").innerHTML = `
+  $("pane-apps").innerHTML = `
     ${explainer(`Your <b>management console</b>. Create an app, add services inside it — the UI writes real files (app/&lt;app&gt;/&lt;service&gt;/main.py). The platform is discovery-driven: CI builds the new service, ArgoCD deploys it, Vault provisions secrets, Prometheus watches it. <b>Ship</b> = create + branch <span class="mono">service/&lt;name&gt;</span> + push + open a PR against <span class="mono">secondary</span> — nothing lands unreviewed. Delete → everything shrinks back. Flat legacy services live in the "default" group.`)}
     <div class="head">
       <div>
@@ -538,12 +550,14 @@ function renderApps() {
 
     <div id="pipeline-panel" class="card mb" style="display:none"></div>
 
-    <div class="grid cards">${cards || `<div class="card empty">no apps</div>`}</div>`;
+    <div class="grid cards">${cards || `<div class="card empty">no apps</div>`}</div>
 
-  $("view-apps").querySelectorAll("[data-del-app]").forEach((b) => {
+    <div id="services-body"></div>`;
+
+  $("pane-apps").querySelectorAll("[data-del-app]").forEach((b) => {
     b.addEventListener("click", () => deleteAppFlow(b.dataset.delApp));
   });
-  $("view-apps").querySelectorAll("[data-del-svc]").forEach((b) => {
+  $("pane-apps").querySelectorAll("[data-del-svc]").forEach((b) => {
     b.addEventListener("click", () => deleteServiceFlow(b.dataset.delSvc, b.dataset.svc));
   });
 }
@@ -551,6 +565,8 @@ function renderApps() {
 /* ═══════════ OVERVIEW ═══════════ */
 
 function renderOverview() {
+  const box = $("overview-body");
+  if (!box) return; // topology shell not mounted yet
   const d = state.data;
   const ov = d.overview;
   const locs = d.services.map((s) => s.loc);
@@ -569,11 +585,11 @@ function renderOverview() {
       </div>
     </div>`).join("");
 
-  $("view-overview").innerHTML = `
-    ${explainer(`Health dashboard. Numbers tell you what exists <b>today</b>: services discovered, k8s objects the Helm chart would render, CI jobs, SLO rules, Vault objects, uptime. Green dot = layer present and wired.`)}
-    <div class="head">
+  box.innerHTML = `
+    ${explainer(`Inventory, not live status — that is above. Numbers tell you what exists <b>today</b>: services discovered, k8s objects the Helm chart would render, CI jobs, SLO rules, Vault objects, uptime. Green dot = layer present and wired.`)}
+    <div class="head" style="margin-top:28px">
       <div>
-        <h1>Overview</h1>
+        <h2>Inventory</h2>
         <div class="sub">Discovery-driven platform · ${esc(ov.repo)} · "${esc(ov.revision.message)}"</div>
       </div>
       <div class="header-actions">${ov.status === "healthy" ? pill("PLATFORM HEALTHY", "green") : pill("DEGRADED", "red")}</div>
@@ -635,13 +651,13 @@ function renderOverview() {
       </div>`).join("")}
     </div>`;
 
-  $("view-overview").querySelectorAll("[data-ovc-svc]").forEach((c) => {
+  box.querySelectorAll("[data-ovc-svc]").forEach((c) => {
     c.addEventListener("click", () => {
       showDetail(c.dataset.ovcSvc);
     });
   });
 
-  $("view-overview").querySelectorAll("canvas[data-spark]").forEach((cv) => {
+  box.querySelectorAll("canvas[data-spark]").forEach((cv) => {
     const m = {
       services: [locs, "#4cc2ff"],
       helm: [kinds.map((k) => k.v), "#fbbf24"],
@@ -655,6 +671,8 @@ function renderOverview() {
 /* ═══════════ SERVICES ═══════════ */
 
 function renderServices() {
+  const box = $("services-body");
+  if (!box) return;
   const d = state.data;
   // Whether the filter box is being typed into has to be read BEFORE the
   // view is replaced: tearing down a focused element fires its blur handler,
@@ -678,11 +696,11 @@ function renderServices() {
       <td data-stop><button class="act-btn danger" data-del-svc-row="${esc(s.app)}" data-svc-row="${esc(s.key.split("/").pop())}">✕</button></td>
     </tr>`).join("");
 
-  $("view-services").innerHTML = `
-    ${explainer(`List of your microservices — flat ones in the <b>default</b> group, grouped ones under their app. Each is just a folder with main.py. Delete a service here and every layer adapts.`)}
-    <div class="head">
+  box.innerHTML = `
+    ${explainer(`Same services as the cards above, one row per service instead of grouped by app — for sorting by size or dependency count. Delete a service here and every layer adapts.`)}
+    <div class="head" style="margin-top:28px">
       <div>
-        <h1>Services</h1>
+        <h2>All services (table)</h2>
         <div class="sub">Discovered live from <span class="mono">app/*/main.py</span> (flat) and <span class="mono">app/*/*/main.py</span> (grouped apps).</div>
       </div>
       <div class="header-actions">
@@ -713,7 +731,7 @@ function renderServices() {
       </table>
     </div>`;
 
-  $("view-services").querySelectorAll("[data-del-svc-row]").forEach((b) => {
+  box.querySelectorAll("[data-del-svc-row]").forEach((b) => {
     b.addEventListener("click", () => deleteServiceFlow(b.dataset.delSvcRow, b.dataset.svcRow));
   });
 
@@ -1917,7 +1935,8 @@ let booted = false;
 /** Called by the shell router whenever a #/platform/* route becomes active. */
 async function mount(view) {
   state.mounted = true;
-  switchView(VIEWS.includes(view) ? view : state.view);
+  const resolved = MERGED_VIEWS[view] || view;
+  switchView(VIEWS.includes(resolved) ? resolved : state.view);
   if (booted) {
     // Returning to the console after unmount(), which aborted the stream.
     // Restarting here is what keeps "live updates" live across a round trip
@@ -1933,7 +1952,7 @@ async function mount(view) {
   try {
     await fetchData();
   } catch (e) {
-    $("view-topology").innerHTML = `<div class="card" style="border-color:var(--red)"><span class="red">Failed to load: ${esc(e.message)}</span></div>`;
+    $("pane-topology").innerHTML = `<div class="card" style="border-color:var(--red)"><span class="red">Failed to load: ${esc(e.message)}</span></div>`;
   }
   startLiveStream();
   const box = $("autorefresh");
