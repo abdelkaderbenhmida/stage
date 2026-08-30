@@ -13,7 +13,7 @@ metadata:
 spec:
   project: devops-platform
   source:
-    repoURL: https://github.com/abdelkaderbenhmida/stage.git
+    repoURL: git@github.com:abdelkaderbenhmida/stage.git
     targetRevision: main
     path: k8s/monitoring/elk
   destination:

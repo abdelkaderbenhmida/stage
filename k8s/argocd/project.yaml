@@ -9,8 +9,10 @@ metadata:
 spec:
   description: DevOps Central Platform — FastAPI microservices.
   sourceRepos:
-    - https://github.com/abdelkaderbenhmida/stage.git
+    - git@github.com:abdelkaderbenhmida/stage.git
   destinations:
+    - namespace: argocd
+      server: https://kubernetes.default.svc
     - namespace: devops-platform
       server: https://kubernetes.default.svc
     - namespace: monitoring
@@ -19,6 +21,11 @@ spec:
       server: https://kubernetes.default.svc
     - namespace: flagger-system
       server: https://kubernetes.default.svc
+  # argocd-install (sync-wave -100) self-manages ArgoCD's own control plane:
+  # its CRDs, ClusterRole/ClusterRoleBinding for the controller, on top of the
+  # Namespace/Service/ConfigMap already listed. Without these the project
+  # blocks its own bootstrap Application with "not permitted in project" —
+  # found rebuilding the whole platform from a wiped machine.
   clusterResourceWhitelist:
     - group: ""
       kind: Namespace
@@ -26,6 +33,12 @@ spec:
       kind: Service
     - group: ""
       kind: ConfigMap
+    - group: apiextensions.k8s.io
+      kind: CustomResourceDefinition
+    - group: rbac.authorization.k8s.io
+      kind: ClusterRole
+    - group: rbac.authorization.k8s.io
+      kind: ClusterRoleBinding
   namespaceResourceWhitelist:
     - group: "*"
       kind: "*"
