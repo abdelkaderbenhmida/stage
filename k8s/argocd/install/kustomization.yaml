@@ -6,10 +6,19 @@ metadata:
   annotations:
     config.kubernetes.io/path: kustomization.yaml
 
-# Pin to argo-cd v2.7.16 (stable, certified for k8s 1.28). Updating the tag
-# here is the ONLY place to bump ArgoCD — Applications below auto-consume it.
+# Pin to argo-cd v3.5.1. Updating the tag here is the ONLY place to bump
+# ArgoCD — Applications below auto-consume it.
+#
+# Previously pinned at v2.7.16 in this file while the actual 15-day cluster
+# that every ArgoCD screenshot in the report was captured against had
+# drifted, unrecorded, to v3.5.1 — the report text said v2.7.16 in six
+# places, every figure showed v3.5.1. Found auditing the report; a from-
+# scratch rebuild off this file installs the version it names, so v2.7.16
+# was genuinely reproducible — just not what had actually been validated for
+# 15 days. Bumped the pin to match the validated version instead of the
+# other way around.
 resources:
-  - https://github.com/argoproj/argo-cd/manifests/core-install?ref=v2.7.16
+  - https://github.com/argoproj/argo-cd/manifests/core-install?ref=v3.5.1
 
 namespace: argocd
 
@@ -21,8 +30,8 @@ commonLabels:
   app.kubernetes.io/part-of: argocd
 
 images:
-  - name: quay.io/argoproj/argocd:v2.7.16
-    newTag: v2.7.16
+  - name: quay.io/argoproj/argocd:v3.5.1
+    newTag: v3.5.1
   - name: quay.io/argoproj/argocd:latest
     newName: quay.io/argoproj/argocd
-    newTag: v2.7.16
+    newTag: v3.5.1
