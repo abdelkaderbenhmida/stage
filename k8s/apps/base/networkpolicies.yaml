@@ -116,10 +116,18 @@ spec:
 ---
 # Allow intra-namespace traffic between the three apps (for service-to-service
 # calls; safe in this monolithic app group).
+#
+# Scindee en deux objets (Ingress seul + Egress seul) au lieu d'un objet
+# unique combinant policyTypes: [Ingress, Egress]. Verifie avec les logs
+# kindnet en -v=5 (networkpolicy.go) : ce moteur NetworkPolicy evalue mal un
+# objet qui declare les deux directions a la fois — le meme jeu de regles
+# reparti sur deux objets separes est honore correctement, aussi bien sur
+# kindnet (developpement) que sur Calico (homelab). L'union des regles reste
+# identique du point de vue de la specification NetworkPolicy.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: allow-intra-namespace
+  name: allow-intra-namespace-ingress
   namespace: devops-platform
   labels:
     app.kubernetes.io/name: allow-intra-namespace
@@ -128,20 +136,32 @@ spec:
   podSelector:
     matchLabels:
       app.kubernetes.io/part-of: devops-platform
-  # Ingress et Egress doivent etre symetriques : NetworkPolicy applique
-  # l'Egress cote appelant et l'Ingress cote appele. Seul Ingress etait
-  # declare ici — aucun pod du namespace n'avait le droit d'emettre vers un
-  # autre, rendant la regle inoperante malgre son nom.
-  policyTypes: [Ingress, Egress]
+  policyTypes: [Ingress]
   ingress:
     - from:
         - podSelector: {}
       ports:
         - port: 8000
           protocol: TCP
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-intra-namespace-egress
+  namespace: devops-platform
+  labels:
+    app.kubernetes.io/name: allow-intra-namespace
+    app.kubernetes.io/part-of: devops-platform
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/part-of: devops-platform
+  policyTypes: [Egress]
   egress:
     - to:
-        - podSelector: {}
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/part-of: devops-platform
       ports:
         - port: 8000
           protocol: TCP
