@@ -8,7 +8,13 @@ kind: Kustomization
 namespace: staging
 resources:
   - ../../base
-  - namespace.yaml
+  # Les Deployments/Services de chaque microservice vivent dans
+  # k8s/apps/<service>/, pas dans base/ : sans ces trois lignes, les
+  # patches de repliques ci-dessous ciblent des ressources absentes du
+  # graphe et Kustomize les ignore silencieusement (aucune erreur).
+  - ../../users
+  - ../../products
+  - ../../orders
 images:
   - name: users-service
     newTag: latest
@@ -16,3 +22,13 @@ images:
     newTag: latest
   - name: orders-service
     newTag: latest
+
+# Le Namespace provient de la base et est renomme par le transformateur
+# `namespace:` ci-dessus ; on lui ajoute seulement son etiquette d'environnement.
+patches:
+  - target:
+      kind: Namespace
+    patch: |
+      - op: add
+        path: /metadata/labels/environment
+        value: staging

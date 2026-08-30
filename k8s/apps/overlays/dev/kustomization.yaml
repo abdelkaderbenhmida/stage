@@ -8,6 +8,13 @@ kind: Kustomization
 namespace: devops-platform
 resources:
   - ../../base
+  # Les Deployments/Services de chaque microservice vivent dans
+  # k8s/apps/<service>/, pas dans base/ : sans ces trois lignes, les
+  # patches de repliques ci-dessous ciblent des ressources absentes du
+  # graphe et Kustomize les ignore silencieusement (aucune erreur).
+  - ../../users
+  - ../../products
+  - ../../orders
 
 # Dev: stay on :latest so application.yml + kubectl apply -k still work without
 # a digest from CI. (CI/CD still pins digests in the prod overlay.)

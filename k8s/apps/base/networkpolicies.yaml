@@ -128,9 +128,19 @@ spec:
   podSelector:
     matchLabels:
       app.kubernetes.io/part-of: devops-platform
-  policyTypes: [Ingress]
+  # Ingress et Egress doivent etre symetriques : NetworkPolicy applique
+  # l'Egress cote appelant et l'Ingress cote appele. Seul Ingress etait
+  # declare ici — aucun pod du namespace n'avait le droit d'emettre vers un
+  # autre, rendant la regle inoperante malgre son nom.
+  policyTypes: [Ingress, Egress]
   ingress:
     - from:
+        - podSelector: {}
+      ports:
+        - port: 8000
+          protocol: TCP
+  egress:
+    - to:
         - podSelector: {}
       ports:
         - port: 8000

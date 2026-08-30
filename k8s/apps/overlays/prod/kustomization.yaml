@@ -7,10 +7,22 @@ kind: Kustomization
 namespace: production
 resources:
   - ../../base
-  - namespace.yaml
+  # Les Deployments/Services de chaque microservice vivent dans
+  # k8s/apps/<service>/, pas dans base/ : sans ces trois lignes, les
+  # patches de repliques ci-dessous ciblent des ressources absentes du
+  # graphe et Kustomize les ignore silencieusement (aucune erreur).
+  - ../../users
+  - ../../products
+  - ../../orders
 
 # Production overrides: stricter PDB + replicas.
 patches:
+  - target:
+      kind: Namespace
+    patch: |
+      - op: add
+        path: /metadata/labels/environment
+        value: production
   - target:
       kind: Deployment
       name: users-service
