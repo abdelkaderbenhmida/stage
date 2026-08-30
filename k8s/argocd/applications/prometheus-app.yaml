@@ -20,7 +20,7 @@ spec:
     # values from values.yaml (scrape interval 15s, serviceMonitors, retention).
     # The repo also keeps a manifest set under k8s/monitoring/prometheus/*.yaml
     # as a fallback path; enable ONE of the two (helm OR manifests), not both.
-    repoURL: https://github.com/<owner>/<repo>.git
+    repoURL: https://github.com/abdelkaderbenhmida/stage.git
     targetRevision: main
     path: k8s/monitoring/prometheus
     helm:

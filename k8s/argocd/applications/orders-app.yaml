@@ -11,7 +11,7 @@ metadata:
 spec:
   project: devops-platform
   source:
-    repoURL: https://github.com/<owner>/<repo>.git
+    repoURL: https://github.com/abdelkaderbenhmida/stage.git
     targetRevision: main
     path: k8s/apps/orders
   destination:
