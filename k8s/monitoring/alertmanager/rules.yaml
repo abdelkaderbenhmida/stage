@@ -30,7 +30,10 @@ spec:
             slo: availability
           annotations:
             summary: "Availability < 99.9% over 30d on {{ $labels.job }}"
-            description: "{{ $labels.job }} availability is {{ printf \"%.4f\" (1 - $value / 100) }} (target 99.9%) over the last 30 days."
+            # Go templates don't support infix arithmetic ($value is already
+            # the alert expression's result — the breach percent — so print
+            # it directly instead of recomputing "1 - $value/100".
+            description: "{{ $labels.job }} availability breach is {{ printf \"%.4f\" $value }}%% below the 99.9% target over the last 30 days."
     # ── Latency: P95 > 200ms ──
     - name: slo-latency
       interval: 5m
