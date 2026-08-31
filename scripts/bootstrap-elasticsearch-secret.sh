@@ -107,6 +107,21 @@ apply_secret elasticsearch-credentials        KIBANA_PASSWORD  "$KIBANA_PASSWORD
 apply_secret logstash-elasticsearch-auth     ELASTIC_PASSWORD "$ELASTIC_PASSWORD"
 apply_secret kibana-credentials              KIBANA_PASSWORD  "$KIBANA_PASSWORD"
 
+# Filebeat lives in its own "logging" namespace (needs hostPath, which even
+# baseline PodSecurity forbids in "monitoring") but still reads
+# ELASTIC_PASSWORD from elasticsearch-credentials — Secrets don't cross
+# namespaces, so mirror a copy over.
+if ! $DRY_RUN; then
+  kubectl create namespace logging --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+  tmpfile=$(mktemp /tmp/elk-secret.XXXXXX.yaml)
+  trap 'rm -f -- "$tmpfile"' RETURN INT TERM
+  printf 'apiVersion: v1\nkind: Secret\nmetadata:\n  name: "elasticsearch-credentials"\n  namespace: "logging"\ntype: Opaque\nstringData:\n  ELASTIC_PASSWORD: "%s"\n' \
+    "$ELASTIC_PASSWORD" > "$tmpfile"
+  kubectl -n logging apply -f "$tmpfile" >/dev/null
+  rm -f -- "$tmpfile"
+  trap - RETURN INT TERM
+fi
+
 echo "OK — created/updated Secrets in namespace $NAMESPACE:"
 echo "   - elasticsearch-credentials (ELASTIC_PASSWORD + KIBANA_PASSWORD)"
 echo "   - logstash-elasticsearch-auth (ELASTIC_PASSWORD — reused)"

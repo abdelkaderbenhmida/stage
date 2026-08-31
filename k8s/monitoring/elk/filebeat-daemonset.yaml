@@ -1,12 +1,28 @@
 # Filebeat — DaemonSet tailing /var/log/containers/*.log on every node,
 # forwarding to Logstash on port 5044 (per Phase 6 spec).
 # Uses autodiscovery to enrich logs with pod labels (namespace, container, svc).
+#
+# Own namespace, not "monitoring": Filebeat needs a hostPath mount to read
+# node log files, which even the "baseline" PodSecurity level forbids.
+# Isolating that requirement here keeps "monitoring" (Prometheus, Alertmanager,
+# Elasticsearch, Kibana — none of which need hostPath) at baseline.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: logging
+  labels:
+    app.kubernetes.io/name: logging
+    app.kubernetes.io/part-of: devops-platform
+    pod-security.kubernetes.io/enforce: privileged
+    pod-security.kubernetes.io/audit: privileged
+    pod-security.kubernetes.io/warn: privileged
 ---
 apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: filebeat
-  namespace: monitoring
+  namespace: logging
   labels:
     app.kubernetes.io/name: filebeat
     app.kubernetes.io/part-of: devops-platform
@@ -37,7 +53,7 @@ metadata:
 subjects:
   - kind: ServiceAccount
     name: filebeat
-    namespace: monitoring
+    namespace: logging
 roleRef:
   kind: ClusterRole
   name: filebeat
@@ -48,7 +64,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: filebeat-config
-  namespace: monitoring
+  namespace: logging
   labels:
     app.kubernetes.io/name: filebeat
     app.kubernetes.io/part-of: devops-platform
@@ -118,7 +134,7 @@ apiVersion: apps/v1
 kind: DaemonSet
 metadata:
   name: filebeat
-  namespace: monitoring
+  namespace: logging
   labels:
     app.kubernetes.io/name: filebeat
     app.kubernetes.io/part-of: devops-platform
