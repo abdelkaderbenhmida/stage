@@ -102,7 +102,7 @@ if [ "${nreq:-0}" -gt 0 ] 2>/dev/null; then ok "prometheus http_requests_total =
 
 say "== 5) grafana + datasource =="
 if [ "$SKIP_GRAFANA" = "1" ]; then say "skipping grafana (--skip-grafana)"; else
-  kubectl port-forward -n monitoring svc/grafana 13000:80 >/dev/null 2>&1 &
+  kubectl port-forward -n monitoring svc/grafana 13000:3000 >/dev/null 2>&1 &
   pf2=$!
   sleep 2
   code=$(curl -sf -o /dev/null -w '%{http_code}' "http://127.0.0.1:13000/api/health" 2>/dev/null || echo "ERR")

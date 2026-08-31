@@ -19,7 +19,7 @@ interface web** pour vérifier visuellement.
 | Outil | Port-forward à lancer | URL | Identifiants |
 |---|---|---|---|
 | ArgoCD | `kubectl port-forward -n argocd svc/argocd-server 8480:80 &` | http://localhost:8480 | `admin` / `kubectl get secret -n argocd argocd-initial-admin-secret -o jsonpath='{.data.password}' \| base64 -d` |
-| Grafana | `kubectl port-forward -n monitoring svc/grafana 3000:80 &` | http://localhost:3000 | `kubectl get secret -n monitoring grafana -o jsonpath='{.data.admin-user}' \| base64 -d` puis `...admin-password...` |
+| Grafana | `kubectl port-forward -n monitoring svc/grafana 3000:3000 &` | http://localhost:3000 | `kubectl get secret -n monitoring grafana-admin-credentials -o jsonpath='{.data.admin-user}' \| base64 -d` puis `...admin-password...` |
 | Prometheus | `kubectl port-forward -n monitoring svc/prometheus-server 9090:80 &` | http://localhost:9090 | aucun |
 | AlertManager | `kubectl port-forward -n monitoring svc/prometheus-alertmanager 9093:9093 &` | http://localhost:9093 | aucun |
 | Kibana | `kubectl port-forward -n monitoring svc/kibana 5601:5601 &` | http://localhost:5601 | `elastic` / `kubectl get secret -n monitoring elasticsearch-credentials -o jsonpath='{.data.ELASTIC_PASSWORD}' \| base64 -d` |
@@ -31,7 +31,7 @@ Lance tous les port-forwards en une fois avant de commencer si tu veux tout
 avoir sous la main :
 ```bash
 kubectl port-forward -n argocd svc/argocd-server 8480:80 &
-kubectl port-forward -n monitoring svc/grafana 3000:80 &
+kubectl port-forward -n monitoring svc/grafana 3000:3000 &
 kubectl port-forward -n monitoring svc/prometheus-server 9090:80 &
 kubectl port-forward -n monitoring svc/prometheus-alertmanager 9093:9093 &
 kubectl port-forward -n monitoring svc/kibana 5601:5601 &
@@ -220,7 +220,7 @@ le moment le plus parlant à observer en direct dans le navigateur.
 
 ```bash
 kubectl port-forward -n monitoring svc/prometheus-server 9090:80 &
-kubectl port-forward -n monitoring svc/grafana 3000:80 &
+kubectl port-forward -n monitoring svc/grafana 3000:3000 &
 kubectl port-forward -n monitoring svc/prometheus-alertmanager 9093:9093 &
 kubectl port-forward -n monitoring svc/kibana 5601:5601 &
 ```
