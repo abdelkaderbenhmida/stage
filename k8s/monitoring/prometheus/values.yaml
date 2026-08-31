@@ -107,7 +107,7 @@ prometheus:
   # dead config. TODO: if host-level metrics (disk I/O, network interfaces)
   # are needed later, deploy prometheus-node-exporter as its own release in
   # a dedicated privileged namespace.
-  nodeExporter:
+  prometheus-node-exporter:
     enabled: false
 
   pushgateway:
