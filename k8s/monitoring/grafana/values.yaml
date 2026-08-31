@@ -30,7 +30,9 @@ grafana:
         - name: Prometheus
           type: prometheus
           access: proxy
-          url: http://prometheus.monitoring.svc.cluster.local:9090
+          # Real Service name is prometheus-server (Helm chart naming), not
+          # prometheus, and it listens on port 80, not 9090.
+          url: http://prometheus-server.monitoring.svc.cluster.local:80
           isDefault: true
           editable: true
         # Loki datasource commented — not deployed in this stack (ELK handles logs).
