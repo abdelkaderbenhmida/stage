@@ -186,7 +186,12 @@ spec:
               memory: 448Mi
             limits:
               cpu: "1"
-              memory: 1024Mi
+              # ES_JAVA_OPTS below already reserves ~832Mi (512m heap + 256m
+              # direct + 64m code cache) before general JVM/OS overhead —
+              # 1024Mi left ~190Mi headroom, which ContainerMemoryRatioHigh
+              # (80% threshold) tripped under light load. Heap stays
+              # conservative; just giving the container more room above it.
+              memory: 1536Mi
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: false  # ES writes to /usr/share/elasticsearch/data
