@@ -8,7 +8,7 @@ kind: Kustomization
 # service; the per-service kustomizations hold the canonical newTag.
 # CD pipeline substitutes a sha256 digest (see .github/workflows/ci-cd.yml —
 # deploy job). Manual rollback:
-#   kustomize edit set image users-service=ghcr.io/<owner>/users-service@sha256:<digest>
+#   kustomize edit set image users-service=ghcr.io/abdelkaderbenhmida/users-service@sha256:<digest>
 #   run from k8s/apps/users/ (per-service kustomization owns the tag).
 resources:
   - base/
@@ -17,11 +17,11 @@ resources:
   - orders/
 images:
   - name: users-service
-    newName: ghcr.io/<owner>/users-service
+    newName: ghcr.io/abdelkaderbenhmida/users-service
     newTag: latest
   - name: products-service
-    newName: ghcr.io/<owner>/products-service
+    newName: ghcr.io/abdelkaderbenhmida/products-service
     newTag: latest
   - name: orders-service
-    newName: ghcr.io/<owner>/orders-service
+    newName: ghcr.io/abdelkaderbenhmida/orders-service
     newTag: latest

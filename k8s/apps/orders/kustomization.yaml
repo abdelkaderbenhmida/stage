@@ -5,5 +5,5 @@ resources:
   - orders-service.yaml
 images:
   - name: orders-service
-    newName: ghcr.io/<owner>/orders-service
+    newName: ghcr.io/abdelkaderbenhmida/orders-service
     newTag: latest

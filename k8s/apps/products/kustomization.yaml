@@ -5,5 +5,5 @@ resources:
   - products-service.yaml
 images:
   - name: products-service
-    newName: ghcr.io/<owner>/products-service
+    newName: ghcr.io/abdelkaderbenhmida/products-service
     newTag: latest
