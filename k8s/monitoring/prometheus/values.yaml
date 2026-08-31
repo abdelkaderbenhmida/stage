@@ -73,7 +73,10 @@ prometheus:
   server:
     retention: 15d
     persistentVolume:
-      size: 10Gi
+      # Bound PVC is 8Gi; the "standard" StorageClass has
+      # allowVolumeExpansion: false, so a larger value here can never
+      # actually apply — it just leaves the app permanently OutOfSync.
+      size: 8Gi
     resources:
       requests:
         cpu: 250m
