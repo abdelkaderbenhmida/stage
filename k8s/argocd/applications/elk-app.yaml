@@ -19,6 +19,16 @@ spec:
   destination:
     server: https://kubernetes.default.svc
     namespace: monitoring
+  # Kubernetes echoes back extra fields on StatefulSet volumeClaimTemplates
+  # (e.g. status) that never match the git-declared spec, so ArgoCD reports
+  # a permanent diff on the elasticsearch StatefulSet even though sync
+  # itself succeeds every time (verified: last syncResult says "Synced").
+  # Documented upstream ArgoCD limitation, not a real drift.
+  ignoreDifferences:
+    - group: apps
+      kind: StatefulSet
+      jsonPointers:
+        - /spec/volumeClaimTemplates
   syncPolicy:
     automated:
       prune: true

@@ -17,9 +17,11 @@ spec:
     # (paramétrables) instead of raw manifests. This Application points at a
     # local umbrella chart (k8s/monitoring/prometheus/Chart.yaml) that pulls
     # prometheus-community/prometheus v25.8.0 as a dependency and applies the
-    # values from values.yaml (scrape interval 15s, serviceMonitors, retention).
-    # The repo also keeps a manifest set under k8s/monitoring/prometheus/*.yaml
-    # as a fallback path; enable ONE of the two (helm OR manifests), not both.
+    # values from values.yaml (scrape interval 15s, serviceMonitors, retention,
+    # alerting_rules.yml). crds.yaml here installs the ServiceMonitor/
+    # PrometheusRule CRDs other manifests reference — the parallel Operator
+    # manifest path that used to live in this directory was removed, it
+    # never worked since the Operator itself was never deployed.
     repoURL: git@github.com:abdelkaderbenhmida/stage.git
     targetRevision: main
     path: k8s/monitoring/prometheus
@@ -29,6 +31,14 @@ spec:
   destination:
     server: https://kubernetes.default.svc
     namespace: monitoring
+  # See elk-app.yaml for why: StatefulSet volumeClaimTemplates diffing is a
+  # documented upstream ArgoCD limitation, not real drift (sync succeeds
+  # every time on prometheus-alertmanager despite the permanent OutOfSync).
+  ignoreDifferences:
+    - group: apps
+      kind: StatefulSet
+      jsonPointers:
+        - /spec/volumeClaimTemplates
   syncPolicy:
     automated:
       prune: true
