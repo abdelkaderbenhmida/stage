@@ -1,57 +1,62 @@
 # Grafana Helm chart values (arborescence.md Phase 6 #3-4).
 #
-# Chart: grafana/grafana
-# Install: helm install grafana grafana/grafana -f k8s/monitoring/grafana/values.yaml -n monitoring
+# Chart: grafana/grafana, wrapped as the "grafana" dependency in Chart.yaml.
+# Helm only passes parent values.yaml keys to a subchart when nested under
+# the subchart's name — flat top-level keys here were being silently
+# dropped entirely (verified: even persistence.storageClassName never
+# reached the rendered manifest, it just coincided with the cluster's only
+# StorageClass already being named "standard").
 
-adminUser: admin
-adminPassword: INJECT-VIA-HELM-SET-OR-SECRET-DO-NOT-COMMIT
+grafana:
+  adminUser: admin
+  adminPassword: INJECT-VIA-HELM-SET-OR-SECRET-DO-NOT-COMMIT
 
-persistence:
-  enabled: true
-  size: 2Gi
-  storageClassName: standard
-
-datasources:
-  datasources.yaml:
-    apiVersion: 1
-    datasources:
-      - name: Prometheus
-        type: prometheus
-        access: proxy
-        url: http://prometheus.monitoring.svc.cluster.local:9090
-        isDefault: true
-        editable: true
-      # Loki datasource commented — not deployed in this stack (ELK handles logs).
-      # Uncomment when loki is added to the monitoring suite.
-      # - name: Loki
-      #   type: loki
-      #   access: proxy
-      #   url: http://loki.monitoring.svc.cluster.local:3100
-      #   editable: true
-
-# The 4 spec'd dashboards (cahier des charges §6 + Phase 5) are provisioned
-# from k8s/monitoring/grafana/dashboards/*.yaml — ConfigMaps labeled
-# grafana_dashboard=1, picked up live by the chart's own dashboard sidecar
-# below. (The values-native `dashboards:`/`dashboardProviders:` keys expect
-# raw dashboard JSON referenced by local file path — wrong shape for what's
-# actually on disk here, and were silently doing nothing.)
-sidecar:
-  dashboards:
+  persistence:
     enabled: true
-    label: grafana_dashboard
-    folder: /tmp/dashboards/devops-platform
-    provider:
-      name: devops-platform
-      folder: devops-platform
+    size: 2Gi
+    storageClassName: standard
 
-resources:
-  requests:
-    cpu: 100m
-    memory: 128Mi
-  limits:
-    cpu: 250m
-    memory: 256Mi
+  datasources:
+    datasources.yaml:
+      apiVersion: 1
+      datasources:
+        - name: Prometheus
+          type: prometheus
+          access: proxy
+          url: http://prometheus.monitoring.svc.cluster.local:9090
+          isDefault: true
+          editable: true
+        # Loki datasource commented — not deployed in this stack (ELK handles logs).
+        # Uncomment when loki is added to the monitoring suite.
+        # - name: Loki
+        #   type: loki
+        #   access: proxy
+        #   url: http://loki.monitoring.svc.cluster.local:3100
+        #   editable: true
 
-service:
-  type: ClusterIP
-  port: 3000
+  # The 4 spec'd dashboards (cahier des charges §6 + Phase 5) are provisioned
+  # from k8s/monitoring/grafana/dashboards/*.yaml — ConfigMaps labeled
+  # grafana_dashboard=1, picked up live by the chart's own dashboard sidecar
+  # below. (The values-native `dashboards:`/`dashboardProviders:` keys expect
+  # raw dashboard JSON referenced by local file path — wrong shape for what's
+  # actually on disk here, and were silently doing nothing.)
+  sidecar:
+    dashboards:
+      enabled: true
+      label: grafana_dashboard
+      folder: /tmp/dashboards/devops-platform
+      provider:
+        name: devops-platform
+        folder: devops-platform
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 250m
+      memory: 256Mi
+
+  service:
+    type: ClusterIP
+    port: 3000
