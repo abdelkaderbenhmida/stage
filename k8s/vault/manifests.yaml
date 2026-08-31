@@ -79,15 +79,15 @@ spec:
     spec:
       serviceAccountName: vault-sa  # Wire the SA that was previously unused.
       automountServiceAccountToken: true  # Needed for Kubernetes auth method.
-      # DEV ONLY — Vault needs CAP_SETFCAP which libvirt nested virt blocks
-      # for non-root UIDs. runAsUser:0 also required for Vault to bind
-      # privileged port 8200 in dev mode. Production: run as non-root
-      # + harden host OS to grant CAP_SETFCAP properly.
-      # Pod Security Admission: namespace enforce=baseline (line 14).
+      # 8200 is unprivileged (>1024) — root was never actually required to
+      # bind it. Running as root just makes the official entrypoint attempt
+      # su-exec + setcap privilege-drop steps that need capabilities we don't
+      # grant. Run as the image's built-in non-root vault user instead.
       securityContext:
-         runAsUser: 0
-         runAsGroup: 0
-         fsGroup: 0
+         runAsUser: 100
+         runAsGroup: 1000
+         runAsNonRoot: true
+         fsGroup: 1000
          seccompProfile:
            type: RuntimeDefault
       terminationGracePeriodSeconds: 10
@@ -115,6 +115,11 @@ spec:
           env:
             - name: VAULT_ADDR
               value: "http://0.0.0.0:8200"
+            # Official docker-entrypoint.sh tries `setcap cap_ipc_lock` on the
+            # vault binary when running as root, needing CAP_SETFCAP. Dev mode
+            # already disables mlock, so skip that step instead of granting caps.
+            - name: SKIP_SETCAP
+              value: "true"
             # Real token injected from Secret. `optional: false` (default)
             # so the pod refuses to start if the Secret is missing — fail
             # closed instead of silently starting with an empty token.
@@ -135,13 +140,16 @@ spec:
               memory: "512Mi"
           securityContext:
             allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: false  # Vault writes to /vault/data.
+            readOnlyRootFilesystem: true  # /vault/data and /tmp are the only
+            # paths vault dev-mode writes to, both mounted as writable
+            # emptyDir volumes below — root fs itself can stay read-only.
             seccompProfile:
               type: RuntimeDefault
             capabilities:
               drop: ["ALL"]
-              # Vault needs CAP_SETFCAP in nested-virt dev env.
-              add: ["IPC_LOCK", "NET_RAW"]
+              # `-dev` mode auto-disables mlock, so no added capabilities are
+              # actually needed; the baseline PSA level rejects non-default
+              # capabilities.add regardless.
           livenessProbe:
             httpGet:
               path: /v1/sys/health?standbyok=true
@@ -163,12 +171,16 @@ spec:
               mountPath: /vault/data
             - name: vault-tmp
               mountPath: /tmp
+            - name: vault-home
+              mountPath: /home/vault
       volumes:
         - name: vault-data
           emptyDir: {}
         - name: vault-tmp
           emptyDir: {}  # readOnlyRootFilesystem is false above, but /tmp
                         # gets its own writable volume to limit blast radius.
+        - name: vault-home
+          emptyDir: {}  # dev mode writes .vault-token.tmp under $HOME.
 ---
 # ConfigMap — Vault setup job script: enables KV v2 engine + Kubernetes auth
 # method + per-service policies + seeds secrets.
