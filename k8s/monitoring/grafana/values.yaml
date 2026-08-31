@@ -23,6 +23,14 @@ grafana:
     size: 2Gi
     storageClassName: standard
 
+  # Default RollingUpdate briefly runs old+new pods together; on this
+  # single-node kind cluster both can mount the same RWO PVC at once,
+  # corrupting/locking the sqlite DB ("database is locked" migration
+  # failures). Same fix already used for prometheus-server/vault elsewhere
+  # in this repo.
+  deploymentStrategy:
+    type: Recreate
+
   datasources:
     datasources.yaml:
       apiVersion: 1
