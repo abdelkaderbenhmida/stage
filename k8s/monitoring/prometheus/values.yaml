@@ -97,8 +97,18 @@ prometheus:
       capabilities:
         drop: [ALL]
 
+  # node-exporter needs hostNetwork/hostPID/hostPath/hostPort — all of which
+  # "baseline" PodSecurity forbids — and it's a subchart of this combined
+  # release, so it can't be split into its own privileged namespace (the
+  # filebeat fix) without restructuring into a separate Helm release. It's
+  # been permanently failing to schedule the whole time this was enabled.
+  # Node/pod resource metrics already come from cAdvisor + kube-state-metrics
+  # + metrics-server (verified working); disabling this rather than leaving
+  # dead config. TODO: if host-level metrics (disk I/O, network interfaces)
+  # are needed later, deploy prometheus-node-exporter as its own release in
+  # a dedicated privileged namespace.
   nodeExporter:
-    enabled: true
+    enabled: false
 
   pushgateway:
     enabled: false
