@@ -225,4 +225,7 @@ spec:
         resources:
           requests:
             storage: 10Gi
-        storageClassName: local-path
+        # This cluster's StorageClass is named "standard" (provisioner
+        # rancher.io/local-path), not "local-path" — that name doesn't
+        # exist here, so the PVC never bound and the pod stayed Pending.
+        storageClassName: standard
