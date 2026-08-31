@@ -8,14 +8,14 @@
 # "working" retention=15d was a coincidental match with the chart default,
 # not our override actually applying).
 #
-# The repo also ships a Prometheus operator manifest set under
-# k8s/monitoring/prometheus/{operator,crds,prometheus,service}.yaml for a
-# pure-manifest path, plus a PrometheusRule (k8s/monitoring/alertmanager/
-# rules.yaml) — both only work with the Operator actually running, which it
-# isn't here. This chart doesn't watch PrometheusRule CRDs at all; alerting
-# rules for this Helm-chart path must go in serverFiles.alerting_rules.yml
-# below instead (same 3 SLO rules + the 2 incident-response rules mirrored
-# from rules.yaml, kept in sync by hand since the CRD path is inert).
+# The repo previously also shipped a parallel Prometheus-Operator manifest
+# path (operator.yaml, prometheus.yaml, service.yaml, an Alertmanager CR,
+# and a PrometheusRule) — none of it ever worked because the Operator was
+# never actually deployed, so it was removed. crds.yaml stays: the
+# ServiceMonitor/PrometheusRule CRDs it installs are real objects other
+# manifests reference, even though nothing currently reconciles them.
+# Alerting rules for this Helm-chart path live in serverFiles.alerting_rules.yml
+# below (this chart doesn't watch PrometheusRule CRDs at all).
 
 prometheus:
   # Phase 6 #1 — scrape interval of 15 seconds.
