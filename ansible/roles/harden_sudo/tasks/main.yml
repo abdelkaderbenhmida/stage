@@ -1,0 +1,23 @@
+---
+# Provisioning runs as devops with full sudo (granted by cloud-init's
+# NOPASSWD:ALL, needed for apt installs across the docker/k8s_common roles).
+# This is the last play in the run: it replaces that bootstrap grant with the
+# restricted policy the report documents as the node's running-state posture —
+# kubeadm/kubelet/three systemctl restarts only. NOPASSWD here, not PASSWD:
+# devops has no password configured anywhere (key-only account, ssh_pwauth
+# disabled), so PASSWD: is unsatisfiable and permanently locks the node out
+# of any privileged action outside the whitelist, including future Ansible
+# reruns. The whitelist itself is what restricts scope; a password
+# requirement adds no security for a passwordless automation account.
+- name: Write the restricted sudo policy for devops
+  ansible.builtin.copy:
+    dest: /etc/sudoers.d/90-restrict-devops
+    mode: "0440"
+    validate: "visudo -cf %s"
+    content: |
+      devops ALL=(ALL) NOPASSWD: /usr/bin/kubeadm, /usr/bin/kubelet, /usr/bin/crictl, /usr/bin/systemctl restart kubelet, /usr/bin/systemctl restart containerd, /usr/bin/systemctl restart docker
+
+- name: Remove the permissive sudoers file cloud-init provisioned at boot
+  ansible.builtin.file:
+    path: /etc/sudoers.d/90-cloud-init-users
+    state: absent
