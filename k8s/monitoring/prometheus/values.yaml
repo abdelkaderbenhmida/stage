@@ -1,11 +1,21 @@
 # Prometheus Helm chart values (arborescence.md Phase 6 #1).
 #
-# Chart: prometheus-community/prometheus
-# Install: helm install prometheus prometheus-community/prometheus -f k8s/monitoring/prometheus/values.yaml -n monitoring
+# Chart: prometheus-community/prometheus, wrapped as the "prometheus"
+# dependency in Chart.yaml. Helm only passes parent values.yaml keys to a
+# subchart when nested under the subchart's name — this whole file was
+# flat at the top level and therefore silently a no-op in its entirety
+# (verified: server.resources never reached the rendered Deployment; the
+# "working" retention=15d was a coincidental match with the chart default,
+# not our override actually applying).
 #
 # The repo also ships a Prometheus operator manifest set under
 # k8s/monitoring/prometheus/{operator,crds,prometheus,service}.yaml for a
-# pure-manifest path. Use ONE of the two paths (Helm OR manifests), not both.
+# pure-manifest path, plus a PrometheusRule (k8s/monitoring/alertmanager/
+# rules.yaml) — both only work with the Operator actually running, which it
+# isn't here. This chart doesn't watch PrometheusRule CRDs at all; alerting
+# rules for this Helm-chart path must go in serverFiles.alerting_rules.yml
+# below instead (same 3 SLO rules + the 2 incident-response rules mirrored
+# from rules.yaml, kept in sync by hand since the CRD path is inert).
 
 prometheus:
   # Phase 6 #1 — scrape interval of 15 seconds.
@@ -27,64 +37,146 @@ prometheus:
           path: /metrics
           interval: 15s
 
-alertRelabelConfigs:
-  - action: labeldrop
-    regex: temporary_label
+  alertRelabelConfigs:
+    alert_relabel_configs:
+      - action: labeldrop
+        regex: temporary_label
 
-alertmanager:
-  enabled: true
-  # Routing to our dedicated AlertManager deployment in monitoring ns.
-  endpoint: alertmanager.monitoring.svc.cluster.local:9093
-  # PodSecurity "restricted" is enforced on the monitoring namespace; chart
-  # defaults don't set container-level fields, so pods get rejected without these.
-  podSecurityContext:
-    runAsNonRoot: true
-    runAsUser: 65534
-    runAsGroup: 65534
-    fsGroup: 65534
-    seccompProfile:
-      type: RuntimeDefault
-  securityContext:
-    allowPrivilegeEscalation: false
-    capabilities:
-      drop: [ALL]
+  alertmanager:
+    enabled: true
+    # Routing to our dedicated AlertManager deployment in monitoring ns.
+    endpoint: alertmanager.monitoring.svc.cluster.local:9093
+    # PodSecurity "restricted" is enforced on the monitoring namespace; chart
+    # defaults don't set container-level fields, so pods get rejected without these.
+    podSecurityContext:
+      runAsNonRoot: true
+      runAsUser: 65534
+      runAsGroup: 65534
+      fsGroup: 65534
+      seccompProfile:
+        type: RuntimeDefault
+    securityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop: [ALL]
 
-rbac:
-  create: true
+  rbac:
+    create: true
 
-configmapReload:
-  prometheus:
+  configmapReload:
+    prometheus:
+      containerSecurityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+
+  server:
+    retention: 15d
+    persistentVolume:
+      size: 10Gi
+    resources:
+      requests:
+        cpu: 250m
+        memory: 512Mi
+      limits:
+        cpu: 1
+        memory: 1Gi
+    # PodSecurity "restricted" enforced on monitoring ns (see alertmanager above).
+    securityContext:
+      runAsUser: 65534
+      runAsNonRoot: true
+      runAsGroup: 65534
+      fsGroup: 65534
+      seccompProfile:
+        type: RuntimeDefault
     containerSecurityContext:
       allowPrivilegeEscalation: false
       capabilities:
         drop: [ALL]
 
-server:
-  retention: 15d
-  persistentVolume:
-    size: 10Gi
-  resources:
-    requests:
-      cpu: 250m
-      memory: 512Mi
-    limits:
-      cpu: 1
-      memory: 1Gi
-  # PodSecurity "restricted" enforced on monitoring ns (see alertmanager above).
-  securityContext:
-    runAsUser: 65534
-    runAsNonRoot: true
-    runAsGroup: 65534
-    fsGroup: 65534
-    seccompProfile:
-      type: RuntimeDefault
-  containerSecurityContext:
-    allowPrivilegeEscalation: false
-    capabilities:
-      drop: [ALL]
+  nodeExporter:
+    enabled: true
 
-nodeExporter:
-  enabled: true
+  pushgateway:
+    enabled: false
 
-pushgateway:
-  enabled: false
+  serverFiles:
+    alerting_rules.yml:
+      groups:
+        - name: slo-availability-recording
+          rules:
+            - record: service:availability_30d:ratio
+              expr: avg_over_time(up{job=~"users-service|products-service|orders-service"}[30d])
+        - name: slo-availability
+          rules:
+            - alert: SLOAvailabilityBreach
+              expr: (1 - service:availability_30d:ratio) * 100 > 0.1
+              for: 10m
+              labels:
+                severity: critical
+                slo: availability
+              annotations:
+                summary: "Availability < 99.9% over 30d on {{ $labels.job }}"
+                description: "{{ $labels.job }} availability is {{ printf \"%.4f\" (1 - $value / 100) }} (target 99.9%) over the last 30 days."
+        - name: slo-latency
+          rules:
+            - alert: SLOLatencyP95Breach
+              expr: >
+                histogram_quantile(0.95,
+                  sum by(le, handler) (rate(http_request_duration_seconds_bucket[5m]))
+                ) > 0.2
+              for: 5m
+              labels:
+                severity: warning
+                slo: latency
+              annotations:
+                summary: "P95 latency > 200ms on {{ $labels.handler }}"
+                description: "Endpoint {{ $labels.handler }} P95 latency is {{ printf \"%.3f\" $value }}s (SLO <= 200ms)."
+        - name: slo-error-rate
+          rules:
+            - alert: SLO5xxErrorRateBreach
+              expr: >
+                sum by(handler) (rate(http_requests_total{status_code=~"5.."}[5m]))
+                  / sum by(handler) (rate(http_requests_total[5m]))
+                  * 100 > 1
+              for: 2m
+              labels:
+                severity: critical
+                slo: error-rate
+              annotations:
+                summary: "5xx error rate > 1% on {{ $labels.handler }}"
+                description: "Endpoint {{ $labels.handler }} is returning {{ printf \"%.2f\" $value }}% 5xx errors (SLO <= 1%)."
+        - name: platform-resource-saturation
+          rules:
+            - alert: ContainerMemoryRatioHigh
+              expr: >
+                sum by(pod, namespace) (container_memory_working_set_bytes)
+                  / sum by(pod, namespace) (container_spec_memory_limit_bytes > 0)
+                  * 100 > 80
+              for: 2m
+              labels:
+                severity: warning
+                incident: "1"
+              annotations:
+                summary: "Memory usage > 80% of limit on {{ $labels.pod }}"
+                description: "Pod {{ $labels.pod }} (ns {{ $labels.namespace }}) memory ratio is {{ printf \"%.1f\" $value }}% — noisy-neighbour / eviction risk (Incident 1)."
+            - alert: PodEvictionOngoing
+              expr: kube_pod_container_status_last_terminated_reason{reason="OOMKilled"} > 0
+              for: 1m
+              labels:
+                severity: critical
+                incident: "1"
+              annotations:
+                summary: "OOMKilled pod detected — {{ $labels.pod }}"
+                description: "Pod {{ $labels.pod }} (ns {{ $labels.namespace }}) was OOMKilled — LimitRange/requests/limits need review."
+        - name: platform-hpa-runaway
+          rules:
+            - alert: HPAPinnedAtMaxReplicas
+              expr: kube_hpa_status_current_replicas == kube_hpa_spec_max_replicas
+              for: 15m
+              labels:
+                severity: warning
+                incident: "9"
+              annotations:
+                summary: "HPA {{ $labels.hpa }} at maxReplicas for >15m"
+                description: "HPA {{ $labels.hpa }} (ns {{ $labels.namespace }}) pinned at maxReplicas — possible memory leak driving scale-up (Incident 9). Check app + alert mirrors cost-saturation."
