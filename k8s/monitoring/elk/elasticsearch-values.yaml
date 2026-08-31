@@ -120,12 +120,16 @@ spec:
         app.kubernetes.io/part-of: devops-platform
     spec:
       serviceAccountName: elasticsearch
-      # Keep ES off the control-plane node to reduce API/DNS instability.
+      # Prefer a worker node to reduce API/DNS instability on multi-node
+      # clusters, but don't hard-require it — the single-node kind test
+      # cluster has no node other than control-plane, and a required rule
+      # left the pod permanently unschedulable there.
       affinity:
         nodeAffinity:
-          requiredDuringSchedulingIgnoredDuringExecution:
-            nodeSelectorTerms:
-              - matchExpressions:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              preference:
+                matchExpressions:
                   - key: node-role.kubernetes.io/control-plane
                     operator: DoesNotExist
       securityContext:

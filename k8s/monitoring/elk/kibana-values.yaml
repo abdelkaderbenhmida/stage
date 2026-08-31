@@ -83,13 +83,15 @@ spec:
       serviceAccountName: kibana
       affinity:
         nodeAffinity:
-          requiredDuringSchedulingIgnoredDuringExecution:
-            nodeSelectorTerms:
-              - matchExpressions:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              preference:
+                matchExpressions:
                   - key: node-role.kubernetes.io/control-plane
                     operator: DoesNotExist
-      nodeSelector:
-        kubernetes.io/hostname: worker-01
+      # nodeSelector pinning to a specific homelab hostname (worker-01)
+      # removed — that node doesn't exist on the single-node kind test
+      # cluster and left the pod permanently unschedulable there.
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000
