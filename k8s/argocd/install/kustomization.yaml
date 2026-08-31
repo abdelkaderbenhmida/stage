@@ -18,7 +18,7 @@ metadata:
 # 15 days. Bumped the pin to match the validated version instead of the
 # other way around.
 resources:
-  - https://github.com/argoproj/argo-cd/manifests/core-install?ref=v3.5.1
+  - https://github.com/argoproj/argo-cd/manifests/cluster-install?ref=v3.5.1
 
 namespace: argocd
 
