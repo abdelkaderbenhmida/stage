@@ -47,7 +47,7 @@ done
 say "== 1/5 pod health =="
 for svc in users-service products-service orders-service; do
   ready=$(kubectl get pods -n "$NS" -l app.kubernetes.io/name="$svc" \
-          --no-headers 2>/dev/null | awk '$2 ~ /^1\/1$/ {c++} END {print c+0}')
+          --no-headers 2>/dev/null | awk -F'[ /]+' '$2 == $3 && $2 > 0 {c++} END {print c+0}')
   if [ "$ready" -ge 2 ]; then ok "pods $svc: $ready/2 ready"; else bad "pods $svc: only $ready ready (need 2)"; fi
 done
 
@@ -81,7 +81,7 @@ done
 for pid in "${pids[@]}"; do kill "$pid" 2>/dev/null || true; done
 
 say "== 3) prometheus targets up =="
-kubectl port-forward -n monitoring svc/prometheus 19090:9090 >/dev/null 2>&1 &
+kubectl port-forward -n monitoring svc/prometheus-server 19090:80 >/dev/null 2>&1 &
 pf=$!
 sleep 2
 targets=$(curl -sf "http://127.0.0.1:19090/api/v1/targets" 2>/dev/null | jq '[.data.activeTargets[]] | length' 2>/dev/null || echo "0")
@@ -89,8 +89,11 @@ up_scrape=$(curl -sf "http://127.0.0.1:19090/api/v1/targets" 2>/dev/null | jq '[
 if [ "${up_scrape:-0}" -ge 1 ] 2>/dev/null; then ok "prometheus: $up_scrape targets UP"; else bad "prometheus: 0 targets UP"; fi
 
 for svc in users-service products-service orders-service; do
-  h=$(curl -sf "http://127.0.0.1:19090/api/v1/query?query=up%7Bjob%3D~%22.*${svc}.*%22%7D" 2>/dev/null | jq -r '[.data.result[]?.value[1]] | join(",")' 2>/dev/null || echo "")
-  if [ "$h" = "1" ] || [ "$h" = "1,1" ]; then ok "scrape ${svc}: up (value=$h)"; else bad "scrape ${svc}: up=$( [ -z "$h" ] && echo missing || echo "$h")"; fi
+  # Pod-autodiscovery scrape targets carry job="kubernetes-pods" for every
+  # app pod alike; the actual service identity lives in
+  # app_kubernetes_io_name, not job.
+  h=$(curl -sf "http://127.0.0.1:19090/api/v1/query?query=up%7Bapp_kubernetes_io_name%3D~%22.*${svc}.*%22%7D" 2>/dev/null | jq -r '[.data.result[]?.value[1]] | join(",")' 2>/dev/null || echo "")
+  if [ -n "$h" ] && ! echo "$h" | grep -qv '^1\(,1\)*$'; then ok "scrape ${svc}: up (value=$h)"; else bad "scrape ${svc}: up=$( [ -z "$h" ] && echo missing || echo "$h")"; fi
 done
 
 say "== 4) prometheus has request data =="
@@ -99,7 +102,7 @@ if [ "${nreq:-0}" -gt 0 ] 2>/dev/null; then ok "prometheus http_requests_total =
 
 say "== 5) grafana + datasource =="
 if [ "$SKIP_GRAFANA" = "1" ]; then say "skipping grafana (--skip-grafana)"; else
-  kubectl port-forward -n monitoring svc/grafana 13000:3000 >/dev/null 2>&1 &
+  kubectl port-forward -n monitoring svc/grafana 13000:80 >/dev/null 2>&1 &
   pf2=$!
   sleep 2
   code=$(curl -sf -o /dev/null -w '%{http_code}' "http://127.0.0.1:13000/api/health" 2>/dev/null || echo "ERR")
