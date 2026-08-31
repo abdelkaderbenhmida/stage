@@ -111,6 +111,29 @@ echo "OK — created/updated Secrets in namespace $NAMESPACE:"
 echo "   - elasticsearch-credentials (ELASTIC_PASSWORD + KIBANA_PASSWORD)"
 echo "   - logstash-elasticsearch-auth (ELASTIC_PASSWORD — reused)"
 echo "   - kibana-credentials (KIBANA_PASSWORD)"
+
+# These Secrets only set what Kibana/Logstash SEND as credentials. The
+# built-in kibana_system user's password INSIDE Elasticsearch is separate
+# and must be set to match via the security API, or Kibana gets stuck with
+# "security_exception: unable to authenticate user [kibana_system]" forever.
+# Best-effort: only runs if elasticsearch-0 already exists and is ready.
+if kubectl get pod elasticsearch-0 -n "$NAMESPACE" \
+    -o jsonpath='{.status.containerStatuses[0].ready}' 2>/dev/null | grep -q true; then
+  echo ""
+  echo "Syncing kibana_system password inside Elasticsearch..."
+  kubectl exec elasticsearch-0 -n "$NAMESPACE" -- curl -s -k -u "elastic:$ELASTIC_PASSWORD" -X POST \
+    "http://localhost:9200/_security/user/kibana_system/_password" \
+    -H 'Content-Type: application/json' \
+    -d "{\"password\":\"$KIBANA_PASSWORD\"}" >/dev/null
+  echo "   Done."
+else
+  echo ""
+  echo "!! elasticsearch-0 isn't ready yet — once it is, run:"
+  echo "   kubectl exec elasticsearch-0 -n $NAMESPACE -- curl -s -k -u elastic:\$ELASTIC_PASSWORD -X POST \\"
+  echo "     http://localhost:9200/_security/user/kibana_system/_password \\"
+  echo "     -H 'Content-Type: application/json' -d '{\"password\":\"'\"\$KIBANA_PASSWORD\"'\"}'"
+fi
+
 echo ""
 echo "Restart consumers to load the new values:"
 echo "   kubectl rollout restart deploy kibana   -n $NAMESPACE"
