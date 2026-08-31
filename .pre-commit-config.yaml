@@ -19,6 +19,11 @@ repos:
       - id: check-yaml
         # Allow long lines — many Helm/K8s values are run-on by design.
         args: ["--allow-multiple-documents"]
+        # Vendored upstream prometheus-operator CRDs (v0.74.0) — their
+        # embedded OpenAPI schemas use YAML PyYAML's SafeLoader can't parse
+        # (spurious "tag:yaml.org,2002:value" error) even though kubectl
+        # applies the file without issue. Not hand-edited, so skip linting it.
+        exclude: ^k8s/monitoring/prometheus/crds\.yaml$
       - id: end-of-file-fixer
       - id: trailing-whitespace
       - id: check-merge-conflict
