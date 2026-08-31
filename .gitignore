@@ -87,3 +87,6 @@ tests/k6/*.html
 # Ansible Molecule
 ansible/molecule/
 ansible/.molecule/
+
+# Screenshots/captures — local only, not versioned
+images/
