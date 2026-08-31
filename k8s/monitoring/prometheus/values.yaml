@@ -35,9 +35,29 @@ alertmanager:
   enabled: true
   # Routing to our dedicated AlertManager deployment in monitoring ns.
   endpoint: alertmanager.monitoring.svc.cluster.local:9093
+  # PodSecurity "restricted" is enforced on the monitoring namespace; chart
+  # defaults don't set container-level fields, so pods get rejected without these.
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 65534
+    runAsGroup: 65534
+    fsGroup: 65534
+    seccompProfile:
+      type: RuntimeDefault
+  securityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop: [ALL]
 
 rbac:
   create: true
+
+configmapReload:
+  prometheus:
+    containerSecurityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop: [ALL]
 
 server:
   retention: 15d
@@ -50,6 +70,18 @@ server:
     limits:
       cpu: 1
       memory: 1Gi
+  # PodSecurity "restricted" enforced on monitoring ns (see alertmanager above).
+  securityContext:
+    runAsUser: 65534
+    runAsNonRoot: true
+    runAsGroup: 65534
+    fsGroup: 65534
+    seccompProfile:
+      type: RuntimeDefault
+  containerSecurityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop: [ALL]
 
 nodeExporter:
   enabled: true
