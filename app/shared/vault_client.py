@@ -29,9 +29,9 @@ from __future__ import annotations
 import logging
 import os
 from functools import lru_cache
-from typing import Dict, Optional
 
 import hvac
+import requests
 
 # Shared structured logger — see shared/logging.py.
 _LOG = logging.getLogger(os.environ.get("SERVICE_NAME", "vault-client"))
@@ -69,7 +69,8 @@ def _vault_token() -> str:
     injector_path = "/vault/secrets/token"
     if os.path.exists(injector_path):
         try:
-            token = open(injector_path).read().strip()
+            with open(injector_path) as f:
+                token = f.read().strip()
             if token:
                 return token
         except OSError as exc:
@@ -111,14 +112,15 @@ def _is_vault_configured() -> bool:
     injector_token = None
     if os.path.exists(injector_token_path):
         try:
-            injector_token = open(injector_token_path).read().strip() or None
+            with open(injector_token_path) as f:
+                injector_token = f.read().strip() or None
         except OSError:
             injector_token = None
     return bool(os.environ.get("VAULT_ADDR")) and bool(env_token or injector_token)
 
 
 @lru_cache(maxsize=1)
-def _fetch_all_secrets() -> Dict[str, str]:
+def _fetch_all_secrets() -> dict[str, str]:
     """Fetch all secrets for this service from Vault. Cached for process lifetime.
 
     Raises SecretUnavailable if Vault is unreachable or auth fails — fail closed.
@@ -163,7 +165,7 @@ def _fetch_all_secrets() -> Dict[str, str]:
         ) from exc
 
 
-def get_secret(name: str, default: Optional[str] = None) -> str:
+def get_secret(name: str, default: str | None = None) -> str:
     """Fetch a secret by name. Resolution order:
       1. Vault secret path for this service (fails closed on Vault error)
       2. Environment variable of the same name (allowed for development overrides)
@@ -211,7 +213,7 @@ def get_secret(name: str, default: Optional[str] = None) -> str:
     )
 
 
-def vault_health() -> Dict[str, bool]:
+def vault_health() -> dict[str, bool]:
     """Check Vault reachability for readiness probes.
 
     Lightweight: uses the cached client if available, never raises. Returns
@@ -226,7 +228,7 @@ def vault_health() -> Dict[str, bool]:
             "configured": True,
             "reachable": bool(client.is_authenticated()),
         }
-    except Exception as exc:
+    except (hvac.exceptions.VaultError, requests.exceptions.RequestException) as exc:
         _LOG.warning(
             "vault.health_failed",
             extra={"event": "vault.health_failed", "error": str(exc)},
