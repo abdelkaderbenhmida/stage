@@ -54,13 +54,13 @@ kubectl -n "$NS" get hpa "$HPA"
 say "port-forward users-service:80 -> 18080"
 kubectl -n "$NS" port-forward "svc/$SVC" 18080:80 >/dev/null 2>&1 & PIDS+=("$!")
 say "port-forward prometheus:9090 -> 19090"
-kubectl -n "$MON_NS" port-forward "svc/prometheus" 19090:9090 >/dev/null 2>&1 & PIDS+=("$!")
+kubectl -n "$MON_NS" port-forward "svc/prometheus-server" 19090:80 >/dev/null 2>&1 & PIDS+=("$!")
 sleep 3
 
 code=$(curl -sf -o /dev/null -w '%{http_code}' "http://127.0.0.1:18080/livez" || echo ERR)
 say "service /livez -> $code (expect 200)"
 
-q_before=$(curl -sf "http://127.0.0.1:19090/api/v1/query?query=sum(http_requests_total%7Bservice%3D%22$SVC%22%7D)" 2>/dev/null \
+q_before=$(curl -sf "http://127.0.0.1:19090/api/v1/query?query=sum(http_requests_total%7Bapp_kubernetes_io_name%3D%22$SVC%22%7D)" 2>/dev/null \
   | jq -r '.data.result[0].value[1] // 0' || echo 0)
 say "prometheus reqs before load (total): $q_before"
 
@@ -91,7 +91,7 @@ else
   kubectl -n "$NS" get hpa "$HPA"
 fi
 
-q_after=$(curl -sf "http://127.0.0.1:19090/api/v1/query?query=sum(http_requests_total%7Bservice%3D%22$SVC%22%7D)" 2>/dev/null \
+q_after=$(curl -sf "http://127.0.0.1:19090/api/v1/query?query=sum(http_requests_total%7Bapp_kubernetes_io_name%3D%22$SVC%22%7D)" 2>/dev/null \
   | jq -r '.data.result[0].value[1] // 0' || echo 0)
 replicas_after=$(kubectl -n "$NS" get hpa "$HPA" -o jsonpath='{.status.currentReplicas}' 2>/dev/null)
 
