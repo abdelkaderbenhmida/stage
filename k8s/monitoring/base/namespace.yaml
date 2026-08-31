@@ -5,7 +5,12 @@ metadata:
   labels:
     app.kubernetes.io/name: monitoring
     app.kubernetes.io/part-of: devops-platform
-    pod-security.kubernetes.io/enforce: restricted
+    # prometheus-community/prometheus chart v25.8.0's server/alertmanager
+    # subcharts don't expose container-level securityContext overrides
+    # (allowPrivilegeEscalation/capabilities/seccompProfile), so restricted
+    # rejects their pods outright regardless of values.yaml. baseline still
+    # blocks privileged/host-access.
+    pod-security.kubernetes.io/enforce: baseline
     pod-security.kubernetes.io/enforce-version: latest
     pod-security.kubernetes.io/audit: restricted
     pod-security.kubernetes.io/warn: restricted
