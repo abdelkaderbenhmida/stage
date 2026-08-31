@@ -8,8 +8,15 @@
 # StorageClass already being named "standard").
 
 grafana:
-  adminUser: admin
-  adminPassword: INJECT-VIA-HELM-SET-OR-SECRET-DO-NOT-COMMIT
+  # Admin credentials come from a Secret bootstrapped out-of-band via
+  # scripts/bootstrap-grafana-secret.sh (mirrors the vault-root-token /
+  # elasticsearch-credentials pattern elsewhere in this repo) — no password
+  # ships in git. A literal placeholder string in adminPassword would BE the
+  # real, committed admin password once values actually reach the subchart.
+  admin:
+    existingSecret: grafana-admin-credentials
+    userKey: admin-user
+    passwordKey: admin-password
 
   persistence:
     enabled: true
