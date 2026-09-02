@@ -29,7 +29,7 @@ spec:
     # presence alone, which silently resurrects that conflict.
     # The 4 spec'd dashboards are a separate Application (grafana-dashboards)
     # sourced from k8s/monitoring/grafana/dashboards/.
-    repoURL: https://github.com/abdelkaderbenhmida/stage.git
+    repoURL: __GITHUB_REPO_URL__
     targetRevision: secondary
     path: k8s/monitoring/grafana
   destination:

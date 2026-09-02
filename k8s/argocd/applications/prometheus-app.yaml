@@ -28,7 +28,7 @@ spec:
     # Do NOT reintroduce a Chart.yaml in this directory: ArgoCD auto-detects any
     # path containing Chart.yaml as Helm, which makes Helm render templates/ only
     # and silently ignore every manifest above — the exact failure this replaces.
-    repoURL: https://github.com/abdelkaderbenhmida/stage.git
+    repoURL: __GITHUB_REPO_URL__
     targetRevision: secondary
     path: k8s/monitoring/prometheus
   destination:

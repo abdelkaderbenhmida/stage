@@ -13,7 +13,7 @@ metadata:
 spec:
   project: devops-platform
   source:
-    repoURL: https://github.com/abdelkaderbenhmida/stage.git
+    repoURL: __GITHUB_REPO_URL__
     targetRevision: secondary
     path: k8s/apps/chart
     helm:

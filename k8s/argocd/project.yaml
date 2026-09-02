@@ -9,7 +9,7 @@ metadata:
 spec:
   description: DevOps Central Platform — FastAPI microservices.
   sourceRepos:
-    - https://github.com/abdelkaderbenhmida/stage.git
+    - __GITHUB_REPO_URL__
   destinations:
     - namespace: devops-platform
       server: https://kubernetes.default.svc

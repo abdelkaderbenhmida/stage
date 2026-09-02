@@ -24,7 +24,7 @@ spec:
   goTemplate: true
   generators:
     - git:
-        repoURL: https://github.com/abdelkaderbenhmida/stage.git
+        repoURL: __GITHUB_REPO_URL__
         revision: secondary
         files:
           # ONE generator, doublestar `**`, covering both layouts:
@@ -47,7 +47,7 @@ spec:
     spec:
       project: devops-platform
       source:
-        repoURL: https://github.com/abdelkaderbenhmida/stage.git
+        repoURL: __GITHUB_REPO_URL__
         targetRevision: secondary
         path: k8s/apps/chart
         helm:

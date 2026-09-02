@@ -14,7 +14,7 @@
 renderShared: true
 renderSharedOnly: false
 namespace: devops-platform
-registry: ghcr.io/abdelkaderbenhmida
+registry: __GHCR_REGISTRY__
 imageTag: secondary
 replicas: 2
 environment: production

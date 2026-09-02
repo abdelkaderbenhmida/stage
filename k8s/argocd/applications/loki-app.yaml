@@ -22,7 +22,7 @@ spec:
     # fallback for objects that declare none — there are none. Do not "fix"
     # this by splitting the directory: applying them as one unit is what keeps
     # promtail's clients.url and the Loki Service from drifting apart.
-    repoURL: https://github.com/abdelkaderbenhmida/stage.git
+    repoURL: __GITHUB_REPO_URL__
     targetRevision: secondary
     path: k8s/monitoring/loki
   destination:
