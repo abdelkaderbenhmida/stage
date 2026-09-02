@@ -18,6 +18,11 @@ k8s/vault/
 │                              ConfigMap + setup Job, RBAC, vault-sa binding)
 ├── secret-vault-root.yaml   — TEMPLATE only; real token injected out-of-band
 ├── values.yaml              — Helm values for hashicorp/vault chart (alternative path)
+├── vault-policy.hcl          — least-privilege ACL template (read/list on this
+│                              service's own KV v2 path only); `${svc}` is
+│                              substituted per service at `vault policy write` time,
+│                              and the `vault-setup` Job in manifests.yaml automates
+│                              writing + binding one per discovered service
 └── README.md
 ```
 

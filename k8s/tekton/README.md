@@ -59,6 +59,34 @@ reference another tenant's Pipeline object:
 kubectl apply -n <project-namespace> -f k8s/tekton/pipeline.yaml
 ```
 
+## Dashboard
+
+`controlplane/workers/tasks.py:_install_tenant_dashboard` applies
+`k8s/tekton/dashboard.yaml` into every tenant namespace automatically, on
+every provision, the same way it applies `pipeline.yaml`. It is a real,
+read-only copy of the upstream Tekton Dashboard — not the platform console's
+own pipeline graph — scoped so one tenant cannot see another's builds:
+
+- one Deployment per namespace, not one shared instance, because the
+  Dashboard backend has no per-request RBAC — it shows whatever its
+  ServiceAccount can see, cluster-wide by default
+- that ServiceAccount's Role only grants `get/list/watch` on Tekton and pod
+  objects **inside its own namespace**
+- the container itself also runs with `--read-only=true` and
+  `--namespace=$(POD_NAMESPACE)` (downward API) as a second layer
+
+Nothing exposes it outside the cluster by default — only a `ClusterIP`
+Service named `tekton-dashboard` in the tenant's namespace. Reach it with:
+
+```bash
+kubectl -n <project-namespace> port-forward svc/tekton-dashboard 9097:9097
+```
+
+Pin `dashboard.yaml`'s image tag to a Dashboard release that matches the
+Tekton Pipelines version from the `latest/release.yaml` install above —
+check https://github.com/tektoncd/dashboard/releases for the pairing before
+relying on this in a real cluster.
+
 ## The contract with the graph
 
 `controlplane/core/tekton_status.py` maps a PipelineRun and its TaskRuns onto
