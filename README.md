@@ -87,9 +87,16 @@ it — into an image that is then pushed to a registry.
 
 ### For a tenant
 
+A tenant's whole interaction with the platform is: point it at a Git repository, get
+back a running service with a URL, without ever touching Terraform, Kubernetes YAML,
+or a CI pipeline definition by hand. The pipeline, the scanning, the namespace
+isolation and the TTL reaping exist so a team can self-serve an environment without a
+platform engineer provisioning it for them, and without that self-service becoming a
+way to reach another team's workload or leave a namespace running forever.
+
 | Capability | Detail |
 | --- | --- |
-| **Projects** | An environment you own. Either a quota-bounded namespace on the shared cluster, or a set of real VMs built with Terraform and configured with Ansible. |
+| **Projects** | An environment you own. Either a quota-bounded namespace on the shared cluster, or a set of real VMs built with Terraform and configured with Ansible. Provisioning also installs a few platform-owned objects into a namespace-mode project (e.g. the per-tenant Tekton Dashboard, below) — the workloads view tags these `platform` rather than letting an empty namespace read as a healthy deploy. |
 | **Deployments** | Build and ship any Git repository. Public by default; private repositories work once the team stores a token. Strategies: plain `deployment`, `canary`, or `bluegreen` (Argo Rollouts). |
 | **Security scanning** | On-demand Trivy (container images), Gitleaks (committed secrets) and pip-audit (Python dependencies), with findings stored and summarised per severity. |
 | **Pre-deploy gate** | Every image is scanned before it reaches the cluster. Any CRITICAL or HIGH blocks the rollout, and so does a scan that cannot be read. |
@@ -112,6 +119,11 @@ An admin-only console (`Operations`) over the platform's own infrastructure:
 - **CI** — recent runs, logs, trigger, re-run and cancel
 - **Infrastructure** — Terraform state, drift detection, reconciliation, capacity and preflight checks
 - **Alerts and logs** — AlertManager state and history, pipeline log search
+
+The operator console exists because the platform's own services (`app/`) are run
+*through* the platform, not around it: the same CI, the same scan gates, the same
+ArgoCD sync a tenant gets. Operations is where that self-hosting is inspected and
+fixed when something in the platform's own stack — not a tenant's — is unhealthy.
 
 ---
 
@@ -149,6 +161,38 @@ An admin-only console (`Operations`) over the platform's own infrastructure:
 Supporting services: **Vault** (tenant secrets, per-service credentials),
 **Prometheus + Grafana** (metrics), **Loki / ELK** (logs), **AlertManager** (SLO
 alerts), **ArgoCD** (GitOps for the platform's own services).
+
+### How the pieces actually talk to each other
+
+- **Console → API.** The console is a static, unbundled SPA (`controlplane/web/static/`)
+  served by FastAPI itself — no separate frontend build or CDN. Every action is a plain
+  REST call carrying a short-lived JWT. The console has two halves sharing one shell:
+  the workspace half a tenant sees, and the operator half gated on the global `User.role`.
+- **API → repositories → models.** A router never touches a SQLAlchemy model directly.
+  It calls a repository, which is constructed with an explicit `Scope` (`team_id`, and
+  the caller's role in it) and filters every query through that scope. This is why
+  tenancy is a type error to skip rather than a discipline to remember — there is no
+  method on a repository that returns unscoped rows.
+- **API → Celery, via Redis.** Anything that takes longer than a request — provisioning,
+  a deploy, a scan, a destroy — is handed to Celery as a task and the router returns a
+  `job_id` immediately. Redis is both the task broker and the rate-limit store. The
+  worker process imports the same models but opens its **own** `SessionLocal()` per
+  logging call, because the outer job transaction is not guaranteed to commit before a
+  tenant tails the log — see `_step`/`_append_log` in `workers/tasks.py`.
+- **Worker → sandbox → the outside world.** A worker never shells out itself. Every
+  `docker build`, `terraform apply`, `ansible-playbook`, `trivy`, `gitleaks` or
+  `pip-audit` invocation goes through `runners/sandbox.py`, which runs it in a
+  resource-limited container with secrets passed through a 0600 env-file instead of
+  argv. The Docker socket is bind-mounted into that sandbox only for the build/push
+  step — nowhere else needs it.
+- **Worker → cluster.** Namespace-mode projects are reached with `kubectl` against
+  `KUBECONFIG_PATH`; VM-mode projects get their own cluster built by Terraform/Ansible
+  and reached through per-project kubeconfig plumbing. Either way the worker renders
+  manifests from `renderers/` before applying them — nothing is templated by hand at
+  request time.
+- **Everything → Postgres.** Jobs, job steps, deployments, scans and findings are all
+  rows a tenant can poll or stream. The job log itself is stored, not just displayed
+  live, so a tenant who reconnects mid-deploy sees the same history.
 
 ---
 
@@ -237,10 +281,26 @@ tokens plus rotating refresh tokens. Login is rate-limited per IP.
 Decisions that are easy to get wrong, and how they are handled here:
 
 - **The vulnerability gate fails closed.** An image whose scan cannot be read is not an
-  image known to be safe, so it is refused rather than admitted.
-- **Every external command runs sandboxed** — CPU and memory limits, a wall-clock
-  timeout, no network unless the command needs it, no host credentials. The Docker
-  socket is mounted **only** for image build and push.
+  image known to be safe, so it is refused rather than admitted. This is not theoretical:
+  the sandbox's output reader originally stopped as soon as the container process
+  exited, dropping whatever was still sitting in the pipe buffer at that instant — a
+  295 KB Trivy report exceeded the buffer, arrived truncated, failed JSON parsing, and
+  the gate read "unreadable" as "no findings" and let the image through with exit code 0
+  still saying success. The fix (`runners/sandbox.py`) drains the pipe on every exit
+  path, not just the timeout path.
+- **Tenancy is checked twice, on purpose.** A router depends on `get_scope` and enforces
+  role requirements before calling a repository; the repository's own `Scope.guard()`
+  re-checks visibility (404) and role (403) independently. Neither call trusts the
+  other — a router that forgets its dependency is still caught at the repository, and
+  `Scope.system()` (used only by Celery workers acting on an already-authorized job) is
+  never reachable from a router at all, making "a route forgot to scope its query" a
+  logic bug the repository layer catches rather than a silent leak.
+- **Every external command runs sandboxed** — a fresh, ephemeral container per run,
+  removed on both success and failure; CPU and memory limits; a wall-clock timeout
+  after which the container is killed; `--network=none` unless the command specifically
+  needs network; no host credentials mounted; the rendered workspace is mounted
+  read-only except for paths a command is explicitly allowed to write. The Docker
+  socket is mounted **only** for image build and push (`runners/sandbox.py`).
 - **Secrets never reach a command line.** `docker run -e KEY=value` puts the value in a
   host process's argv, which is world-readable through `/proc`; secrets are written to
   a private (0600) env-file instead and removed after the run.
@@ -257,6 +317,12 @@ Decisions that are easy to get wrong, and how they are handled here:
 - **Queries against Prometheus and Loki are built server-side** and pinned to the
   caller's own namespace. No client-supplied PromQL or LogQL is accepted.
 - **Every mutating action is audited** with the actor, action, resource and team.
+- **CSP is `script-src 'self'` with no exceptions.** The buildless console dispatches
+  every click through a `data-act` attribute table instead of an inline `onclick`, which
+  is what makes a strict `script-src` possible without a bundler. `frame-src` allows only
+  `127.0.0.1:*` — the operator console embeds Grafana/Prometheus/Vault/ArgoCD dashboards
+  through a backend-managed, loopback-only `kubectl port-forward` on an ephemeral port,
+  never a real external host, so the port wildcard is the entire exception surface.
 
 ---
 
@@ -278,25 +344,42 @@ on scrape configuration.
 
 ## API reference
 
-All endpoints are under `/api/v1`. 119 endpoints; grouped by router:
+All endpoints are under `/api/v1`. 118 endpoints; grouped by router:
 
 | Router | Endpoints |
 | --- | --- |
-| **auth** | `POST /register`, `POST /login`, `POST /refresh`, `POST /logout`, `GET /me`, `GET /oidc/login`, `GET /oidc/callback` |
-| **projects** | `GET/POST /projects`, `GET/PATCH/DELETE /projects/{id}`, `POST /projects/{id}/provision`, `/extend`, `/destroy`, `GET /projects/{id}/nodes`, `/plan` |
-| **deployments** | `GET/POST /projects/{id}/deployments`, `GET/DELETE /deployments/{id}`, `POST /deployments/{id}/redeploy`, `GET /deployments/{id}/webhook`, `GET /projects/{id}/quota`, `GET /projects/{id}/tekton` |
+| **auth** | `POST /register`, `POST /login`, `POST /refresh`, `POST /logout`, `GET /me`, `GET /config`, `GET /oidc/login`, `GET /oidc/callback` |
+| **projects** | `GET/POST /projects`, `GET/PATCH/DELETE /projects/{id}`, `POST /projects/{id}/extend` |
+| **infrastructure** | `POST /projects/{id}/provision`, `/destroy`, `GET /projects/{id}/nodes`, `/plan` — the provisioning lifecycle, split from the `projects` CRUD router |
+| **deployments** | `GET/POST /projects/{id}/deployments`, `GET /projects/{id}/ci`, `/workloads`, `/quota`, `/tekton`, `/secrets`, `GET/DELETE /deployments/{id}`, `POST /deployments/{id}/redeploy`, `GET/POST /deployments/{id}/webhook`, `GET /deployments/{id}/jobs` |
 | **scans** | `GET/POST /projects/{id}/scans`, `GET /scans/{id}`, `GET /scans/{id}/findings`, `GET /projects/{id}/security/summary` |
-| **jobs** | `GET /jobs/{id}`, `GET /jobs/{id}/logs`, `POST /jobs/{id}/cancel`, `POST /jobs/{id}/stream-token` |
-| **teams** | `GET/POST /teams`, `GET /teams/{id}`, `POST/DELETE /teams/{id}/members`, `GET /teams/{id}/costs`, `GET/PUT/DELETE /teams/{id}/git-credential` |
+| **jobs** | `GET /jobs/{id}`, `GET /jobs/{id}/logs`, `GET /jobs/{id}/graph`, `POST /jobs/{id}/cancel`, `POST /jobs/{id}/stream-token` |
+| **teams** | `GET/POST /teams`, `GET /teams/{id}`, `GET/POST/DELETE /teams/{id}/members`, `GET /teams/{id}/costs`, `GET/PUT/DELETE /teams/{id}/git-credential` |
 | **monitoring** | `GET /projects/{id}/metrics` |
-| **logs** | `GET /projects/{id}/logs` |
+| **logs** | `GET /logs` (project id passed as a query parameter) |
 | **catalogue** | `GET /catalogue`, `GET /my/apps` (every service the caller owns, with its live pod count) |
-| **infrastructure** | `GET /infra/capacity`, `/infra/preflight`, `/infra/terraform`, `POST /infra/terraform/reconcile` |
 | **webhooks** | `POST /webhooks/{provider}` |
-| **platform** (admin) | 63 endpoints: `/overview`, `/health`, `/services`, `/apps`, `/ci`, `/helm`, `/argocd`, `/config`, `/ship/*`, and the `/live/*` family covering pods, logs, alerts, drift, Vault, ArgoCD, CI and scripts, plus `/users/{id}/role` to hand platform ownership to another account |
+| **platform** (admin) | 62 endpoints: `/overview`, `/health`, `/services`, `/apps`, `/ci`, `/helm`, `/argocd`, `/config`, `/ship/*`, and the `/live/*` family covering pods, logs, alerts, drift, Vault, ArgoCD, CI and scripts, plus `/users/{id}/role` to hand platform ownership to another account |
 
 Job logs stream over a short-lived token so a long-running log stream does not require
-sending the access token in a query string.
+sending the access token in a query string. The stream token is a distinct JWT type
+(`type: "stream"`) scoped to one `job_id`; `decode_access_token` rejects it outright, so
+a token leaked from a log-streaming URL cannot be replayed against any other endpoint.
+
+List endpoints return a plain JSON array — pagination rides in headers instead of
+wrapping the body (`X-Total-Count`, `X-Page`, `X-Page-Size`, and an RFC 8288 `Link`
+header with `rel="next"`/`rel="prev"`), so existing clients that expect a bare list keep
+working as pagination was added.
+
+Every response carries an `X-Request-Id` (echoed if the caller sent one, generated
+otherwise). It is set in a context variable for the duration of the request and included
+in every log line the request produces, including the ones the Celery task it queued
+later writes — so one id ties a `POST /deployments` call to the job log it triggered.
+
+Outside `/api/v1`: `GET /healthz` (liveness), `GET /readyz` (liveness plus a `SELECT 1`
+against Postgres), and `GET /metrics` (Prometheus exposition, via
+`prometheus-fastapi-instrumentator`) — the control plane is treated as a production
+service with its own SLOs, not just the thing that watches tenants' SLOs.
 
 ---
 
@@ -315,6 +398,13 @@ sending the access token in a query string.
 | `pooled_clusters` | warm pool of pre-provisioned clusters |
 | `audit_log` | who did what, to which resource, in which team |
 
+Deleting a project cascades to its deployments, nodes, scans and pool entries
+(`ondelete="CASCADE"`); each scan's findings and each job's steps cascade in turn.
+There is no `DELETE /teams/{id}` endpoint — a team, once created, is not deletable
+through the API — so nothing depends on team-level cascade behaviour. `audit_log` is
+the deliberate exception to the pattern: it sets `actor_id`/`team_id` to `NULL` on
+deletion instead of cascading, so the audit trail outlives the account it recorded.
+
 Schema changes go through Alembic (`controlplane/migrations`).
 
 ---
@@ -331,6 +421,7 @@ Celery workers run every long operation; Celery beat runs the periodic ones.
 | `scan_task` | Trivy, Gitleaks or pip-audit |
 | `destroy_task` | tear down namespace or VMs, then the workspace |
 | `reap_expired_projects` | every 10 minutes — destroys environments past their TTL |
+| — (Kyverno `ClusterCleanupPolicy`) | hourly backstop, cluster-side: deletes a namespace-mode project's `Namespace` if it is still around more than 24h past its labelled expiry — only fires once the reaper has clearly failed to run (worker down, DB unreachable). Never touches the control-plane database. `k8s/policies/`, requires Kyverno's CleanupController. |
 | `reap_stale_jobs` | unlocks projects whose worker died mid-job |
 | `poll_nodes` | every minute — node health |
 | `beat_pulse` | every 15 s — liveness of the scheduler itself |
@@ -411,22 +502,25 @@ tests/                     repository-wide conformance and drift guards
 
 ## Toolchain
 
-| Layer | Tool |
-| --- | --- |
-| API | FastAPI, Pydantic, SQLAlchemy 2, Alembic |
-| Async work | Celery, Redis |
-| State | PostgreSQL |
-| Infrastructure as code | Terraform (libvirt/KVM — local VMs, no cloud account) |
-| Configuration management | Ansible |
-| Containers | Docker multi-stage builds, non-root images |
-| Orchestration | Kubernetes, Helm, Argo Rollouts |
-| GitOps | ArgoCD |
-| CI | GitHub Actions with path-filtered, per-service builds |
-| Security | Trivy, Gitleaks, pip-audit, HashiCorp Vault, conftest policies |
-| Metrics | Prometheus, Grafana, kube-state-metrics |
-| Logs | Loki, ELK |
-| Alerting | AlertManager |
-| Tests | pytest, testcontainers |
+| Layer | Tool | Role in this platform |
+| --- | --- | --- |
+| API | FastAPI, Pydantic, SQLAlchemy 2, Alembic | request handling, schema validation, ORM, schema migrations — `alembic upgrade head` is the only sanctioned way the schema changes |
+| Async work | Celery, Redis | every operation slower than a request (provision, deploy, scan, destroy, reap) runs as a Celery task; Redis is both the broker and the rate-limit store |
+| State | PostgreSQL | the single source of truth — projects, deployments, jobs, scans, findings, audit log |
+| Infrastructure as code | Terraform (libvirt/KVM) | builds VM-mode projects as local VMs, so no cloud account or credit card is needed to demo the platform |
+| Configuration management | Ansible | turns Terraform's raw VMs into a working Kubernetes cluster (`ansible/roles/k8s_master`, `k8s_worker`, `k8s_common`) |
+| Containers | Docker (multi-stage, non-root images), kaniko under Tekton | `docker build` on the sandbox path; kaniko when `TEKTON_ENABLED=true`, since a Pod cannot mount the node's docker socket safely |
+| Orchestration | Kubernetes, Helm, Argo Rollouts | namespace-mode projects run here; Argo Rollouts drives canary and blue-green strategies with an SLO `AnalysisTemplate` gating promotion |
+| GitOps | ArgoCD | syncs the platform's own services always; syncs tenant workloads too when `GITOPS_ENABLED=true`, via one Application + AppProject per team |
+| Pipeline execution (opt-in) | Tekton, kaniko | when `TEKTON_ENABLED=true`, clone/build/scan run as Pods inside the tenant's own namespace instead of on the control-plane host |
+| CI | GitHub Actions, path-filtered per-service builds | one workflow (`.github/workflows/ci-cd.yml`) builds, scans and ships only the services that actually changed |
+| Security scanning | Trivy, Gitleaks, pip-audit | image vulnerabilities, committed secrets, vulnerable Python dependencies — the same three tools gate both the platform's own CI and every tenant deploy |
+| Secrets | HashiCorp Vault | tenant credentials and per-service secrets; never stored in Postgres |
+| Policy | conftest | manifest policy tests in `k8s/policies/conftest/` |
+| Metrics | Prometheus, Grafana, kube-state-metrics | Prometheus Operator + ServiceMonitor scraping, so it works unmodified on kind, k3s or kubeadm |
+| Logs | Loki, ELK (Elasticsearch + Kibana + Logstash) | Loki for the console's own log view; ELK for a per-team Kibana space with index-level tenancy |
+| Alerting | AlertManager | SLO rules, browsable history from the operator console |
+| Tests | pytest, testcontainers | unit/tenancy/RBAC suite runs without a cluster; `-m integration` spins real PostgreSQL via testcontainers |
 
 ---
 
@@ -448,6 +542,7 @@ pip install -r controlplane/requirements.txt
 export DATABASE_URL=postgresql+psycopg://user:pass@localhost/controlplane
 # alembic.ini resolves script_location relative to itself, so run it from there
 (cd controlplane && alembic upgrade head)
+# to roll back one revision instead: (cd controlplane && alembic downgrade -1)
 
 # 4. API and worker (separate shells)
 uvicorn controlplane.api.main:app --port 8000
@@ -464,6 +559,19 @@ The console is then at **<http://127.0.0.1:8000>**.
 registry published on the host so the control plane can push, and a containerd mirror
 on every node so the cluster can pull. Inside a node, `localhost:5000` means *that
 node*, so a registry the host can reach is otherwise invisible to the kubelet.
+
+### Knowing it worked
+
+- `GET http://127.0.0.1:8000/api/v1/auth/config` returns 200 once uvicorn is up.
+- `celery -A controlplane.workers.celery_app inspect ping` returns `pong` from the
+  worker once it has connected to Redis.
+- `python3 scripts/seed-demo.py` finishing without error means the schema migrated
+  cleanly and the API accepted a full register → team → project → deploy cycle — the
+  fastest single check that the stack is wired together correctly.
+- `./scripts/smoke-test.sh` checks the platform's own demo services and monitoring
+  stack against a live cluster: pod health, service endpoints, Prometheus scraping and
+  Grafana's datasource — useful once the platform's own workloads (`app/`) are deployed
+  through it, not a substitute for `seed-demo.py` on a fresh setup.
 
 ### Deploying your first service
 
@@ -551,6 +659,14 @@ The pipeline is therefore built per run rather than referenced, since the tenant
 are only knowable after reading their repository. See
 [`k8s/tekton/README.md`](k8s/tekton/README.md).
 
+Each provisioned namespace also gets its own **Tekton Dashboard** — one Deployment per
+tenant, not one shared instance, since upstream's Dashboard has no per-request RBAC of
+its own and a cluster-wide copy would show every tenant's PipelineRuns and pod logs to
+every tenant. Its ServiceAccount can only read inside its own namespace
+(`k8s/tekton/dashboard.yaml`). Installed on every provision so enabling `TEKTON_ENABLED`
+later doesn't require re-provisioning; a failure to install it costs only the read-only
+UI, not the deploy path.
+
 ---
 
 ## Configuration reference
@@ -580,6 +696,8 @@ Everything is read from the environment; see `controlplane/core/config.py`.
 | `DEFAULT_VM_TTL_HOURS` | `4` | VM project lifetime |
 | `MAX_TTL_HOURS` | `168` | extension ceiling |
 | `WARM_POOL_TARGETS` | — | pre-provisioned clusters per preset |
+| `PLATFORM_NAMESPACE` | `devops-platform` | namespace the operator console (`platform_ops.py`) targets for the platform's own services — must match `k8s/apps/chart/values.yaml`'s `namespace:` |
+| `MONITORING_NAMESPACE` | `monitoring` | namespace the operator console targets for Prometheus, Grafana, Alertmanager, ELK — must match the monitoring stack's actual namespace |
 | `LOGIN_RATE_PER_MINUTE` | `5` | per-IP login limit |
 | `TEAM_INVITES_PER_HOUR` | `20` | per-user invite limit |
 | `AUTH_LOCAL_ENABLED`, `AUTH_OIDC_ENABLED` | — | which login methods are offered |
@@ -628,18 +746,40 @@ control plane refuses to start if one is configured but unreadable.
 ## Testing
 
 ```bash
-pytest controlplane/tests tests/          # default suite — no cluster required
-pytest controlplane/tests tests/ -m ""    # including integration tests
+# Full default suite — no cluster, no Docker required. This is the gate.
+pytest controlplane/tests tests/
+
+# One file, or one test inside it
+pytest controlplane/tests/test_tasks.py -q
+pytest controlplane/tests/test_tasks.py::test_name -x -q
+
+# Integration tests spin real PostgreSQL via testcontainers (needs Docker)
+pytest controlplane/tests -q -m integration
+
+# Everything, including integration/e2e/network-marked tests
+pytest controlplane/tests tests/ -m ""
+
+# Lint (ruff, line-length 110, py312 — config in controlplane/pyproject.toml)
+ruff check controlplane/ app/ tests/
 ```
+
+`addopts` deselects the `integration`, `e2e` and `network` markers by default, so a
+green plain `pytest` run has not touched a database container or a real cluster. CI runs
+`pytest -q tests/` and `pytest -q controlplane/tests -m "not integration"` as **two
+separate jobs** — a change that only passes when both suites run together will still
+fail CI, so run them separately locally before pushing, not just combined.
 
 The suite covers tenancy and RBAC (a non-member sees 404 everywhere), namespace
 isolation (identically named projects in different teams land in different namespaces,
 and destroying one never touches the other), the deployment pipeline and its gate,
 sandbox behaviour (no secret in argv, output never truncated), credential handling
 (never logged, never returned), workspace-deletion safety, renderers, parsers, rate
-limits, security headers, and repository-wide drift guards.
+limits, security headers, and repository-wide drift guards (`tests/test_ui.py`, for
+example, regexes `web/static/platform/app.js` for literals like `state.configTab`, so a
+console refactor that renames one is caught here rather than in the browser).
 
-Integration tests need Docker; a few need real VMs and SSH.
+Integration tests need Docker; a few (VM-mode provisioning) need real libvirt/KVM and
+SSH, and are skipped automatically when those aren't available.
 
 ---
 

@@ -64,6 +64,13 @@ NETWORK_CIDR = os.environ.get("NETWORK_CIDR", "")
 K8S_MASTER_NAME = os.environ.get("K8S_MASTER_NAME", "master-01")
 MASTER_IP = os.environ.get("MASTER_IP", "")
 MASTER_SSH_TARGET = f"{SSH_USER}@{MASTER_IP}" if MASTER_IP else ""
+# The platform's own namespaces. Must track k8s/apps/chart/values.yaml
+# `namespace:` and k8s/monitoring's own namespace — both were hardcoded
+# "devops-platform"/"monitoring" literals scattered through this file, so an
+# operator who changed the Helm value silently broke every Operations-console
+# query against the old name.
+PLATFORM_NAMESPACE = os.environ.get("PLATFORM_NAMESPACE", "devops-platform")
+MONITORING_NAMESPACE = os.environ.get("MONITORING_NAMESPACE", "monitoring")
 
 
 class ServiceError(ValueError):
@@ -1077,7 +1084,7 @@ def service_pipeline(service: str) -> dict[str, Any]:
         return _pipeline_result(service, stages)
 
     # 8. pods ready
-    dep = _deployment_ready("devops-platform", service)
+    dep = _deployment_ready(PLATFORM_NAMESPACE, service)
     if not dep["reachable"]:
         stages.append({"stage": "pods", "state": "failed", "detail": dep["error"]})
     elif dep["ready"] == dep["desired"] and dep["desired"] > 0:
@@ -1097,9 +1104,9 @@ def service_pipeline(service: str) -> dict[str, Any]:
     # the request timed out even though kubelet's own probe against the same
     # endpoint was passing. 127.0.0.1:<containerPort> asks the process what
     # this stage is actually about: is it serving.
-    port = _container_port("devops-platform", service) or 8000
+    port = _container_port(PLATFORM_NAMESPACE, service) or 8000
     readyz = _run(
-        ["kubectl", "exec", "-n", "devops-platform", f"deploy/{service}", "-c", service, "--",
+        ["kubectl", "exec", "-n", PLATFORM_NAMESPACE, f"deploy/{service}", "-c", service, "--",
          "python", "-c",
          f"import urllib.request; urllib.request.urlopen('http://127.0.0.1:{port}/readyz', timeout=5)"],
         timeout=KUBECTL_TIMEOUT,
@@ -2354,7 +2361,7 @@ def vault_status() -> dict[str, Any]:
     }
 
 
-def vault_secrets(path: str = "devops-platform") -> dict[str, Any]:
+def vault_secrets(path: str = PLATFORM_NAMESPACE) -> dict[str, Any]:
     token = _vault_root_token()
     if not token:
         return {"reachable": False, "error": "could not read vault-root-token secret", "keys": []}
@@ -2374,7 +2381,7 @@ def vault_secrets(path: str = "devops-platform") -> dict[str, Any]:
     return {"reachable": True, "path": path, "keys": keys}
 
 
-def vault_secret_metadata(service: str, path: str = "devops-platform") -> dict[str, Any]:
+def vault_secret_metadata(service: str, path: str = PLATFORM_NAMESPACE) -> dict[str, Any]:
     token = _vault_root_token()
     if not token:
         return {"reachable": False, "error": "could not read vault-root-token secret"}
@@ -2402,7 +2409,7 @@ def vault_secret_metadata(service: str, path: str = "devops-platform") -> dict[s
 
 # ─── Prometheus — queried through the k8s apiserver proxy, no port-forward needed ───
 
-def prometheus_query(promql: str, namespace: str = "monitoring", svc: str = "prometheus-operated:9090") -> dict[str, Any]:
+def prometheus_query(promql: str, namespace: str = MONITORING_NAMESPACE, svc: str = "prometheus-operated:9090") -> dict[str, Any]:
     raw_path = f"/api/v1/namespaces/{namespace}/services/{svc}/proxy/api/v1/query"
     res = _run(["kubectl", "get", "--raw", f"{raw_path}?query={promql}"], timeout=KUBECTL_TIMEOUT)
     if not res["ok"]:
@@ -2457,7 +2464,7 @@ def repo_declared_objects() -> set[tuple[str, str]]:
 
 
 def drift_report(namespaces: list[str] | None = None) -> dict[str, Any]:
-    namespaces = namespaces or ["devops-platform", "monitoring"]
+    namespaces = namespaces or [PLATFORM_NAMESPACE, MONITORING_NAMESPACE]
 
     argo_res = _run(["kubectl", "get", "applications.argoproj.io", "-n", "argocd", "-o", "json"], timeout=KUBECTL_TIMEOUT)
     if not argo_res["ok"]:
@@ -2555,7 +2562,7 @@ PROMETHEUS_SERVICES = ["prometheus-operated", "prometheus-server", "prometheus"]
 
 def alerts_firing() -> dict[str, Any]:
     service = _resolve_service(
-        "monitoring", ALERTMANAGER_SERVICES, selector="app.kubernetes.io/name=alertmanager"
+        MONITORING_NAMESPACE, ALERTMANAGER_SERVICES, selector="app.kubernetes.io/name=alertmanager"
     )
     if not service:
         return {
@@ -2612,16 +2619,16 @@ def alerts_firing() -> dict[str, Any]:
 # 307s to https and _detect_scheme follows it back into the same dead end.
 DASHBOARDS = {
     "argocd": {"namespace": "argocd", "service": "svc/argocd-server", "remote_port": 80, "label": "ArgoCD"},
-    "grafana": {"namespace": "monitoring", "service": "svc/grafana", "remote_port": 3000, "label": "Grafana"},
+    "grafana": {"namespace": MONITORING_NAMESPACE, "service": "svc/grafana", "remote_port": 3000, "label": "Grafana"},
     # Prometheus and Alertmanager are resolved at open time rather than named
     # here: the Service name depends on the install method (see
     # _resolve_service). "service" stays as the last-resort fallback.
-    "prometheus": {"namespace": "monitoring", "service": "svc/prometheus-server", "remote_port": 9090, "label": "Prometheus",
+    "prometheus": {"namespace": MONITORING_NAMESPACE, "service": "svc/prometheus-server", "remote_port": 9090, "label": "Prometheus",
                    "candidates": PROMETHEUS_SERVICES, "selector": "app.kubernetes.io/name=prometheus"},
-    "alertmanager": {"namespace": "monitoring", "service": "svc/prometheus-alertmanager", "remote_port": 9093, "label": "Alertmanager",
+    "alertmanager": {"namespace": MONITORING_NAMESPACE, "service": "svc/prometheus-alertmanager", "remote_port": 9093, "label": "Alertmanager",
                      "candidates": ALERTMANAGER_SERVICES, "selector": "app.kubernetes.io/name=alertmanager"},
     "vault": {"namespace": "vault", "service": "svc/vault-service", "remote_port": 8200, "label": "Vault"},
-    "kibana": {"namespace": "monitoring", "service": "svc/kibana", "remote_port": 5601, "label": "Kibana"},
+    "kibana": {"namespace": MONITORING_NAMESPACE, "service": "svc/kibana", "remote_port": 5601, "label": "Kibana"},
 }
 
 
@@ -2971,7 +2978,7 @@ def rollout_undo(namespace: str, deployment: str, to_revision: int | None = None
     return {"ok": True, "message": f"rolled back '{deployment}'" + (f" to revision {to_revision}" if to_revision else "")}
 
 
-def service_drilldown(service: str, namespace: str = "devops-platform") -> dict[str, Any]:
+def service_drilldown(service: str, namespace: str = PLATFORM_NAMESPACE) -> dict[str, Any]:
     """One aggregate call for the service detail panel: pods (by label
     selector, not name-prefix guessing), each pod's detail, recent events,
     live metrics, and deployment rollout history."""
@@ -3162,7 +3169,7 @@ def stop_script(key: str) -> dict[str, Any]:
 
 def _es_credentials() -> str | None:
     res = _run(
-        ["kubectl", "get", "secret", "elasticsearch-credentials", "-n", "monitoring",
+        ["kubectl", "get", "secret", "elasticsearch-credentials", "-n", MONITORING_NAMESPACE,
          "-o", "jsonpath={.data.ELASTIC_PASSWORD}"],
         timeout=KUBECTL_TIMEOUT,
     )
@@ -3180,7 +3187,7 @@ def es_status() -> dict[str, Any]:
     if not pw:
         return {"reachable": False, "error": "could not read elasticsearch-credentials secret"}
     res = _run(
-        ["kubectl", "exec", "-n", "monitoring", "elasticsearch-0", "--",
+        ["kubectl", "exec", "-n", MONITORING_NAMESPACE, "elasticsearch-0", "--",
          "curl", "-s", "-u", f"elastic:{pw}", "http://localhost:9200/_cat/indices/filebeat-*?format=json"],
         timeout=15,
     )
@@ -3209,7 +3216,7 @@ def es_search_logs(service: str, query: str = "", limit: int = 100, since: str =
         "query": {"bool": {"must": must}},
     }
     res = _run(
-        ["kubectl", "exec", "-i", "-n", "monitoring", "elasticsearch-0", "--",
+        ["kubectl", "exec", "-i", "-n", MONITORING_NAMESPACE, "elasticsearch-0", "--",
          "curl", "-s", "-u", f"elastic:{pw}", "-H", "Content-Type: application/json",
          "-X", "POST", "http://localhost:9200/filebeat-*/_search", "-d", "@-"],
         timeout=15, input_=json.dumps(body),
@@ -3246,7 +3253,7 @@ def es_search_logs(service: str, query: str = "", limit: int = 100, since: str =
 
 def _es_newest_timestamp(pw: str) -> str | None:
     res = _run(
-        ["kubectl", "exec", "-i", "-n", "monitoring", "elasticsearch-0", "--",
+        ["kubectl", "exec", "-i", "-n", MONITORING_NAMESPACE, "elasticsearch-0", "--",
          "curl", "-s", "-u", f"elastic:{pw}", "-H", "Content-Type: application/json",
          "-X", "POST", "http://localhost:9200/filebeat-*/_search", "-d", "@-"],
         timeout=15,
@@ -3264,7 +3271,7 @@ def _es_newest_timestamp(pw: str) -> str | None:
 def log_pipeline_health() -> dict[str, Any]:
     links = []
 
-    fb = _run(["kubectl", "get", "ds", "filebeat", "-n", "monitoring", "-o", "json"], timeout=KUBECTL_TIMEOUT)
+    fb = _run(["kubectl", "get", "ds", "filebeat", "-n", MONITORING_NAMESPACE, "-o", "json"], timeout=KUBECTL_TIMEOUT)
     if fb["ok"]:
         try:
             d = json.loads(fb["stdout"])
@@ -3276,7 +3283,7 @@ def log_pipeline_health() -> dict[str, Any]:
     else:
         links.append({"name": "filebeat", "ok": False, "detail": "not found"})
 
-    ls = _run(["kubectl", "get", "deploy", "logstash", "-n", "monitoring"], timeout=KUBECTL_TIMEOUT)
+    ls = _run(["kubectl", "get", "deploy", "logstash", "-n", MONITORING_NAMESPACE], timeout=KUBECTL_TIMEOUT)
     links.append({"name": "logstash", "ok": ls["ok"], "detail": "not deployed — filebeat ships straight to elasticsearch" if not ls["ok"] else "deployed"})
 
     es = es_status()
