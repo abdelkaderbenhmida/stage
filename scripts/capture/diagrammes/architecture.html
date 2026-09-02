@@ -1,0 +1,106 @@
+<style>
+  html,body{margin:0;padding:0;background:#fff;font-family:-apple-system,Segoe UI,Ubuntu,Helvetica,sans-serif}
+  .page{width:1560px;padding:34px 38px 30px}
+  h1{margin:0 0 4px;font-size:22px;color:#1f2733;letter-spacing:.2px}
+  .sub{margin:0 0 26px;font-size:13.5px;color:#7a8494}
+  .row{display:flex;gap:22px;align-items:stretch}
+  .zone{border:1.5px solid #d7dee8;border-radius:12px;padding:14px 16px 16px;background:#fbfcfe;flex:1}
+  .zone.cluster{background:#f7faff;border-color:#c6d5ea}
+  .zone h2{margin:0 0 12px;font-size:12.5px;letter-spacing:.9px;text-transform:uppercase;color:#5d6b7e;font-weight:700}
+  .ns{border:1px solid #dde4ee;border-radius:10px;padding:10px 12px 12px;background:#fff;margin-bottom:11px}
+  .ns:last-child{margin-bottom:0}
+  .ns h3{margin:0 0 9px;font-size:12px;color:#41506a;font-weight:700;letter-spacing:.3px}
+  .chips{display:flex;flex-wrap:wrap;gap:7px}
+  .c{font-size:12px;padding:5px 10px;border-radius:7px;border:1px solid #dfe6f0;background:#f4f7fb;color:#2f3b4d}
+  .c.b{background:#eaf2ff;border-color:#c5d9f7;color:#1f4f9c}
+  .c.g{background:#eaf7ee;border-color:#c2e5ce;color:#1c6b3a}
+  .c.o{background:#fdf2e6;border-color:#f0d6b0;color:#8a5312}
+  .c.p{background:#f3eefc;border-color:#dbcdf2;color:#5b3ba0}
+  .flux{margin-top:24px;border:1.5px solid #d7dee8;border-radius:12px;padding:16px 18px;background:#fbfcfe}
+  .steps{display:flex;align-items:center;gap:0;flex-wrap:nowrap}
+  .step{flex:1;text-align:center;font-size:12.5px;color:#2f3b4d;padding:9px 6px;border:1px solid #dfe6f0;border-radius:8px;background:#fff}
+  .step b{display:block;font-size:12.5px;color:#1f2733}
+  .step span{font-size:11px;color:#7a8494}
+  .arrow{width:26px;text-align:center;color:#9aa6b6;font-size:15px}
+  .legend{margin-top:16px;display:flex;gap:18px;font-size:11.5px;color:#7a8494}
+  .legend i{display:inline-block;width:11px;height:11px;border-radius:3px;margin-right:6px;vertical-align:-1px}
+</style>
+<div class="page">
+  <h1>Architecture de la plateforme DevOps</h1>
+  <p class="sub">Cluster Kubernetes v1.28 · 12 Applications ArgoCD · chaîne CI/CD GitHub Actions → GHCR → GitOps</p>
+
+  <div class="row">
+    <div class="zone" style="max-width:330px">
+      <h2>Poste d'administration</h2>
+      <div class="chips">
+        <span class="c">kubectl</span><span class="c">Terraform</span><span class="c">Ansible</span>
+        <span class="c">Docker</span><span class="c">Helm / Kustomize</span><span class="c">pre-commit</span>
+      </div>
+      <div class="ns" style="margin-top:13px">
+        <h3>Dépôt Git — branche secondary</h3>
+        <div class="chips">
+          <span class="c">app/&lt;service&gt;</span><span class="c">k8s/apps/chart</span>
+          <span class="c">k8s/argocd</span><span class="c">k8s/monitoring</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="zone cluster">
+      <h2>Cluster Kubernetes — plan de contrôle et charges de travail</h2>
+      <div class="ns">
+        <h3>namespace devops-platform — services applicatifs</h3>
+        <div class="chips">
+          <span class="c b">users-service</span><span class="c b">products-service</span>
+          <span class="c b">orders-service</span>
+          <span class="c">HPA 2→5</span><span class="c">PodDisruptionBudget</span>
+          <span class="c">NetworkPolicies</span><span class="c">LimitRange</span>
+        </div>
+      </div>
+      <div class="row" style="gap:11px">
+        <div class="ns" style="flex:1">
+          <h3>namespace argocd</h3>
+          <div class="chips"><span class="c p">ApplicationSet</span><span class="c p">12 Applications</span>
+            <span class="c">prune · selfHeal</span></div>
+        </div>
+        <div class="ns" style="flex:1">
+          <h3>namespace vault</h3>
+          <div class="chips"><span class="c o">Vault 1.15</span><span class="c">KV v2</span>
+            <span class="c">politiques par service</span></div>
+        </div>
+      </div>
+      <div class="row" style="gap:11px">
+        <div class="ns" style="flex:1">
+          <h3>namespace monitoring</h3>
+          <div class="chips"><span class="c g">Prometheus</span><span class="c g">AlertManager</span>
+            <span class="c g">Grafana</span><span class="c">kube-state-metrics</span></div>
+        </div>
+        <div class="ns" style="flex:1">
+          <h3>namespace logging</h3>
+          <div class="chips"><span class="c g">Elasticsearch</span><span class="c g">Logstash</span>
+            <span class="c g">Kibana</span><span class="c">Filebeat</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="flux">
+    <h2 style="margin:0 0 12px;font-size:12.5px;letter-spacing:.9px;text-transform:uppercase;color:#5d6b7e;font-weight:700">
+      Chaîne de livraison — du commit au déploiement</h2>
+    <div class="steps">
+      <div class="step"><b>git push</b><span>branche secondary</span></div><div class="arrow">→</div>
+      <div class="step"><b>Lint · Tests · pip-audit</b><span>qualité et dépendances</span></div><div class="arrow">→</div>
+      <div class="step"><b>Gitleaks</b><span>fuite de secrets</span></div><div class="arrow">→</div>
+      <div class="step"><b>Build &amp; Push</b><span>image tag commit-&lt;sha&gt;</span></div><div class="arrow">→</div>
+      <div class="step"><b>Trivy</b><span>CVE + SBOM</span></div><div class="arrow">→</div>
+      <div class="step"><b>service.yaml</b><span>tag immuable écrit</span></div><div class="arrow">→</div>
+      <div class="step"><b>ArgoCD</b><span>synchronisation</span></div><div class="arrow">→</div>
+      <div class="step"><b>Rollout</b><span>mise à jour progressive</span></div>
+    </div>
+    <div class="legend">
+      <span><i style="background:#eaf2ff;border:1px solid #c5d9f7"></i>services applicatifs</span>
+      <span><i style="background:#eaf7ee;border:1px solid #c2e5ce"></i>observabilité</span>
+      <span><i style="background:#fdf2e6;border:1px solid #f0d6b0"></i>secrets</span>
+      <span><i style="background:#f3eefc;border:1px solid #dbcdf2"></i>livraison continue</span>
+    </div>
+  </div>
+</div>

@@ -17,13 +17,13 @@
 
 # Read the KV v2 secret value for the service's own secret path.
 # `${svc}` must be substituted at apply time (users-service | products-service | orders-service).
-path "secret/data/devops-platform/${svc}" {
+path "secret/data/devops-platform/$${svc}" {
   capabilities = ["read"]
 }
 
 # Enumerate the secret metadata (versions, deletion status) so the client
 # can pin a revision and decide on a refresh strategy.
-path "secret/metadata/devops-platform/${svc}" {
+path "secret/metadata/devops-platform/$${svc}" {
   capabilities = ["read", "list"]
 }
 

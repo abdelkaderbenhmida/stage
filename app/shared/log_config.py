@@ -9,15 +9,13 @@ LOG_FORMAT=plain (used in local dev).
 import logging
 import os
 import sys
-from typing import Optional
 
 from pythonjsonlogger import jsonlogger
-
 
 _CONFIGURED = False
 
 
-def setup_logging(service_name: Optional[str] = None, level: Optional[str] = None) -> logging.Logger:
+def setup_logging(service_name: str | None = None, level: str | None = None) -> logging.Logger:
     """Configure root + service logger. Idempotent.
 
     Args:

@@ -27,7 +27,9 @@ spec:
     - name: pin-images-by-digest
       match:
         any:
-          - kind: Deployment
+          - resources:
+              kinds:
+                - Deployment
       validate:
         message: |
           All container images must include an immutable tag (e.g.
@@ -57,7 +59,9 @@ spec:
     - name: drop-all-capabilities
       match:
         any:
-          - kind: Pod
+          - resources:
+              kinds:
+                - Pod
       validate:
         message: "Containers must set securityContext.capabilities.drop: [ALL]."
         pattern:
@@ -70,7 +74,9 @@ spec:
     - name: runAsNonRoot
       match:
         any:
-          - kind: Pod
+          - resources:
+              kinds:
+                - Pod
       validate:
         message: "Pods must set securityContext.runAsNonRoot: true."
         pattern:

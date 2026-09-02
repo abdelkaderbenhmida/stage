@@ -230,7 +230,7 @@ Tous les jobs doivent être `UP` (vert). C'est ici qu'on vérifie que Prometheus
 scrape bien les 5 services + kubelet + kube-state-metrics.
 
 🖥 **Ouvre : http://localhost:9090/graph** → onglet Graph, tape par exemple
-`sum(rate(http_requests_total[5m])) by (service)` → **Execute** → bascule sur
+`sum(rate(http_requests_total[5m])) by (handler)` → **Execute** → bascule sur
 l'onglet **Graph** pour voir la courbe.
 
 🖥 **Ouvre : http://localhost:3000** (identifiants dans la table du haut)

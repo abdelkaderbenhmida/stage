@@ -1,0 +1,42 @@
+\babel@toc {nil}{}\relax 
+\addvspace {10\p@ }
+\contentsline {figure}{\numberline {1.1}{\ignorespaces Schéma d'architecture général redessiné ou photographié depuis un tableau\dots }}{9}{figure.caption.6}%
+\contentsline {figure}{\numberline {1.2}{\ignorespaces Sortie de virsh net-dumpxml devops-platform-net ou vue network de\dots }}{10}{figure.caption.8}%
+\addvspace {10\p@ }
+\contentsline {figure}{\numberline {2.1}{\ignorespaces Virsh list --all montrant les 3 domaines en running + virsh dumpxml master-01\dots }}{11}{figure.caption.9}%
+\contentsline {figure}{\numberline {2.2}{\ignorespaces Terraform plan : create des domains/volumes/cloudinit disks avec le résumé\dots }}{13}{figure.caption.10}%
+\contentsline {figure}{\numberline {2.3}{\ignorespaces Tentative ssh root@192.168.56.10 affichant Permission denied, puis connexion\dots }}{14}{figure.caption.11}%
+\contentsline {figure}{\numberline {2.4}{\ignorespaces Fin de run vert : PLAY RECAP rc=0, changed/unreachable, temps total (callback\dots }}{16}{figure.caption.12}%
+\contentsline {figure}{\numberline {2.5}{\ignorespaces Kubectl get nodes -o wide juste après le run : 3 nœuds Ready v1.28.x}}{16}{figure.caption.13}%
+\addvspace {10\p@ }
+\contentsline {figure}{\numberline {3.1}{\ignorespaces Test CNI : DNS + ping entre deux Pods de nœuds différents (kubectl exec +\dots }}{18}{figure.caption.14}%
+\contentsline {figure}{\numberline {3.2}{\ignorespaces Preuve default-deny : un Pod sans label ne peut joindre users-service, un Pod\dots }}{20}{figure.caption.16}%
+\addvspace {10\p@ }
+\contentsline {figure}{\numberline {4.1}{\ignorespaces Pod en crashloop après suppression du secret : kubectl get pods + logs\dots }}{22}{figure.caption.18}%
+\contentsline {figure}{\numberline {4.2}{\ignorespaces Kubectl get pods -n vault + vault status exec dans le pod : initialized true\dots }}{25}{figure.caption.19}%
+\addvspace {10\p@ }
+\contentsline {figure}{\numberline {5.1}{\ignorespaces Dashboard Error Rate SLO avec ligne de seuil 1 \% visible}}{29}{figure.caption.20}%
+\addvspace {10\p@ }
+\contentsline {figure}{\numberline {6.1}{\ignorespaces Job trivy-scan : table CRITICAL/HIGH vide + upload SARIF réussi}}{34}{figure.caption.22}%
+\contentsline {figure}{\numberline {6.2}{\ignorespaces UI ArgoCD : tuiles des 12 Applications toutes Synced/Healthy}}{35}{figure.caption.23}%
+\contentsline {figure}{\numberline {6.3}{\ignorespaces Démonstration selfHeal : kubectl scale deploy users-service --replicas=5\dots }}{36}{figure.caption.24}%
+\contentsline {figure}{\numberline {6.4}{\ignorespaces Kustomize build k8s/apps/base | conftest test --policy k8s/policies/conftest\dots }}{36}{figure.caption.25}%
+\addvspace {10\p@ }
+\addvspace {10\p@ }
+\addvspace {10\p@ }
+\contentsline {figure}{\numberline {9.1}{\ignorespaces Scripts/validate-platform.sh complet : les 7 contrôles + bonus en vert avec\dots }}{46}{figure.caption.26}%
+\addvspace {10\p@ }
+\addvspace {10\p@ }
+\addvspace {10\p@ }
+\addvspace {10\p@ }
+\addvspace {10\p@ }
+\addvspace {10\p@ }
+\addvspace {10\p@ }
+\addvspace {10\p@ }
+\contentsline {figure}{\numberline {H.1}{\ignorespaces Checklist hebdo exécutée en terminal : validate-platform 7+bonus verts}}{68}{figure.caption.29}%
+\addvspace {10\p@ }
+\addvspace {10\p@ }
+\addvspace {10\p@ }
+\addvspace {10\p@ }
+\addvspace {10\p@ }
+\contentsline {figure}{\numberline {M.1}{\ignorespaces Capture « carte d'identité » de la plateforme : kubectl top nodes + kubectl\dots }}{80}{figure.caption.30}%

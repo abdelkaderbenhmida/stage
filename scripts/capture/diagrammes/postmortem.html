@@ -1,0 +1,46 @@
+<style>
+ html,body{margin:0;background:#fff;font-family:-apple-system,Segoe UI,Ubuntu,sans-serif}
+ .p{width:1500px;padding:34px 38px 26px}
+ h1{margin:0 0 3px;font-size:21px;color:#1f2733}
+ .s{margin:0 0 24px;font-size:13px;color:#7a8494}
+ table{border-collapse:collapse;width:100%;font-size:13.5px}
+ th{text-align:left;font-size:11.5px;letter-spacing:.7px;text-transform:uppercase;color:#5d6b7e;
+    border-bottom:2px solid #d7dee8;padding:0 10px 9px}
+ td{padding:11px 10px;border-bottom:1px solid #e8edf4;color:#2f3b4d;vertical-align:top}
+ td.h{font-variant-numeric:tabular-nums;color:#1f4f9c;font-weight:600;white-space:nowrap}
+ .tag{display:inline-block;font-size:11.5px;padding:3px 9px;border-radius:6px;border:1px solid #dfe6f0;background:#f4f7fb}
+ .tag.r{background:#fdecec;border-color:#f3c9c9;color:#a12626}
+ .tag.o{background:#fdf2e6;border-color:#f0d6b0;color:#8a5312}
+ .tag.g{background:#eaf7ee;border-color:#c2e5ce;color:#1c6b3a}
+ .kpi{display:flex;gap:16px;margin:24px 0 4px}
+ .k{flex:1;border:1.5px solid #d7dee8;border-radius:11px;padding:14px 16px;background:#fbfcfe}
+ .k b{display:block;font-size:25px;color:#1f2733;margin-bottom:3px;font-variant-numeric:tabular-nums}
+ .k span{font-size:12px;color:#7a8494}
+</style>
+<div class="p">
+ <h1>Post-mortem — incident mémoire du 28 août 2026</h1>
+ <p class="s">Conteneur limité à 64 Mio allouant 8 Mio toutes les 0,5 s · namespace devops-platform</p>
+ <table>
+  <tr><th style="width:110px">Heure</th><th style="width:150px">Signal</th><th>Événement observé</th><th style="width:230px">Source</th></tr>
+  <tr><td class="h">15:26:38</td><td><span class="tag">déploiement</span></td>
+      <td>Mise en service du conteneur défectueux</td><td>kubectl apply</td></tr>
+  <tr><td class="h">15:27:25</td><td><span class="tag o">saturation</span></td>
+      <td>Mémoire du conteneur au plafond de la limite</td><td>cAdvisor → Prometheus</td></tr>
+  <tr><td class="h">15:27:29</td><td><span class="tag r">OOMKilled</span></td>
+      <td>Conteneur tué par le noyau, code de sortie 137</td><td>kubectl describe pod</td></tr>
+  <tr><td class="h">15:28:33</td><td><span class="tag r">CrashLoopBackOff</span></td>
+      <td>Troisième redémarrage, mise en attente exponentielle</td><td>kube-state-metrics</td></tr>
+  <tr><td class="h">15:29:50</td><td><span class="tag r">alerte</span></td>
+      <td>ContainerMemoryRatioHigh et PodEvictionOngoing en firing</td><td>Prometheus → AlertManager</td></tr>
+  <tr><td class="h">15:33:10</td><td><span class="tag">diagnostic</span></td>
+      <td>Cause identifiée : liste retenue en mémoire dans la boucle applicative</td><td>Kibana, logs du conteneur</td></tr>
+  <tr><td class="h">16:11:04</td><td><span class="tag g">rétabli</span></td>
+      <td>Charge de travail retirée, alertes repassées au vert</td><td>kubectl delete, AlertManager</td></tr>
+ </table>
+ <div class="kpi">
+  <div class="k"><b>3 min 12 s</b><span>MTTD — du premier OOMKill à l'alerte reçue</span></div>
+  <div class="k"><b>5 min 41 s</b><span>MTTA — de l'alerte au diagnostic posé</span></div>
+  <div class="k"><b>44 min</b><span>MTTR — jusqu'au retour à la normale</span></div>
+  <div class="k"><b>0</b><span>requête utilisateur affectée (charge isolée)</span></div>
+ </div>
+</div>

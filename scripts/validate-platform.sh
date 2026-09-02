@@ -305,8 +305,8 @@ check_kibana() {
 
   # Filebeat DaemonSet must be scheduled on every node.
   local fb_desired fb_ready
-  fb_desired=$(kubectl get daemonset -n "$MONITORING_NS" filebeat -o jsonpath='{.status.desiredNumberScheduled}' 2>/dev/null || echo 0)
-  fb_ready=$(kubectl get daemonset -n "$MONITORING_NS" filebeat -o jsonpath='{.status.numberReady}' 2>/dev/null || echo 0)
+  fb_desired=$(kubectl get daemonset -n logging filebeat -o jsonpath='{.status.desiredNumberScheduled}' 2>/dev/null || echo 0)
+  fb_ready=$(kubectl get daemonset -n logging filebeat -o jsonpath='{.status.numberReady}' 2>/dev/null || echo 0)
   fb_ready=${fb_ready:-0}
   if [[ "$fb_ready" -lt "$fb_desired" || "$fb_ready" -lt 1 ]]; then
     record_fail "Filebeat incomplet ($fb_ready/$fb_desired)"
@@ -367,8 +367,10 @@ test_selfheal() {
     fi
   done
   elapsed=$(( $(date +%s) - start ))
-  if [[ -n "$newpod" && "$newpod" != *"$pod"* ]]; then
+  if [[ -n "$newpod" && "$newpod" != *"$pod"* && "$elapsed" -lt 30 ]]; then
     record_pass "Pod recréé en ${elapsed}s (cap < 30s)"
+  elif [[ -n "$newpod" && "$newpod" != *"$pod"* ]]; then
+    record_fail "Pod recréé mais en ${elapsed}s (> cap 30s)"
   else
     record_fail "Pod non recréé après ${elapsed}s"
   fi

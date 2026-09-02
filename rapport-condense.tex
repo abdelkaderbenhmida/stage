@@ -1,0 +1,1281 @@
+% ============================================================
+%  Rapport de Projet de Fin d'Etudes
+%  DevOps Central Platform
+% ============================================================
+\documentclass[12pt,a4paper,oneside]{report}
+
+% ------------------------------------------------------------
+% Encodage, polices, langue
+% ------------------------------------------------------------
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage[provide=*]{babel}
+\usepackage{microtype}
+
+% Libelles francais (babel-french non installe sur la machine de compilation)
+\renewcommand{\chaptername}{Chapitre}
+\renewcommand{\appendixname}{Annexe}
+\renewcommand{\contentsname}{Table des matières}
+\renewcommand{\listfigurename}{Liste des figures}
+\renewcommand{\listtablename}{Liste des tableaux}
+\renewcommand{\figurename}{Figure}
+\renewcommand{\tablename}{Tableau}
+\renewcommand{\bibname}{Bibliographie}
+\renewcommand{\partname}{Partie}
+
+% ------------------------------------------------------------
+% Geometrie et interlignage
+% ------------------------------------------------------------
+\usepackage[a4paper,inner=3.0cm,outer=2.5cm,top=2.7cm,bottom=2.7cm,headheight=15pt]{geometry}
+\linespread{1.15}
+\setlength{\parskip}{0.5em}
+\setlength{\parindent}{0pt}
+\sloppy
+\hbadness=10000
+\clubpenalty=10000
+\widowpenalty=10000
+
+% ------------------------------------------------------------
+% Paquets
+% ------------------------------------------------------------
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{float}
+\usepackage{enumitem}
+\usepackage{fancyhdr}
+\usepackage{titlesec}
+\usepackage{tocloft}
+\usepackage{xcolor}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning}
+\usepackage[listings]{tcolorbox}
+\tcbuselibrary{skins,breakable}
+\usepackage[font=small,labelfont=bf,labelsep=period,justification=centering]{caption}
+\usepackage{etoolbox}
+
+% espacement des longtables
+\setlength{\LTpre}{2pt}
+\setlength{\LTpost}{\medskipamount}
+\captionsetup[table]{skip=4pt}
+\captionsetup[figure]{skip=6pt}
+
+% ------------------------------------------------------------
+% Palette
+% ------------------------------------------------------------
+\definecolor{pfeblue}{HTML}{1F3864}
+\definecolor{pfeaccent}{HTML}{2E75B6}
+\definecolor{pfegray}{HTML}{58595B}
+\definecolor{pfelight}{HTML}{EEF3F9}
+
+% ------------------------------------------------------------
+% Listings
+% ------------------------------------------------------------
+\lstset{
+  basicstyle=\ttfamily\footnotesize,
+  breaklines=true,
+  breakatwhitespace=false,
+  frame=leftline,
+  framerule=1.2pt,
+  rulecolor=\color{pfeaccent},
+  framesep=8pt,
+  xleftmargin=10pt,
+  backgroundcolor=\color{pfelight},
+  keywordstyle=\color{pfeblue}\bfseries,
+  commentstyle=\itshape\color{pfegray},
+  stringstyle=\color{red!55!black},
+  showstringspaces=false,
+  tabsize=2,
+  columns=fullflexible,
+  captionpos=b,
+  abovecaptionskip=6pt,
+  belowcaptionskip=6pt
+}
+\renewcommand{\lstlistingname}{Listing}
+\renewcommand{\lstlistlistingname}{Liste des listings}
+
+\usepackage[colorlinks=true,linkcolor=pfeblue,urlcolor=pfeaccent,citecolor=pfeaccent]{hyperref}
+
+% ------------------------------------------------------------
+% Titres de chapitres et de sections
+% ------------------------------------------------------------
+\titleformat{\chapter}[display]
+  {\normalfont\sffamily\bfseries\color{pfeblue}}
+  {\filright\large\MakeUppercase{\chaptertitlename}\ \Huge\thechapter}
+  {6pt}
+  {\Huge\filright}
+  [\vspace{4pt}{\color{pfeaccent}\titlerule[1.2pt]}]
+\titlespacing*{\chapter}{0pt}{10pt}{28pt}
+
+\titleformat{\section}{\normalfont\sffamily\Large\bfseries\color{pfeblue}}{\thesection}{0.8em}{}
+\titleformat{\subsection}{\normalfont\sffamily\large\bfseries\color{pfeaccent!85!black}}{\thesubsection}{0.8em}{}
+\titleformat{\subsubsection}{\normalfont\sffamily\normalsize\bfseries\color{pfegray}}{\thesubsubsection}{0.8em}{}
+\titlespacing*{\section}{0pt}{3.0ex plus .6ex}{1.5ex}
+\titlespacing*{\subsection}{0pt}{2.4ex plus .5ex}{1.1ex}
+
+\setcounter{secnumdepth}{3}
+\setcounter{tocdepth}{2}
+
+% ------------------------------------------------------------
+% Table des matieres
+% ------------------------------------------------------------
+\renewcommand{\cftchapfont}{\sffamily\bfseries\color{pfeblue}}
+\renewcommand{\cftchappagefont}{\sffamily\bfseries\color{pfeblue}}
+\renewcommand{\cftsecfont}{\normalfont}
+\setlength{\cftbeforechapskip}{6pt}
+
+% ------------------------------------------------------------
+% En-tetes et pieds de page
+% ------------------------------------------------------------
+\pagestyle{fancy}
+\fancyhf{}
+\renewcommand{\chaptermark}[1]{\markboth{\thechapter.\ #1}{}}
+\renewcommand{\sectionmark}[1]{\markright{\thesection.\ #1}{}}
+\fancyhead[LE]{\small\sffamily\nouppercase{\leftmark}}
+\fancyhead[RO]{\small\sffamily\nouppercase{\rightmark}}
+\fancyfoot[LE,RO]{\small\sffamily\thepage}
+\fancyfoot[LO,RE]{\footnotesize\sffamily\color{pfegray}DevOps Central Platform}
+\renewcommand{\headrulewidth}{0.4pt}
+\renewcommand{\footrulewidth}{0.2pt}
+% pages blanches d'imposition : sans en-tete ni pied
+\makeatletter
+\def\cleardoublepage{\clearpage\if@twoside
+  \ifodd\c@page\else\hbox{}\thispagestyle{empty}\newpage\fi\fi}
+\makeatother
+
+\fancypagestyle{plain}{\fancyhf{}\fancyfoot[C]{\small\sffamily\thepage}%
+  \renewcommand{\headrulewidth}{0pt}\renewcommand{\footrulewidth}{0pt}}
+
+% ------------------------------------------------------------
+% Boite de justification technique
+% ------------------------------------------------------------
+\newtcolorbox{whybox}[1][]{
+  enhanced, breakable,
+  colback=pfelight, colframe=pfeblue,
+  boxrule=0pt, leftrule=2.5pt,
+  arc=0mm, outer arc=0mm,
+  left=8pt,right=8pt,top=6pt,bottom=6pt,
+  fonttitle=\sffamily\bfseries,
+  coltitle=pfeblue,
+  title={Justification du choix technique},
+  attach boxed title to top left={xshift=6pt,yshift=-2pt},
+  boxed title style={colback=pfelight,boxrule=0pt,arc=0mm},
+  #1
+}
+
+% ------------------------------------------------------------
+% Figures : image reelle si presente sous images/, sinon reserve
+% ------------------------------------------------------------
+\newcommand{\figplaceholder}[1]{%
+  \begin{tcolorbox}[width=0.9\linewidth,colback=white,colframe=pfegray!45,
+    boxrule=0.6pt,arc=1mm,left=8pt,right=8pt,top=10pt,bottom=10pt,halign=center]
+    \sffamily\small\color{pfegray}
+    Emplacement réservé pour la capture\\[3pt]
+    \texttt{\detokenize{#1}}
+  \end{tcolorbox}}
+
+\newcommand{\figorph}[1]{%
+  \IfFileExists{#1.png}{\includegraphics[width=0.92\linewidth]{#1}}{%
+  \IfFileExists{#1.jpg}{\includegraphics[width=0.92\linewidth]{#1}}{%
+  \IfFileExists{#1.pdf}{\includegraphics[width=0.92\linewidth]{#1}}{%
+  \figplaceholder{#1.png}}}}}
+
+% Environnement figure standard du rapport
+% #1 legende courte (liste des figures), #2 legende longue, #3 chemin sans extension
+\newcommand{\rfig}[4]{%
+  \begin{figure}[H]
+  \centering
+  \figorph{#3}
+  \caption[#1]{#2}
+  \label{fig:#4}
+  \end{figure}}
+
+\newcommand{\pfetitle}{DevOps Central Platform}
+
+% ============================================================
+%  Informations institutionnelles --- À COMPLÉTER
+% ============================================================
+\newcommand{\universite}{Université de Carthage}
+\newcommand{\ecole}{École Supérieure des Communications de Tunis (SUP'COM)}
+\newcommand{\filiere}{Cycle d'ingénieur : Génie des Réseaux et Systèmes Informatiques}
+\newcommand{\anneeuniv}{Année universitaire 2025 -- 2026}
+\newcommand{\auteur}{Abdelkader Ben Hmida}
+\newcommand{\encadrantacad}{[Nom de l'encadrant académique]}
+\newcommand{\encadrantpro}{[Nom de l'encadrant professionnel]}
+\newcommand{\logoecole}{images/logo-supcom}   % déposer le logo sous ce chemin
+\newcommand{\logoorg}{images/logo-organisme}
+
+\begin{document}
+
+% ============================================================
+%  Page de garde
+% ============================================================
+\begin{titlepage}
+\centering
+\thispagestyle{empty}
+
+\begin{minipage}[c]{0.30\textwidth}
+  \centering
+  \IfFileExists{\logoecole.png}{\includegraphics[height=2.4cm]{\logoecole}}{%
+  \fbox{\parbox[c][2.0cm][c]{3.0cm}{\centering\footnotesize\sffamily\color{pfegray}Logo\\ SUP'COM}}}
+\end{minipage}\hfill
+\begin{minipage}[c]{0.34\textwidth}
+  \centering
+  {\sffamily\small\color{pfegray}\universite}
+\end{minipage}\hfill
+\begin{minipage}[c]{0.30\textwidth}
+  \centering
+  \IfFileExists{\logoorg.png}{\includegraphics[height=2.4cm]{\logoorg}}{%
+  \fbox{\parbox[c][2.0cm][c]{3.0cm}{\centering\footnotesize\sffamily\color{pfegray}Logo\\ organisme d'accueil}}}
+\end{minipage}
+
+\vspace{0.7cm}
+{\color{pfeaccent}\rule{\textwidth}{1.2pt}}
+\vspace{0.3cm}
+
+{\sffamily\large \ecole\par}
+\vspace{0.15cm}
+{\sffamily\normalsize \filiere\par}
+
+\vspace{1.0cm}
+{\sffamily\Large\bfseries\color{pfegray} RAPPORT DE PROJET DE FIN D'ÉTUDES\par}
+\vspace{0.25cm}
+{\sffamily\normalsize Présenté en vue de l'obtention du Diplôme National d'Ingénieur\par}
+
+\vspace{0.9cm}
+{\color{pfeblue}\rule{0.75\textwidth}{0.8pt}}\\[0.5cm]
+{\sffamily\Huge\bfseries\color{pfeblue} DevOps Central Platform\par}
+\vspace{0.45cm}
+{\sffamily\large Conception et mise en \oe uvre d'une chaîne DevSecOps\\ et GitOps de bout en bout sur cluster Kubernetes\par}
+\vspace{0.6cm}
+{\color{pfeblue}\rule{0.75\textwidth}{0.8pt}}
+
+\vspace{1.0cm}
+{\sffamily\large Réalisé par\par}
+\vspace{0.15cm}
+{\sffamily\LARGE\bfseries \auteur\par}
+
+\vfill
+
+\begin{minipage}[t]{0.48\textwidth}
+  \raggedright\sffamily\small
+  \textbf{Encadrant académique}\\[2pt] \encadrantacad
+\end{minipage}\hfill
+\begin{minipage}[t]{0.48\textwidth}
+  \raggedleft\sffamily\small
+  \textbf{Encadrant professionnel}\\[2pt] \encadrantpro
+\end{minipage}
+
+\vspace{0.7cm}
+{\sffamily\small\textbf{Membres du jury}\par}
+\vspace{3pt}
+{\sffamily\small
+\begin{tabular}{@{}ll@{}}
+Président & : [Nom, grade] \\
+Rapporteur & : [Nom, grade] \\
+Encadrant & : \encadrantacad \\
+\end{tabular}\par}
+
+\vspace{0.7cm}
+{\color{pfeaccent}\rule{\textwidth}{1.2pt}}\\[0.25cm]
+{\sffamily\normalsize \anneeuniv\par}
+\end{titlepage}
+
+\cleardoublepage
+\pagenumbering{roman}
+
+% ============================================================
+%  Dédicaces
+% ============================================================
+\chapter*{Résumé}
+\addcontentsline{toc}{chapter}{Résumé}
+\markboth{Résumé}{Résumé}
+
+Ce projet de fin d'études porte sur la conception, la réalisation et la validation
+d'une plateforme DevOps complète, nommée \emph{DevOps Central Platform}, couvrant
+l'intégralité du cycle de vie d'une application distribuée : du provisionnement de
+l'infrastructure jusqu'à la supervision en production.
+
+La plateforme repose sur une infrastructure virtualisée libvirt/KVM décrite entièrement
+en Infrastructure as Code avec Terraform, configurée de manière idempotente par Ansible,
+et hébergeant un cluster Kubernetes 1.28 multi-n\oe uds installé par kubeadm avec le
+plugin réseau Calico. La charge applicative est constituée de trois microservices
+Python FastAPI conteneurisés selon un modèle multi-stage durci, déployés via Kustomize
+sur trois environnements distincts (dev, staging, production).
+
+La sécurité est intégrée à chaque étape de la chaîne plutôt qu'ajoutée a posteriori :
+détection de secrets par Gitleaks, analyse de vulnérabilités des images par Trivy,
+audit des dépendances par pip-audit, politiques d'admission conftest et Kyverno,
+NetworkPolicies en \emph{default-deny}, Pod Security Admission en mode \emph{restricted},
+et gestion dynamique des secrets par HashiCorp Vault selon un contrat \emph{fail-closed}.
+L'automatisation du déploiement suit un modèle hybride : une chaîne d'intégration
+continue GitHub Actions en mode \emph{push} pour la construction et la validation, et
+un moteur GitOps ArgoCD en mode \emph{pull} pour la réconciliation continue entre l'état
+déclaré dans Git et l'état réel du cluster.
+
+L'observabilité est assurée par une double chaîne : métriques (Prometheus, AlertManager,
+Grafana) et logs centralisés (Elasticsearch, Filebeat, Logstash, Kibana), avec des
+objectifs de niveau de service (SLO) formalisés en règles d'alerte exécutables.
+Sept scénarios de validation de bout en bout, incluant des scénarios d'incident
+volontairement provoqués, démontrent le comportement réel de la plateforme en
+condition nominale comme en condition dégradée.
+
+\vspace{0.6cm}
+\noindent\textbf{Mots clés :} DevOps, DevSecOps, GitOps, Kubernetes, Terraform, Ansible,
+Infrastructure as Code, conteneurisation, intégration continue, observabilité, SLO,
+gestion des secrets.
+
+\cleardoublepage
+
+% ============================================================
+%  Tables
+% ============================================================
+\tableofcontents
+\clearpage
+
+% ============================================================
+%  Liste des acronymes
+% ============================================================
+\chapter*{Liste des acronymes}
+\addcontentsline{toc}{chapter}{Liste des acronymes}
+\markboth{Liste des acronymes}{Liste des acronymes}
+
+\begin{longtable}{@{}p{3.2cm}p{11.0cm}@{}}
+\toprule
+\textbf{Acronyme} & \textbf{Signification} \\
+\midrule
+\endhead
+API & \emph{Application Programming Interface} \\
+CD & \emph{Continuous Deployment} : déploiement continu \\
+CI & \emph{Continuous Integration} : intégration continue \\
+CNI & \emph{Container Network Interface} \\
+CRD & \emph{Custom Resource Definition} \\
+CRI & \emph{Container Runtime Interface} \\
+CVE & \emph{Common Vulnerabilities and Exposures} \\
+DNS & \emph{Domain Name System} \\
+ELK & \emph{Elasticsearch, Logstash, Kibana} \\
+GHCR & \emph{GitHub Container Registry} \\
+HCL & \emph{HashiCorp Configuration Language} \\
+HPA & \emph{Horizontal Pod Autoscaler} \\
+IaC & \emph{Infrastructure as Code} \\
+JWT & \emph{JSON Web Token} \\
+KVM & \emph{Kernel-based Virtual Machine} \\
+KSM & \emph{kube-state-metrics} \\
+NAT & \emph{Network Address Translation} \\
+OCI & \emph{Open Container Initiative} \\
+OIDC & \emph{OpenID Connect} \\
+OOM & \emph{Out Of Memory} \\
+PDB & \emph{Pod Disruption Budget} \\
+PSA & \emph{Pod Security Admission} \\
+RBAC & \emph{Role-Based Access Control} \\
+SLA & \emph{Service Level Agreement} \\
+SLI & \emph{Service Level Indicator} \\
+SLO & \emph{Service Level Objective} \\
+SSH & \emph{Secure Shell} \\
+TLS & \emph{Transport Layer Security} \\
+VM & \emph{Virtual Machine} : machine virtuelle \\
+YAML & \emph{YAML Ain't Markup Language} \\
+\bottomrule
+\end{longtable}
+
+\cleardoublepage
+\pagenumbering{arabic}
+
+% ============================================================
+%  Introduction générale
+% ============================================================
+\chapter*{Introduction générale}
+\addcontentsline{toc}{chapter}{Introduction générale}
+\markboth{Introduction générale}{Introduction générale}
+
+\section*{Contexte et problématique}
+
+Le mouvement DevOps désigne un ensemble de pratiques d'ingénierie visant à raccourcir le cycle entre une modification de code et sa mise à disposition fiable aux utilisateurs, en automatisant systématiquement ce qui peut l'être et en rendant observable ce qui ne peut pas l'être. Deux évolutions l'accompagnent : le \textbf{DevSecOps}, qui déplace les contrôles de sécurité vers l'amont de la chaîne, et le \textbf{GitOps}, qui fait du dépôt Git la source unique de vérité de l'état désiré.
+
+La question à laquelle ce travail répond : \emph{comment une équipe d'ingénierie fait-elle fonctionner une application en production de manière reproductible, fiable, sécurisée et observable, sans intervention manuelle ?}
+
+\section*{Objectifs du projet}
+
+Construire une plateforme complète apportant une réponse concrète à chacune de ces questions, puis en démontrer le fonctionnement par des scénarios exécutables : décrire l'infrastructure en code versionné, automatiser la configuration de façon idempotente, conteneuriser une charge applicative selon les bonnes pratiques, intégrer une chaîne de contrôles de sécurité bloquante, déployer en GitOps avec réconciliation continue, instrumenter métriques et logs avec des SLO vérifiables, et valider l'ensemble par des scénarios de bout en bout incluant des défaillances provoquées.
+
+Parti pris méthodologique : \textbf{documenter les échecs autant que les succès} : plusieurs décisions techniques présentées dans ce rapport proviennent d'incidents réellement rencontrés pendant la réalisation, chaque règle d'alerte portant une étiquette renvoyant au post-mortem correspondant. L'ensemble du contenu technique a été établi à partir de la lecture directe du code source effectivement actif dans le dépôt.
+
+\cleardoublepage
+
+\chapter[Contexte général et architecture]{Contexte général, périmètre et architecture de la plateforme}
+% ============================================================
+
+% ------------------------------------------------------------
+\section{Présentation générale du projet}
+% ------------------------------------------------------------
+
+\textbf{DevOps Central Platform} est une plateforme d'infrastructure DevOps de bout en bout construite autour de trois microservices \texttt{FastAPI} (\emph{Users}, \emph{Products}, \emph{Orders}). L'application est un support volontairement simple : l'objectif réel du projet est de maîtriser la chaîne DevOps moderne telle que pratiquée en entreprise. Le projet tourne sur un \textbf{homelab libvirt/KVM}, sans service cloud facturé, tout en restant structurellement proche d'une production réelle.
+
+Chaque brique du rapport apporte un élément de réponse à la question fondatrice : \emph{reproductible} $\rightarrow$ Terraform, cloud-init, Ansible ; \emph{fiable} $\rightarrow$ Kubernetes, probes, HPA, PDB ; \emph{sécurisée} $\rightarrow$ Gitleaks, Trivy, pip-audit, Vault, NetworkPolicies, PSA restricted ; \emph{observable} $\rightarrow$ Prometheus, AlertManager, Grafana, ELK ; \emph{sans intervention manuelle} $\rightarrow$ GitHub Actions + ArgoCD.
+
+% ------------------------------------------------------------
+\section{Méthodologie et périmètre de l'analyse}
+% ------------------------------------------------------------
+
+Toutes les informations proviennent de la lecture directe du code source actif ; le dossier \texttt{docs/} a été \textbf{volontairement exclu} car ses spécifications sont obsolètes par rapport au code : le code est la seule source de vérité. Chaque figure de ce rapport correspond à une vérification exécutable sur la plateforme.
+
+% ------------------------------------------------------------
+% ------------------------------------------------------------
+\section{Vue d'ensemble de l'architecture}
+% ------------------------------------------------------------
+
+\subsection{Les six dimensions de la plateforme}
+
+\begin{enumerate}[itemsep=2pt]
+  \item \textbf{Infrastructure as Code} : création automatisée et reproductible des serveurs (Terraform) ;
+  \item \textbf{Configuration automatisée} : installation et paramétrage des serveurs et du cluster (cloud-init, Ansible) ;
+  \item \textbf{Conteneurisation \& orchestration} : empaquetage et exécution orchestrée (Docker, containerd, Kubernetes, Calico) ;
+  \item \textbf{Sécurité intégrée (DevSecOps)} : scan du code, des dépendances et des images, gestion dynamique des secrets, politiques d'admission (Gitleaks, Trivy, pip-audit, Vault, conftest, Kyverno) ;
+  \item \textbf{Déploiement automatisé (GitOps)} : synchronisation continue Git $\leftrightarrow$ cluster (GitHub Actions, ArgoCD) ;
+  \item \textbf{Observabilité complète} : métriques et logs centralisés, alerting SLO (Prometheus, AlertManager, Grafana, ELK).
+\end{enumerate}
+
+\subsection{Flux de bout en bout}
+
+\begin{center}
+\resizebox{\textwidth}{!}{%
+\begin{tikzpicture}[
+  node distance=0.75cm and 0.9cm,
+  box/.style={draw, rounded corners, fill=blue!8, minimum width=5.6cm, minimum height=0.8cm, align=center, font=\small},
+  side/.style={draw, rounded corners, fill=orange!15, minimum width=3.9cm, minimum height=0.75cm, align=center, font=\small},
+  arr/.style={-{Latex}, thick}
+]
+  \node[box] (tf) {Terraform : 3 VMs libvirt/KVM (master + 2 workers)};
+  \node[box, below=of tf] (an) {Ansible : Docker + containerd + Kubernetes 1.28 + Calico};
+  \node[box, below=of an] (ci) {GitHub Actions : lint $\rightarrow$ Gitleaks $\rightarrow$ tests $\rightarrow$ build $\rightarrow$ Trivy};
+  \node[box, below=of ci] (ghcr) {Images poussées vers GHCR (tags branche + commit-\textit{sha})};
+  \node[box, below=of ghcr] (argo) {ArgoCD détecte le commit $\rightarrow$ synchronise le cluster};
+  \node[side, below left=0.85cm and -1.6cm of argo] (vault) {Secrets $\leftarrow$ Vault (hvac, fail-closed)};
+  \node[side, below=0.85cm of argo] (prom) {Métriques $\rightarrow$ Prometheus (15\,s) $\rightarrow$ Grafana};
+  \node[side, below right=0.85cm and -1.6cm of argo] (elk) {Logs $\rightarrow$ Filebeat $\rightarrow$ Elasticsearch $\rightarrow$ Kibana};
+
+  \draw[arr] (tf) -- (an);
+  \draw[arr] (an) -- (ci);
+  \draw[arr] (ci) -- (ghcr);
+  \draw[arr] (ghcr) -- (argo);
+  \draw[arr] (argo.south) -- ++(0,-0.25) -| (vault.north);
+  \draw[arr] (argo.south) -- (prom.north);
+  \draw[arr] (argo.south) -- ++(0,-0.25) -| (elk.north);
+\end{tikzpicture}%
+}
+\end{center}
+
+\subsection{Inventaire rapide des technologies}
+Le tableau final (\S\ref{sec:recap}) recense \textbf{plus de quarante outils}, chacun détaillé dans une section dédiée : hyperviseur, IaC, configuration, runtime conteneurs, CNI, framework applicatif, bibliothèques Python, gestionnaire de secrets, registre, six outils de scan/qualité, moteur GitOps, quatre composants de monitoring et quatre composants ELK.
+
+\rfig{Schéma d'architecture général redessiné ou photographié depuis un tableau\dots}{Schéma d'architecture général redessiné ou photographié depuis un tableau blanc / outil de diagramme : les 3 VMs, le cluster K8s, les namespaces (devops-platform, monitoring, vault, argocd), les flux CI et GitOps.}{images/architecture-globale}{architecture-globale}
+
+% ------------------------------------------------------------
+\section{Fiches d'identité des outils majeurs}
+% ------------------------------------------------------------
+
+\begin{center}\captionof{table}{Fiches d'identité des outils majeurs --- vue synthétique}\label{tab:ch-fiches-d-identite-synthese}\end{center}
+\begin{longtable}{@{}p{2.6cm}p{3.6cm}p{7.4cm}@{}}
+\toprule
+\textbf{Outil} & \textbf{Version} & \textbf{Succès mesuré par} \\
+\midrule
+\endhead
+Terraform & \textasciitilde 1.5 (CI 1.5.7), libvirt 0.9.8 & 3 domains Ready, inventaire régénéré sans divergence \\
+Ansible & core + community.general 8.0.0 & PLAY RECAP rc=0, nœuds Ready, dpkg hold actifs \\
+Docker / containerd & multi-stage non-root & images $<$150 Mo healthy, SystemdCgroup=true partout \\
+Kubernetes + Calico & 1.28 épinglée, Calico v3.26.1 & nodes Ready, netpol effectives, HPA fonctionnel \\
+Vault + hvac & 1.15.2 (dev mode), hvac 2.1.0 & readyz 200, rotation sans fuite argv/disk/git \\
+GitHub Actions + ArgoCD & actions v4/v5, trivy v0.24.0, ArgoCD v3.5.1 & runs verts, Applications Synced+Healthy \\
+Stack observabilité & Prometheus 0.74/v2.51, Grafana 11.1, ELK 8.14 & targets UP, alertes SLO armées, logs Kibana \\
+\bottomrule
+\end{longtable}
+
+\begin{center}\captionof{table}{Inventaire des namespaces}\label{tab:ch-fiches-d-identite-des-outils-majeurs-inventaire-}\end{center}
+\begin{longtable}{@{}p{3.4cm}p{2.6cm}p{8.0cm}@{}}
+\toprule
+\textbf{Namespace} & \textbf{PSA} & \textbf{Contenu} \\
+\midrule
+\endhead
+devops-platform & restricted & 3 services (SA dédiés, HPA, PDB, netpol), quotas, Secret vault-root-token \\
+monitoring & restricted & Prometheus, AlertManager, Grafana+sidecar, ES, Filebeat DS, Logstash, Kibana, KSM, ServiceMonitors, rules SLO, 4 dashboards CM \\
+vault & baseline & Vault 1.15.2 dev-mode + Job setup (IPC\_LOCK requis) \\
+argocd & --- & ArgoCD v3.5.1 complet + Applications \\
+kube-system / calico-system & --- & composants cluster (hors périmètre applicatif) \\
+\bottomrule
+\end{longtable}
+
+% ------------------------------------------------------------
+% ------------------------------------------------------------
+\section{Topologie réseau et dimensionnement}
+% ------------------------------------------------------------
+
+\subsection{Réseau virtuel}
+Réseau libvirt dédié créé par Terraform :
+
+\begin{itemize}[itemsep=1pt]
+  \item nom : \texttt{devops-platform-net}, domaine DNS local \texttt{devops.local} ;
+  \item mode : isolé avec NAT vers l'extérieur ;
+  \item DHCP : de \texttt{192.168.56.100} à \texttt{192.168.56.200} (les nœuds eux-mêmes sont en IP statiques hors de cette plage) ;
+  \item sous-réseau : \texttt{192.168.56.0/24}, validé par Terraform (CIDR valide, plage RFC1918 obligatoire) ;
+  \item relais DNS vers \texttt{1.1.1.1} et \texttt{8.8.8.8}.
+\end{itemize}
+
+Plan d'adressage des nœuds :
+
+\begin{table}[h!]
+\centering
+\begin{tabular}{@{}llll@{}}
+\toprule
+\textbf{Nœud} & \textbf{IP statique} & \textbf{Rôle cluster} & \textbf{Dimensionnement} \\
+\midrule
+master-01 & 192.168.56.10 & control-plane & 2 vCPU / 4 Go / 20 Go qcow2 \\
+worker-01 & 192.168.56.11 & worker & 2 vCPU / 4 Go / 20 Go qcow2 \\
+worker-02 & 192.168.56.12 & worker & 2 vCPU / 4 Go / 20 Go qcow2 \\
+\bottomrule
+\end{tabular}
+\caption{Topologie par défaut (worker\_count paramétrable de 1 à 32)}
+\end{table}
+
+Les variables Terraform fixent \texttt{vm\_memory\_mb = 4096} avec un commentaire explicite : à 2048 Mo, la pile complète (ELK + ArgoCD + supervision) fait basculer le kubelet en \texttt{NodeStatusUnknown} sous pression mémoire : décision \emph{justifiée par incident}. Trois plans d'adressage coexistent sans conflit : réseau des VMs (\texttt{192.168.56.0/24}), CIDR pods (\texttt{192.168.0.0/16}), CIDR services (\texttt{10.96.0.0/12}).
+
+% ============================================================
+\chapter[Infrastructure as Code et configuration]{Infrastructure as Code et configuration automatisée}
+% ============================================================
+
+% ------------------------------------------------------------
+\section{Libvirt/KVM et cloud-init}
+% ------------------------------------------------------------
+
+KVM (hyperviseur noyau Linux) + libvirt (API de management standard) fournissent trois vraies VM Ubuntu Server 22.04 : type q35, disques qcow2 clonés (copie-on-write) depuis une image de base, carte réseau virtio, console série + VNC localhost. Le provider Terraform \texttt{dmacvicar/libvirt} pilote le tout déclarativement.
+
+\textbf{cloud-init} (standard de facto du premier démarrage) applique dès le boot : \texttt{ssh\_pwauth: false}, \texttt{disable\_root: true} (clé SSH uniquement, aucun mot de passe), \texttt{fail2ban} installé, IP statique par nœud. Sudo est \textbf{temporairement large} (\texttt{NOPASSWD:ALL}) le temps que les rôles Ansible installent des paquets (une règle restreinte dès le boot ferait échouer la première tâche du playbook. Le rôle Ansible \texttt{harden\_sudo}, joué explicitement en fin de course (\texttt{--tags harden}, non appliqué par défaut), repose ensuite une politique \texttt{NOPASSWD} restreinte à une liste blanche (kubeadm, kubelet, quelques \texttt{systemctl restart})) \texttt{NOPASSWD} et non \texttt{PASSWD}, car aucun mot de passe n'existe pour ce compte : l'exiger verrouillerait définitivement le nœud hors de portée SSH.
+
+\begin{whybox}
+KVM/libvirt offre de \emph{vraies} VM Linux (kernel réel, systemd, SSH) sans coût cloud. Appliquer le durcissement dès le premier boot, avant même qu'Ansible n'intervienne, garantit qu'aucune VM ne passe un seul instant dans un état faible.
+\end{whybox}
+
+% ------------------------------------------------------------
+\section{Terraform --- Infrastructure as Code}
+% ------------------------------------------------------------
+
+Terraform (HashiCorp) décrit l'infrastructure de manière déclarative en HCL : état voulu, plan prévisualisé, état détectant la dérive. Providers verrouillés : \texttt{dmacvicar/libvirt} \textasciitilde> 0.9 (résolu 0.9.8), \texttt{hashicorp/local} \textasciitilde> 2.5, \texttt{hashicorp/null} \textasciitilde> 3.2 (correctif de capacité de volume, voir ci-dessous).
+
+Ressources principales : \texttt{libvirt\_network.platform} (NAT + DHCP), \texttt{libvirt\_volume.node} (par nœud, \texttt{for\_each}), \texttt{libvirt\_cloudinit\_disk.init}, \texttt{libvirt\_domain.node} (VM q35, virtio), \texttt{local\_file.ansible\_inventory} (génère l'inventaire Ansible : Terraform reste seule source de vérité, il ne peut jamais diverger de l'infrastructure réelle). Variables principales : \texttt{worker\_count} 2 (soit 3 nœuds), \texttt{vm\_vcpu} 2, \texttt{vm\_memory\_mb} 4096, \texttt{disk\_size\_gb} 20.
+
+\textbf{Bug de provider corrigé} : \texttt{libvirt\_volume} créé par clonage d'URL ignore la capacité déclarée et hérite de la taille de l'image source. Corrigé par un \texttt{null\_resource.fix\_volume\_capacity} (\texttt{local-exec virsh vol-resize}) explicitement ordonné avant le domaine (\texttt{depends\_on}) : validé sur plusieurs recréations complètes de VMs.
+
+Backend \texttt{local} actif (\texttt{terraform.tfstate}, gitignored) ; le contrat de production (S3 + verrous DynamoDB) est prêt en commentaire, motivé par le risque d'applies concurrents corrompant un état non verrouillé.
+
+\begin{whybox}
+Terraform est le standard industriel de l'IaC : l'épinglage \textasciitilde> 1.5 privilégie la reproductibilité (la CI rejoue exactement 1.5.7) plutôt que l'actualité.
+\end{whybox}
+
+\rfig{Terraform plan : create des domains/volumes/cloudinit disks avec le résumé\dots}{\texttt{terraform plan} : create des domains/volumes/cloudinit disks avec le résumé final « Plan: N to add, 0 to change, 0 to destroy ».}{images/terraform-plan}{terraform-plan}
+
+% ------------------------------------------------------------
+% ------------------------------------------------------------
+\section{Ansible --- configuration automatisée}
+% ------------------------------------------------------------
+
+Ansible configure les VMs par SSH sans agent, de façon idempotente, en rôles réutilisables. Cinq plays successifs dans \texttt{playbook.yml} : \texttt{docker}, \texttt{k8s\_common}, \texttt{k8s\_master} (hosts masters), \texttt{k8s\_worker} (hosts workers, \texttt{serial: 1} : jointure séquentielle), et \texttt{k8s\_reset} (destructif, double opt-in : tag \texttt{never} \emph{et} \texttt{-e reset\_confirmed=true}). Valeurs cluster centrales : \texttt{k8s\_version: "1.28"}, Calico v3.26.1, pod CIDR 192.168.0.0/16, service CIDR 10.96.0.0/12.
+
+\begin{itemize}[itemsep=1pt]
+  \item \textbf{docker} : dépôt officiel, \texttt{docker-ce}/\texttt{containerd.io}, bascule \texttt{SystemdCgroup = true} dans \texttt{/etc/containerd/config.toml} (obligatoire pour kubeadm) ;
+  \item \textbf{k8s\_common} : swap désactivé, modules \texttt{overlay}/\texttt{br\_netfilter}, sysctls forwarding, kubelet/kubeadm/kubectl épinglés \texttt{1.28.*} \textbf{et} verrouillés par \texttt{dpkg hold} ;
+  \item \textbf{k8s\_master} : \texttt{kubeadm init} (addons coredns/kube-proxy différés), Calico via l'opérateur Tigera en \emph{fail-closed} (cluster jamais déclaré prêt tant que Calico n'est pas Available), join command généré avec \texttt{no\_log: true} et stocké en 0600 ;
+  \item \textbf{k8s\_worker} : jointure via module \texttt{command:} (pas \texttt{shell:}, anti-injection), idempotente (\texttt{creates: /etc/kubernetes/kubelet.conf}).
+\end{itemize}
+
+\begin{whybox}
+Ansible est agentless : seul SSH suffit, cohérent avec des VMs recréables à volonté par Terraform. Le double verrou version épinglée + \texttt{dpkg hold} interdit toute dérive de version au fil des upgrades système ; le \texttt{no\_log} sur le join token et le fail-closed Calico traduisent une pratique acquise par incidents réels.
+\end{whybox}
+
+\rfig{Kubectl get nodes -o wide juste après le run : 3 nœuds Ready v1.28.x}{\texttt{kubectl get nodes -o wide} juste après le run : 3 nœuds Ready v1.28.x.}{images/ansible-nodes-ready}{ansible-nodes-ready}
+
+\clearpage
+% ============================================================
+% ============================================================
+\chapter[Conteneurisation et orchestration]{Conteneurisation des services et orchestration Kubernetes}
+% ============================================================
+
+% ------------------------------------------------------------
+\section{Docker --- construction des images}
+% ------------------------------------------------------------
+
+Docker sert exclusivement à \textbf{construire} les images OCI ; l'exécution en cluster est assurée par containerd. Les trois services partagent le même modèle de Dockerfile \textbf{multi-stage durci} : stage \texttt{builder} installe les dépendances (\texttt{pip install ./shared}) puis le stage final ne copie que les site-packages et le code, sans pip ni caches ni wheels.
+
+\begin{itemize}[itemsep=1pt]
+  \item \textbf{non-root} : utilisateur \texttt{appuser} dédié, aligné avec \texttt{runAsNonRoot} K8s ;
+  \item \textbf{HEALTHCHECK} natif sur \texttt{/livez}, défense en profondeur complétée par les probes K8s ;
+  \item \textbf{labels OCI} (source, titre, licence) pour la traçabilité ;
+  \item contexte de build = \texttt{app/} (jamais le dossier du service seul) afin que \texttt{shared/} soit importable comme paquet racine ; \texttt{.dockerignore} strict exclut \texttt{.git}, tfstate, \texttt{k8s/}, \texttt{terraform/}.
+\end{itemize}
+
+\begin{whybox}
+Le multi-stage est le standard des images production : il sépare compilation et exécution. Combiné à non-root + HEALTHCHECK + labels OCI, chaque image est conforme aux exigences des registres modernes et directement scannable par Trivy sans bruit parasite.
+\end{whybox}
+
+\rfig{Docker build d'un service : couches builder puis export final visibles}{\texttt{docker build} d'un service : couches builder puis export final visibles.}{images/docker-build}{docker-build}
+
+% ------------------------------------------------------------
+% ------------------------------------------------------------
+\section{containerd et Kubernetes 1.28 --- socle du cluster}
+% ------------------------------------------------------------
+
+\textbf{containerd} (runtime CRI, promu CNCF, extrait de Docker) exécute tous les Pods de la plateforme : pull d'images GHCR, exécution via runc. Sa configuration est corrigée pour activer \texttt{SystemdCgroup = true}, alignant containerd sur le kubelet 1.28 : sans cela, un dual-cgrouping cgroupfs/systemd provoque des OOMKills fantômes et évictions injustifiées.
+
+\textbf{kubeadm} amorce le control-plane avec des paramètres explicites (adresse API, CIDR pods/services, socket CRI). Les phases addon (CoreDNS, kube-proxy) sont volontairement \textbf{différées} après coup pour éviter un CrashLoop de CoreDNS avant que le CNI ne fournisse le réseau. Le réseau des pods est assuré par \textbf{Calico v3.26.1} (opérateur Tigera) qui applique l'intégralité des NetworkPolicies ingress/egress : toute la stratégie réseau (default-deny + whitelist) en dépend. L'installation est gardée stricte : un demi-cluster ne se déclare jamais prêt.
+
+\begin{whybox}
+Depuis la suppression de dockershim (K8s 1.24), containerd est le chemin recommandé par kubeadm. Calico combine performance de routage L3 et le support NetworkPolicy le plus complet de l'écosystème : un CNI sans egress policies aurait invalidé une section entière du modèle de sécurité.
+\end{whybox}
+
+\rfig{Kubectl get nodes -o wide : INTERNAL-IP 192.168.56.10--12, OS Ubuntu 22.04\dots}{\texttt{kubectl get nodes -o wide} : INTERNAL-IP 192.168.56.10--12, OS Ubuntu 22.04, containerd://x.y.z.}{images/k8s-nodes-wide}{k8s-nodes-wide}
+
+Pour chacun des trois services, le bundle Kustomize produit environ \textbf{30 objets} (Deployment, Service, ServiceMonitor, HPA, PDB, ServiceAccount, NetworkPolicies partagées, Secret consommé) : chaque ligne synchronisée par ArgoCD.
+
+% ------------------------------------------------------------
+% ------------------------------------------------------------
+\section{Manifests applicatifs --- Kustomize}
+% ------------------------------------------------------------
+
+Kustomize personnalise des bundles YAML sans templating : un \texttt{base} décrit l'application générique, des overlays (\texttt{dev}/\texttt{staging}/\texttt{prod}) patchent les écarts par environnement. Natif dans kubectl et première classe citoyenne chez ArgoCD.
+
+\begin{itemize}[itemsep=1pt]
+  \item \textbf{Namespace durci} : Pod Security Admission \texttt{restricted}, \texttt{LimitRange} (défauts 250m/256Mi, max 4 CPU/2Gi), \texttt{ResourceQuota} (4 CPU/4Gi requests, 20 pods max) ;
+  \item \textbf{Pods} : \texttt{runAsNonRoot}, \texttt{readOnlyRootFilesystem}, \texttt{capabilities: drop ALL}, \texttt{startupProbe}/\texttt{livenessProbe} sur \texttt{/livez}, \texttt{readinessProbe} sur \texttt{/readyz} : un pod vivant mais privé de Vault sort du Service plutôt que de servir dégradé ;
+  \item \textbf{Autoscaling} : HPA v2 min 2 / max 5, cibles CPU 70\,\%/mémoire 80\,\%, scale-up rapide (30\,s) / scale-down prudent (300\,s, anti-flapping) ; PDB minAvailable 1 (2 en prod) ;
+  \item \textbf{RBAC} : ServiceAccounts dédiés, \texttt{automountServiceAccountToken: false} (aucun appel API K8s nécessaire) ;
+  \item \textbf{NetworkPolicies} : default-deny + liste blanche (egress Vault, egress DNS, ingress Prometheus, intra-namespace) ;
+  \item \textbf{Overlays} : dev réplicas=1, staging namespace dédié, prod réplicas=3/PDB=2/images épinglées par digest.
+\end{itemize}
+
+\begin{whybox}
+Sans default-deny, toute compromission d'un Pod ouvre latéralement tout le cluster ; le modèle liste blanche exprime exactement les flux métier légitimes et rien d'autre, appliqué au niveau noyau par Calico. Kustomize patche sans langage de template : chaque environnement ne déclare que ses écarts.
+\end{whybox}
+
+\rfig{Preuve default-deny : un Pod sans label ne peut joindre users-service, un Pod\dots}{Preuve default-deny : un Pod sans label ne peut joindre users-service, un Pod du namespace oui (\texttt{kubectl run} test).}{images/k8s-netpol-deny-proof}{k8s-netpol-deny-proof}
+
+\rfig{Kubectl get hpa : targets CPU/mémoire, min/max, réplicas courants}{\texttt{kubectl get hpa} : targets CPU/mémoire, min/max, réplicas courants.}{images/k8s-hpa-status}{k8s-hpa-status}
+
+\clearpage
+% ============================================================
+% ============================================================
+\chapter[Architecture applicative et secrets]{Architecture applicative et gestion dynamique des secrets}
+% ============================================================
+
+% ------------------------------------------------------------
+\section{FastAPI + Uvicorn --- le socle applicatif}
+% ------------------------------------------------------------
+
+Trois microservices Python FastAPI 0.139.0 / Uvicorn (structure identique : \texttt{main.py}, \texttt{requirements.txt}, \texttt{Dockerfile}, port 8000), chacun avec ses propres secrets Vault (ex. \texttt{users-service} : \texttt{DATABASE\_URL}, \texttt{JWT\_SECRET\_KEY}). Endpoints communs : \texttt{/} (carte d'identité), \texttt{/livez}, \texttt{/readyz}, \texttt{/metrics}.
+
+Points d'analyse du code réel :
+\begin{itemize}[itemsep=2pt]
+  \item \textbf{chargement au démarrage} : les secrets sont résolus à l'import du module : un problème Vault devient un crash immédiat et explicite, pas une erreur 500 tardive ;
+  \item \textbf{fail-closed en prod, repli assumé en dev} : en dev la base tombe sur sqlite mémoire et la clé JWT est éphémère (\texttt{secrets.token\_hex(32)}), chaque repli loggé en warning avec événement structuré ; en production, \texttt{SystemExit} si un secret manque ;
+  \item \textbf{séparation livez/readyz} : la readiness dépend explicitement de Vault (503 sinon) : le pod sort du Service au lieu de servir dégradé.
+\end{itemize}
+
+\begin{whybox}
+FastAPI combine validation Pydantic, OpenAPI auto, typage moderne et performances ASGI. Trois services quasi-identiques mettent en évidence ce qui compte : la plateforme transverse (CI, secrets, monitoring) identique pour tous.
+\end{whybox}
+
+\rfig{Kubectl port-forward svc/users-service 8080:80 puis navigateur sur /docs\dots}{\texttt{kubectl port-forward svc/users-service 8080:80} puis navigateur sur \texttt{/docs} : Swagger UI OpenAPI automatique.}{images/fastapi-swagger}{fastapi-swagger}
+
+% ------------------------------------------------------------
+\section{Bibliothèque partagée shared/ et instrumentation}
+% ------------------------------------------------------------
+
+Paquet Python installé dans chaque image (\texttt{pip install ./shared}) : garantit que les trois services partagent exactement la même politique de secrets, le même format de logs et la même configuration. Dépendances épinglées : \texttt{hvac==2.1.0} (client Vault KV-v2), \texttt{prometheus-fastapi-instrumentator==6.1.0}, \texttt{python-json-logger==2.0.7}.
+
+\texttt{vault\_client.py} implémente le contrat fail-closed : ordre de résolution du token (Vault Agent Injector $\to$ \texttt{VAULT\_TOKEN} $\to$ \texttt{VAULT\_DEV\_ROOT\_TOKEN\_ID}), lecture du chemin KV-v2 \texttt{secret/data/devops-platform/<SERVICE\_NAME>}, cache processus (\texttt{lru\_cache}), et surtout : \textbf{tout repli (env, défaut) est loggé en warning} : un fallback silencieux est impossible, l'absence de secret et d'override lève \texttt{SecretUnavailable}. \texttt{log\_config.py} structure les logs en JSON (stdout) ou format humain en dev.
+
+Chaque service expose \texttt{/metrics} via une configuration commune de l'Instrumentator (codes groupés, routes non déclarées ignorées, \texttt{/livez}/\texttt{/readyz}/\texttt{/metrics} exclus) : ces métriques RED alimentent directement les règles SLO (voir Observabilité).
+
+\begin{whybox}
+Centraliser secrets/logging/config dans un paquet partagé garantit un comportement identique des trois services et un correctif unique. hvac est le client Vault Python de référence ; une ligne d'Instrumentator donne les métriques RED normalisées là où un câblage manuel aurait dupliqué du middleware fragile dans les trois services.
+\end{whybox}
+
+% ------------------------------------------------------------
+% ------------------------------------------------------------
+\section{HashiCorp Vault --- gestion dynamique des secrets}
+% ------------------------------------------------------------
+
+HashiCorp Vault \textbf{1.15.2} centralise les secrets : stockage chiffré, distribution contrôlée, rotation, révocation, audit. Déploiement volontairement en \textbf{mode dev} (un réplica, stockage mémoire, auto-unseal) : namespace au profil « baseline » plutôt que « restricted » car Vault requiert la capacité noyau \texttt{IPC\_LOCK}. Ce choix de lab démontre dès aujourd'hui toute la mécanique applicative (KV-v2, politiques, auth Kubernetes, rotation) sans porter la complexité de production ; le chemin de montée en gamme (raft répliqué, TLS interne, unseal Shamir, agent injector) est tracé en feuille de route.
+
+Un Job d'amorçage (\texttt{vault-setup}) monte le moteur KV-v2, active l'auth Kubernetes, applique une politique par service en \textbf{moindre privilège} : \texttt{read} sur la donnée, \texttt{read+list} sur les métadonnées : jamais de \texttt{delete} ni \texttt{write} pour l'application (la suppression reste opérateur-only). Le token root est distribué hors bande par un script qui génère une valeur aléatoire, la passe \textbf{par stdin} (jamais en argv ni sur disque) et permet une rotation idempotente.
+
+\begin{whybox}
+Vault résout le vrai problème des secrets : distribution dynamique, auditabilité, révocation, TTL courts : là où les Secrets Kubernetes seuls sont du base64 non chiffré. Le fail-closed applicatif transforme « Vault indisponible » en incident visible dès le readiness probe plutôt qu'en fuite silencieuse.
+\end{whybox}
+
+\rfig{Kubectl get pods -n vault + vault status exec dans le pod : initialized true\dots}{\texttt{kubectl get pods -n vault} + \texttt{vault status} exec dans le pod : initialized true, sealed false.}{images/vault-status}{vault-status}
+
+\clearpage
+% ============================================================
+% ============================================================
+\chapter[Intégration continue et DevSecOps]{Chaîne d'intégration continue et sécurité intégrée (DevSecOps)}
+% ============================================================
+
+% ------------------------------------------------------------
+\section{GitHub Actions --- pipeline CI/CD}
+% ------------------------------------------------------------
+
+Workflow unique \texttt{.github/workflows/ci-cd.yml} d\'eclench\'e sur push (filtr\'e par chemins), pull\_request, cron nocturne (drift CVE) et \texttt{workflow\_dispatch} (seule porte d'entr\'ee du deploy production). Concurrency par ref (\texttt{cancel-in-progress}), permissions minimales par job.
+
+\begin{lstlisting}[caption={Ordre et d\'ependances des jobs}]
+lint ----+--> test --> build --> trivy-scan --+--> deploy (manuel)
+         |                                   |
+gitleaks-+--> terraform-validate -------------+
+load-test (schedule uniquement, independant)
+\end{lstlisting}
+
+\begin{itemize}[itemsep=1pt]
+  \item \textbf{lint} : ruff 0.1.9, yamllint 1.33.0, \texttt{terraform fmt -check}, kubeconform v0.6.4 (\texttt{-strict}, Kubernetes 1.28.0), conftest en audit ;
+  \item \textbf{test} : pip-audit \texttt{--strict} sur les 4 requirements, pytest, import r\'eel de chaque \texttt{main.py}, builds Docker de fum\'ee ;
+  \item \textbf{build} : matrice des 3 services, buildx + cache GHA, tags branche/commit-sha/latest, attestations provenance+SBOM, image \'epingl\'ee par digest ;
+  \item \textbf{trivy-scan} : SARIF publi\'e (Security tab), gate bloquant CRITICAL/HIGH (exit-code 1), SBOM SPDX en artefact ;
+  \item \textbf{deploy} (manuel, environment production) : kustomize edit set image par digest, preflight kubeconform, application server-side, attente rollouts 120\,s, smoke-test \texttt{/metrics}.
+\end{itemize}
+
+\begin{whybox}
+GitHub Actions vit l\`a o\`u vit le code : zéro infrastructure CI \`a maintenir, matrice native, marketplace riche. Les tags immuables branche+sha et l'absence de \texttt{:latest} mutable hors branche par d\'efaut rendent chaque d\'eploiement retra\c{c}able jusqu'au commit exact. Le deploy n'est jamais automatique : l'humain reste dans la boucle pour la prod.
+\end{whybox}
+
+\rfig{Vue graphe d'un run : jobs\dots}{Vue graphe d'un run : jobs lint/gitleaks/test/build/trivy-scan/terraform-validate et leurs d\'ependances.}{images/ci-graph}{ci-graph}
+
+% ------------------------------------------------------------
+\section{Gitleaks --- d\'etection de secrets}
+% ------------------------------------------------------------
+
+Gitleaks scanne l'historique Git et le working tree \`a la recherche de motifs de secrets (cl\'es API, tokens, priv\'es). Double enforcement : hook pre-commit (gitleaks v8.18.0) avant chaque push, et job CI bloquant sur l'historique complet (\texttt{fetch-depth: 0}). Configuration \texttt{.gitleaks.toml} : r\`egles par d\'efaut \'etendues + allowlist resserr\'ee (chemins \texttt{terraform.tfstate}, placeholders document\'es uniquement : l'ancienne allowlist trop large, type \texttt{.*\.md}, a \'et\'e retir\'ee).
+
+\begin{whybox}
+La fuite de secret la plus fr\'equente reste le commit accidentel. Le double enforcement (pre-commit + CI sur toute l'historique) couvre les deux fen\^etres.
+\end{whybox}
+
+\rfig{Test positif contrôlé : commit d'un faux token AWS puis run gitleaks le\dots}{Test positif contrôlé : commit d'un faux token AWS puis run gitleaks le détectant (puis revert).}{images/gitleaks-detection}{gitleaks-detection}
+
+% ------------------------------------------------------------
+% ------------------------------------------------------------
+\section{Trivy, pip-audit et pre-commit}
+% ------------------------------------------------------------
+
+\textbf{Trivy} (Aqua Security, scanner unifié CNCF) fait trois passes par image : SARIF vers l'onglet Security GitHub, gate bloquant CRITICAL/HIGH (\texttt{exit-code 1}, \texttt{ignore-unfixed}), SBOM SPDX archivé 30 jours : les mêmes seuils sont rejoués localement par \texttt{validate-platform.sh} et \texttt{validate-security.sh}. \textbf{pip-audit} (auditeur officiel PyPA) tourne en mode \texttt{--strict} sur les quatre requirements ; le job nocturne le rejoue pour détecter le drift supply-chain (une CVE publiée après merge fait échouer le run de 3h00).
+
+\textbf{pre-commit} exécute localement les mêmes outils que la CI (onze hooks : ruff, yamllint, gitleaks v8.18.0, terraform\_fmt/validate, detect-private-key\ldots), éliminant le va-et-vient « push $\to$ échec CI $\to$ fix ».
+
+\begin{whybox}
+Trivy couvre en un outil ce qui demanderait plusieurs scanners ; bloquer uniquement sur les CVE corrigeables évite les pipelines morts-nés sur des failles sans correctif. La parité stricte outils/versions entre pre-commit et CI supprime la divergence classique local/pipeline.
+\end{whybox}
+
+\rfig{Sortie bloquante : image volontairement vulnérable scannée avec --exit-code 1\dots}{Sortie bloquante : image volontairement vulnérable scannée avec --exit-code 1 : code retour 1 visible.}{images/trivy-blocked}{trivy-blocked}
+
+% ------------------------------------------------------------
+% ------------------------------------------------------------
+\section{Lint et validation des manifests}
+% ------------------------------------------------------------
+
+\textbf{Ruff} 0.1.9 (linter Python, remplace flake8/isort/pyflakes) et \textbf{yamllint} 1.33.0 tournent identiquement en hook et en CI. \textbf{kubeconform} v0.6.4 valide hors ligne contre les schémas Kubernetes 1.28.0 (\texttt{-strict}), rejoué aussi en préflight du deploy (\texttt{kustomize build | kubeconform}) (aucun manifest invalide n'atteint le cluster. \textbf{conftest/Rego} (\texttt{security.rego}) encode trois refus en policy-as-code : \texttt{readOnlyRootFilesystem}, \texttt{drop ALL capabilities}, \texttt{runAsNonRoot}) mode \textbf{audit} (non bloquant) actuellement. \textbf{Kyverno} ajoute deux ClusterPolicies au niveau admission (digest-pin obligatoire, security context restreint), également en Audit.
+
+\begin{whybox}
+Policy-as-code transforme les bonnes pratiques en vérifications exécutables. Le duo conftest (CI, avant déploiement) + Kyverno (cluster, à l'admission) couvre les deux instants où une mauvaise config peut entrer. Commencer en audit est la bonne trajectoire industrielle : mesurer le bruit avant de bloquer.
+\end{whybox}
+
+\clearpage
+% ============================================================
+\chapter[Déploiement continu GitOps]{Déploiement continu selon le modèle GitOps}
+% ============================================================
+
+% ------------------------------------------------------------
+\section{ArgoCD --- déploiement déclaratif continu}
+% ------------------------------------------------------------
+
+ArgoCD (CNCF) implémente le GitOps : le cluster \emph{tire} son état depuis Git au lieu de le recevoir d'une CI qui pousse. Installation \textbf{v3.5.1} via kustomize remote (\texttt{core-install}), elle-même une Application auto-gérée (sync wave $-100$). L'AppProject \texttt{devops-platform} borne les droits (sourceRepos, destinations, whitelist cluster-level minimale).
+
+\begin{center}\captionof{table}{ArgoCD --- Douze Applications --- cartographie}\label{tab:ch-argocd-douze-applications-cartographie}\end{center}
+\begin{longtable}{@{}p{3.4cm}p{5.2cm}p{1.6cm}p{3.4cm}@{}}
+\toprule
+\textbf{Application} & \textbf{Chemin Git} & \textbf{Wave} & \textbf{Destination} \\
+\midrule
+\endhead
+argocd-install & k8s/argocd/install & $-100$ & ns argocd \\
+observability-base & k8s/monitoring/base & 5 & ns monitoring \\
+prometheus & k8s/monitoring/prometheus & 15 & ns monitoring \\
+alertmanager & k8s/monitoring/alertmanager & 20 & ns monitoring \\
+elk & k8s/monitoring/elk & 20 & ns monitoring \\
+slo-rules & k8s/monitoring/alertmanager & 20 & ns monitoring \\
+grafana & k8s/monitoring/grafana & 25 & ns monitoring \\
+grafana-dashboards & k8s/monitoring/grafana/dashboards & --- & ns monitoring \\
+devops-platform-base & k8s/apps/base & --- & ns devops-platform \\
+users-service & k8s/apps/users & --- & ns devops-platform \\
+products-service & k8s/apps/products & --- & ns devops-platform \\
+orders-service & k8s/apps/orders & --- & ns devops-platform \\
+\bottomrule
+\end{longtable}
+
+Politique commune aux douze Applications : \textbf{automated + prune + selfHeal} (tout commit s'applique automatiquement, toute ressource retirée de Git est purgée, tout \texttt{kubectl edit} manuel est annulé au cycle suivant) ; \texttt{ServerSideApply} + \texttt{CreateNamespace} + \texttt{PruneLast} ; ordre garanti par des \textbf{sync waves} (ArgoCD $-100$, socle monitoring 5, Prometheus 15, AlertManager/ELK/SLO 20, Grafana 25 : Grafana ne démarre jamais avant que sa datasource Prometheus existe).
+
+\begin{whybox}
+Le GitOps inverse le sens du déploiement : toute dérive est corrigée par selfHeal, tout rollback est un \texttt{git revert}, l'état complet du système est auditable dans l'historique Git.
+\end{whybox}
+
+\rfig{UI ArgoCD : tuiles des 12 Applications toutes Synced/Healthy}{UI ArgoCD : tuiles des 12 Applications toutes Synced/Healthy.}{images/argocd-apps-grid}{argocd-apps-grid}
+
+\rfig{Arbre de ressources d'une Application monitoring (prometheus) avec statuts de\dots}{Arbre de ressources d'une Application monitoring (prometheus) avec statuts de santé.}{images/argocd-resource-tree}{argocd-resource-tree}
+
+\clearpage
+% ============================================================
+\chapter[Observabilité et SLO]{Observabilité de la plateforme et objectifs de niveau de service}
+% ============================================================
+
+% ------------------------------------------------------------
+\section{Prometheus Operator, kube-state-metrics et kubelet}
+% ------------------------------------------------------------
+
+Prometheus est le standard des métriques cloud-native (CNCF) : collecte pull par scraping HTTP, PromQL. Le Prometheus Operator (v0.74.0 + 8 CRDs) transforme sa configuration en ressources Kubernetes déclaratives ; instance Prometheus v2.51.0, rétention 15 jours (cap 8GiB), scrape/évaluation 15\,s, PVC 10 GiB. Chaque service publie son propre \textbf{ServiceMonitor} (namespace monitoring, path \texttt{/metrics}, intervalle 15\,s) : ajouter un service supervisé se résume à poser un ServiceMonitor, ce que GitOps synchronise sans intervention.
+
+\textbf{kube-state-metrics v2.10.1} expose l'état des objets K8s (réplicas, statut HPA, raisons de terminaison) : source indispensable des alertes \texttt{PodEvictionOngoing} et \texttt{HPAPinnedAtMaxReplicas}. Le \textbf{scrape kubelet/cadvisor} (Service headless + Endpoints explicites, scheme https) fournit CPU/mémoire/réseau par conteneur, matière première de \texttt{ContainerMemoryRatioHigh}.
+
+\begin{whybox}
+L'Operator rend la configuration de Prometheus native Kubernetes : plus d'edits de \texttt{prometheus.yml} hors cluster. L'intervalle 15\,s offre assez de granularité pour les SLO tout en restant raisonnable pour l'homelab.
+\end{whybox}
+
+\rfig{UI Prometheus (kubectl port-forward svc/prometheus 9090) : Status Targets\dots}{UI Prometheus (\texttt{kubectl port-forward svc/prometheus 9090}) : Status $\rightarrow$ Targets, tous les jobs UP.}{images/prom-targets-up}{prom-targets-up}
+
+% ------------------------------------------------------------
+\section{Carnet de requêtes PromQL et AlertManager}
+% ------------------------------------------------------------
+
+Un carnet versionné de requêtes évite la réinvention sous stress : RPS par service (\texttt{sum by(job)(rate(http\_requests\_total[5m]))}), taux d'erreur 5xx, latence p95/p99 (\texttt{histogram\_quantile}), ratio mémoire par conteneur, OOMKills des dernières 24h, état HPA courant/min/max, et une recording rule de disponibilité glissante 30 jours (\texttt{service:availability\_30d:ratio}) pré-calculée toutes les 5 minutes pour garder l'évaluation des alertes bon marché.
+
+\textbf{Contrainte réelle de dimensionnement} : sur les VMs 4 Go de l'homelab, le budget mémoire est serré (Elasticsearch $\approx$900 Mo heap réduit, Kibana $\approx$450 Mo, Prometheus $\approx$600--900 Mo, ArgoCD $\approx$400--700 Mo) : total observé 4,3--5 Go sur 12 Go de cluster, marge fine documentée inline dans les manifests.
+
+AlertManager v0.27.0 (réplique unique) route les alertes issues des \texttt{PrometheusRule} :
+
+\begin{center}\captionof{table}{Catalogue des alertes plateforme}\label{tab:ch-alertmanager-catalogue-complet-des-alertes}\end{center}
+\begin{longtable}{@{}p{4.7cm}p{4.2cm}p{1.2cm}p{1.9cm}@{}}
+\toprule
+\textbf{Alerte} & \textbf{Condition} & \textbf{for} & \textbf{Gravité} \\
+\midrule
+\endhead
+SLOAvailabilityBreach & dispo.\ 30 j $<$ 99,9\,\% & 10 min & critical \\
+SLOLatencyP95Breach & p95 $>$ 200 ms & 5 min & warning \\
+SLO5xxErrorRateBreach & taux 5xx $>$ 1\,\% & 2 min & critical \\
+ContainerMemoryRatioHigh & RAM $>$ 80\,\% limite & 2 min & warning \\
+PodEvictionOngoing & OOMKill détecté & 1 min & critical \\
+HPAPinnedAtMaxReplicas & HPA au max 15 min & 15 min & warning \\
+\bottomrule
+\end{longtable}
+
+\begin{whybox}
+Des SLO chiffrés transforment la supervision subjective en contrat mesurable. Les alertes « incident » correspondent à des scénarios réellement rencontrés. Le groupement AlertManager (groupBy alertname/service, groupWait 30s) évite la tempête de notifications lors d'un incident commun à plusieurs pods.
+\end{whybox}
+
+\rfig{Alerte déclenchée en conditions réelles : stress-hpa.sh lancé puis\dots}{Alerte déclenchée en conditions réelles : stress-hpa.sh lancé puis HPAPinnedAtMaxReplicas firing dans AlertManager.}{images/am-hpa-firing}{am-hpa-firing}
+
+% ------------------------------------------------------------
+\section{Grafana --- visualisation dashboards-as-code}
+% ------------------------------------------------------------
+
+Grafana \textbf{11.1.0} : 1 réplica, admin credentials hors bande, inscription anonyme désactivée. Sidecar \texttt{k8s-sidecar} watch en continu les ConfigMaps labellisés \texttt{grafana\_dashboard} : dashboards-as-code, reviewables en PR, versionnés, synchronisés par ArgoCD comme tout manifest. Deux datasources provisionnées : Prometheus (défaut) et Elasticsearch-Logs.
+
+\begin{center}\captionof{table}{Les quatre dashboards provisionnés}\label{tab:ch-grafana-les-quatre-dashboards-provisionnes}\end{center}
+\begin{longtable}{@{}p{4.2cm}p{9.8cm}@{}}
+\toprule
+\textbf{Dashboard} & \textbf{Contenu} \\
+\midrule
+\endhead
+Infrastructure Overview & Nœuds Ready, total Pods, CPU/mémoire cluster \%, par namespace : refresh 30 s \\
+Application Performance & RPS par handler, p95/p99 par endpoint, heatmap durée : refresh 15 s \\
+Error Rate SLO & \% 5xx avec seuil 1\,\%, compteur 5xx, \% 4xx, top 5 endpoints en erreur \\
+Infrastructure Detail & Ratio mémoire par conteneur (seuils 80/90), OOMKills, réplicas, HPA-at-max \\
+\bottomrule
+\end{longtable}
+
+\begin{whybox}
+Le sidecar élimine l'export/import manuel JSON : la vérité reste dans Git. La double datasource métriques+logs permet de passer d'un graphe aux logs correspondants sans changer d'outil.
+\end{whybox}
+
+\rfig{Dashboard Infrastructure Overview complet : tuiles nœuds/pods/CPU/mémoire}{Dashboard Infrastructure Overview complet : tuiles nœuds/pods/CPU/mémoire.}{images/grafana-infra-overview}{grafana-infra-overview}
+
+% ------------------------------------------------------------
+% ------------------------------------------------------------
+\section{ELK Stack 8.14 --- logs centralisés}
+% ------------------------------------------------------------
+
+Les métriques disent \emph{qu'il y a} un problème ; les logs disent \emph{pourquoi}. Quatre composants Elasticsearch 8.14.0 coordonnés : \textbf{Filebeat} (DaemonSet, autodiscovery Kubernetes par label \texttt{part-of: devops-platform} : tout nouveau Pod de la plateforme est loggé sans configuration) $\to$ \textbf{Elasticsearch} (StatefulSet mono-nœud, heap JVM réduit 512Mo pour tenir dans la VM 4 Go, PVC 10 Gi) $\to$ \textbf{Kibana} (exploration, \texttt{NODE\_OPTIONS} contraint). \textbf{Logstash} est déployé en parallèle (pipeline d'enrichissement JSON + drop des healthchecks \texttt{/livez}/\texttt{/readyz}), prêt à s'intercaler entre Filebeat et Elasticsearch.
+
+Credentials créés par un script dédié qui refuse les placeholders et rend le YAML dans un fichier temporaire 0600 avec nettoyage : jamais de secret en argv (\texttt{--from-literal}).
+
+\begin{whybox}
+ELK reste la référence open-source complète (collecte, enrichissement, plein-texte, exploration). Filebeat en DaemonSet est le pattern standard de collecte nodale ; toute la stack est dimensionnée au plus juste (heaps JVM réduits, queues bornées) pour tenir dans l'homelab.
+\end{whybox}
+
+\rfig{Kibana Discover : index devops-platform-* sélectionné, logs JSON du service\dots}{Kibana Discover : index devops-platform-* sélectionné, logs JSON du service users visibles.}{images/kibana-discover}{kibana-discover}
+
+% ------------------------------------------------------------
+% ------------------------------------------------------------
+\section{Modèle de menaces simplifié et contre-mesures}
+% ------------------------------------------------------------
+
+Lecture croisée des outils de la plateforme sous l'angle des menaces :
+
+\begin{center}\captionof{table}{Modèle de menaces simplifié et contre-mesures}\label{tab:ch-modele-de-menaces-simplifie-et-contre-mesures}\end{center}
+\begin{longtable}{@{}p{3.6cm}p{5.6cm}p{5.0cm}@{}}
+\toprule
+\textbf{Menace} & \textbf{Vecteur} & \textbf{Contre-mesure(s) en place} \\
+\midrule
+\endhead
+Secret commité & push accidentel (clé API, .env) & pre-commit gitleaks + job CI bloquant historique complet ; allowlist resserrée \\
+Image vulnérable & CVE OS/lib dans l'image déployée & Trivy bloquant CRITICAL/HIGH unfixed + SBOM archivé + rescan nocturne \\
+Dépendance vulnérable & requirements.txt compromis & pip-audit --strict ×4 fichiers, CI + nocturne \\
+Secrets exposés au cluster & Secrets K8s lisibles / tokens longs & Vault KV-v2 TTL 1h, politiques read-only par service, NetworkPolicy 8200 seule sortie \\
+Token root divulgué & argv, disque, logs & bootstrap via stdin, mktemp 0600+trap, no\_log Ansible \\
+Conteneur privilégié & mauvais manifest & PSA restricted + conftest deny ×3 + Kyverno audit + securityContext strict \\
+Pod root filesystem modifiable & exploitation runtime & readOnlyRootFilesystem + emptyDir /tmp \\
+Mouvement latéral & Pod compromis scanne le cluster & default-deny ingress/egress + whitelist explicite \\
+Dérive manuelle du cluster & kubectl edit hors process & ArgoCD selfHeal + prune \\
+État Terraform corrompu & applies concurrents & backend local isolé ; contrat S3+DynamoDB prêt \\
+Nœud attaqué via SSH & brute-force / root login & cloud-init : root off, passwords off, fail2ban, sudo whitelist \\
+Régistre spoofé & image substituée & GHCR permissions, déploiement épinglé par digest sha256 \\
+\bottomrule
+\end{longtable}
+
+\begin{whybox}
+Aucun contrôle ne vaut seul : c'est la superposition (IaC durcie $\rightarrow$ images scannées $\rightarrow$ secrets dynamiques $\rightarrow$ admission restreinte $\rightarrow$ réseau fermé $\rightarrow$ GitOps auto-correctif) qui forme la défense en profondeur. Le tableau ci-dessus sert aussi de checklist d'audit : chaque ligne doit rester vraie.
+\end{whybox}
+
+
+% ------------------------------------------------------------
+\section{SLO --- objectifs de niveau de service}
+% ------------------------------------------------------------
+
+\subsection{Le contrat chiffré}
+\begin{table}[H]
+\centering\small
+\caption{SLO --- Le contrat chiffré}\label{tab:ch-slo-le-contrat-chiffre}
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{SLI} & \textbf{SLO} \\
+\midrule
+Disponibilité & $\geq$ 99,9\,\% sur 30 jours \\
+Latence p95 & $<$ 200 ms \\
+Taux d'erreurs 5xx & $<$ 1\,\% \\
+MTTD (délai de détection) & $<$ 2 min \\
+MTTR (délai de rétablissement) & $<$ 30 min \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Implémentation bout en bout}
+Ces chiffres ne sont pas un slide : ils existent à trois endroits cohérents ---
+\begin{enumerate}[itemsep=1pt]
+  \item dans les règles Prometheus (\S AlertManager) : seuils exacts 0,1\,\% d'indispo, 0,2 s p95, 1\,\% 5xx ;
+  \item dans Grafana : ligne de seuil sur le dashboard Error Rate ;
+  \item dans ce rapport et la documentation plateforme.
+\end{enumerate}
+
+Les MTTD/MTTR découlent des intervalles : scrape 15 s + for 2--10 min $\Rightarrow$ détection en moins de deux minutes ; auto-réparation K8s + selfHeal ArgoCD $\Rightarrow$ rétablissement typique en secondes.
+
+\subsection{Éléments de démonstration}
+\rfig{Vue Grafana Error Rate SLO annotée : seuil 1 \% tracé sur la courbe réelle}{Vue Grafana Error Rate SLO annotée : seuil 1\,\% tracé sur la courbe réelle.}{images/slo-grafana-threshold}{slo-grafana-threshold}
+
+
+\clearpage
+% ============================================================
+\chapter[Sc\'enarios de validation]{Sc\'enarios de validation de bout en bout}
+% ============================================================
+
+Sept sc\'enarios de bout en bout ont \'et\'e rejou\'es pour valider le comportement r\'eel de la plateforme, en condition nominale comme d\'egrad\'ee. Chacun part d'une action d\'eclench\'ee manuellement (push, coupure d'un composant, charge) et suit la propagation jusqu'\`a l'observabilit\'e (m\'etriques, alertes, logs).
+
+\begin{center}\captionof{table}{Synth\`ese des sc\'enarios de validation de bout en bout}\label{tab:scenarios-synthese}\end{center}
+\begin{longtable}{@{}p{2.4cm}p{6.0cm}p{6.4cm}@{}}
+\toprule
+\textbf{Sc\'enario} & \textbf{D\'eclencheur} & \textbf{R\'esultat observ\'e} \\
+\midrule
+\endhead
+1. Commit $\to$ prod & \texttt{git push} sur \texttt{secondary} & Chaîne CI compl\`ete (lint$\to$gitleaks$\to$test$\to$build$\to$trivy) verte, ArgoCD passe OutOfSync puis Synced, rollout progressif confirm\'e par le nouveau digest et \texttt{/metrics}. \\
+2. Panne Vault & \texttt{kubectl scale deploy vault --replicas=0} & Readiness bascule \`a 503, Service perd ses endpoints (fail-closed), livez reste OK (pas de crash), r\'etablissement propre au retour de Vault. \\
+3. Fuite m\'emoire & Charge applicative soutenue & Ratio m\'emoire/limite $>$80\,\%, alerte d\'eclench\'ee, OOMKill observ\'e, post-mortem r\'edig\'e avec \'etiquette \texttt{incident}. \\
+4. Stress HPA & G\'en\'eration de charge (ab) & Scale-up 2$\to$5 r\'epliques, performance stable sous charge, scale-down apr\`es accalmie sans flapping (anti-flap valid\'e). \\
+5. Rollback GitOps & R\'egression volontaire d\'eploy\'ee & Hausse du taux d'erreur d\'etect\'ee par alerte, revert Git, ArgoCD resynchronise automatiquement, m\'etriques reviennent \`a la normale. \\
+6. Rotation secrets & Rotation compl\`ete des tokens Vault & Token one-shot g\'en\'er\'e, rolling restart des pods, preuve de continuit\'e de service pendant la rotation. \\
+7. Drift supply-chain & Scan nocturne programm\'e & D\'etection d'une image obsol\`ete/CVE, run nocturne en \'echec (rouge), PR automatique de bump propos\'ee. \\
+\bottomrule
+\end{longtable}
+
+\rfig{Pod final au nouveau digest + /metrics répondant}{Sc\'enario 1 : pod final au nouveau digest et \texttt{/metrics} r\'epondant, preuve de bout en bout du pipeline commit $\to$ production.}{images/scenario1-06-final-metrics}{scenario1-06-final-metrics}
+
+\chapter[Exploitation et bilan]{Exploitation, résultats obtenus et bilan du projet}
+% ============================================================
+
+% ------------------------------------------------------------
+\section{Scripts de validation de la plateforme}
+% ------------------------------------------------------------
+
+\texttt{validate-platform.sh} encode la définition exécutable de « ça marche » (flag \texttt{--ci} : outil manquant = FAIL, pas SKIP) :
+
+\begin{center}\captionof{table}{validate-platform.sh --- les 7 contrôles}\label{tab:ch-scripts-de-validation-de-la-plateforme-validate-}\end{center}
+\begin{longtable}{@{}p{0.8cm}p{5.6cm}p{7.6cm}@{}}
+\toprule
+\textbf{n°} & \textbf{Contrôle} & \textbf{Méthode} \\
+\midrule
+\endhead
+1 & Cluster Kubernetes opérationnel & kubectl get nodes -o json + jq : tous Ready \\
+2 & Pods en Running & readyReplicas == spec.replicas par service \\
+3 & Aucune CVE critique & trivy image --severity CRITICAL,HIGH --exit-code 1 \\
+4 & Aucun secret détecté & gitleaks detect --source . --config .gitleaks.toml --redact \\
+5 & ArgoCD synchronisé & toutes Applications Synced + Healthy \\
+6 & Dashboards Grafana actifs & deploy prêt + $\geq$3 ConfigMaps grafana\_dashboard=1 \\
+7 & Logs indexés ELK & kibana prêt + ES sts prêt + filebeat complet + health green/yellow \\
+Bonus A & Self-healing & delete volontaire d'un Pod, retour attendu $<$30 s (destructif) \\
+\bottomrule
+\end{longtable}
+
+\texttt{validate-security.sh} ajoute 4 contrôles sécurité : Gitleaks (historique complet), Trivy CRITICAL/HIGH, Vault initialisé et non scellé, preuve de vie du token root (rejet des placeholders). Outils d'exploitation complémentaires : \texttt{smoke-test.sh} (parcours E2E), \texttt{stress-hpa.sh} (charge Apache Bench, scale attendu), \texttt{bootstrap-vault-secret.sh}/\texttt{bootstrap-elasticsearch-secret.sh} (secrets via stdin, jamais argv).
+
+\begin{whybox}
+Une plateforme non vérifiable n'existe pas : ces scripts servent simultanément de recette locale, de garde CI et de démonstration. Le bonus self-healing teste le comportement : pas la config.
+\end{whybox}
+
+\rfig{Scripts/validate-platform.sh complet : les 7 contrôles + bonus en vert avec\dots}{\texttt{scripts/validate-platform.sh} complet : les 7 contrôles + bonus en vert avec durées.}{images/validate-platform-all}{validate-platform-all}
+
+% ------------------------------------------------------------
+\section{Tests de charge et index des runbooks}
+% ------------------------------------------------------------
+
+\texttt{stress-hpa.sh} génère une charge Apache Bench (\texttt{-c 80 -n 4000}) contre users-service : l'HPA doit monter de 2 à 5 réplicas (CPU cible 70\,\% dépassée). Un job k6 nocturne complémentaire (\texttt{tests/k6/load-test.js}) est prévu dans le pipeline mais le fichier n'existe pas encore : première action corrective identifiée.
+
+\begin{center}\captionof{table}{Index des runbooks}\label{tab:ch-index-des-runbooks}\end{center}
+\begin{longtable}{@{}p{4.2cm}p{6.6cm}p{3.4cm}@{}}
+\toprule
+\textbf{Symptôme} & \textbf{Premiers réflexes} & \textbf{Outils} \\
+\midrule
+\endhead
+Pod CrashLoopBackOff & logs + describe (exit code), vérifier secrets Vault & kubectl, Kibana \\
+Vault scellé/indispo & vault status ; readiness 503 assumé ; ne pas forcer les pods & vault CLI, AM alertes \\
+OOMKill récurrent & ratio mémoire Grafana, remonter limites via overlay & KSM, rules.yaml \\
+HPA bloqué au max & chercher fuite mémoire ; incident 9 post-mortem & stress-panel.py \\
+Dérive cluster vs Git & UI ArgoCD diff ; ne jamais fixer à la main & ArgoCD selfHeal \\
+5xx en hausse & dashboard Error Rate $\rightarrow$ handler fautif $\rightarrow$ logs filtrés & Grafana+Kibana \\
+Image non tirée & digest présent GHCR ? netpol egress DNS ? & crictl, netpol \\
+Cluster injoignable & virsh list ; systemd kubelet/containerd sur nœud & libvirt, journalctl \\
+Secret expiré (401 Vault) & rotation bootstrap-vault-secret.sh puis rollout & script + ArgoCD sync \\
+Disque ES plein & retention/ILM, taille PVC 10Gi, purger indices vieux & \_cat/indices \\
+\bottomrule
+\end{longtable}
+
+% ------------------------------------------------------------
+% ------------------------------------------------------------
+\section{Tableau récapitulatif général}\label{sec:recap}
+% ------------------------------------------------------------
+
+{\footnotesize
+\begin{longtable}{@{}p{3.0cm}p{1.9cm}p{4.7cm}p{4.7cm}@{}}
+\caption{Toutes les technologies du projet : version, rôle, raison du choix}\\
+\toprule
+\textbf{Outil} & \textbf{Version} & \textbf{Ce qu'il fait ici} & \textbf{Pourquoi lui} \\
+\midrule
+\endfirsthead
+\toprule
+\textbf{Outil} & \textbf{Version} & \textbf{Ce qu'il fait ici} & \textbf{Pourquoi lui} \\
+\midrule
+\endhead
+Libvirt/KVM & QEMU-KVM & 3 VMs q35 virtio, réseau NAT dédié & VMs réalistes gratuites, reproductibles \\
+cloud-init & Ubuntu 22.04 img & Provisionnement + durcissement boot & Standard first-boot, durcit avant tout \\
+Terraform & $\sim$1.5 (CI 1.5.7) & IaC réseau, volumes, VMs, inventaire & Standard IaC, plan/état/dérive \\
+Provider libvirt & 0.9.8 & Piloter KVM depuis Terraform & Seul provider KVM mature \\
+hashicorp/local & 2.9.0 & Rendre le fichier inventaire & Artefacts locaux idempotents \\
+Ansible & collection 8.0.0 & Config Docker, K8s, jointure, CNI & Agentless, idempotent, lisible \\
+Docker CE & repo officiel & Builds multi-stage des images & Référence construction OCI \\
+containerd & repo officiel & Runtime CRI des Pods & Recommandé kubeadm, léger \\
+Kubernetes & 1.28 (held) & Orchestration, autoscaling, auto-rép & API universelle orchestration \\
+kubeadm & 1.28 & Cycle de vie cluster & Officiel, conforme upstream \\
+Calico & v3.26.1 Tigera & CNI routage + NetworkPolicies & Mature, ingress+egress complets \\
+Kustomize & 5.4.3 & Base + overlays env & Patch sans template, natif GitOps \\
+FastAPI & 0.139.0 & Framework HTTP services & Pydantic, OpenAPI, async \\
+Uvicorn & $\geq$0.24 std & Serveur ASGI port 8000 & Référence ASGI \\
+hvac & 2.1.0 & Client Vault KV-v2 & Client Python de référence \\
+python-json-logger & 2.0.7 & Logs JSON stdout & Structuré ELK, minimal \\
+prometheus-fastapi-instrumentator & 6.1.0 & Métriques RED /metrics & Une ligne = histogramme normalisé \\
+Vault & 1.15.2 dev mode & Secrets dynamiques, auth K8s TTL 1h & Rotation/révocation centralisée \\
+GitHub Actions & --- & Pipeline CI/CD + jobs nocturnes & CI native dépôt, matrice, OIDC \\
+GHCR & ghcr.io & Registre images & Colocalisé, permissions héritées \\
+Gitleaks & 8.18.0 & Détection secrets local+CI & Scan historique rapide, config maison \\
+Trivy & action v0.24.0 & Scan CVE bloquant, SARIF, SBOM & Scanner unifié CNCF \\
+pip-audit & --strict & Audit requirements Python & Officiel PyPA \\
+Ruff & 0.1.9 & Linter Python & Ultra-rapide, remplace 3 outils \\
+yamllint & 1.33.0 & Hygiène YAML & Simple, pre-commit+CI \\
+kubeconform & 0.6.4 & Validation schémas K8s 1.28 & Hors ligne, rapide \\
+conftest (Rego) & mode audit & Politiques sécurité manifests & Policy-as-code pré-admission \\
+Kyverno & Audit & Policies admission cluster & Natif K8s, audit$\rightarrow$enforce \\
+pre-commit & 11 hooks & Qualité avant push (5 dépôts) & Shift-left, parité CI \\
+ArgoCD & v3.5.1 & GitOps pull, prune, selfHeal, waves & État cluster = Git, rollback = revert \\
+Prometheus Operator & v0.74.0 & CRDs ServiceMonitor/PrometheusRule & Découverte déclarative GitOps \\
+Prometheus & v2.51.0 & Collecte 15 s, rétention 15 j & Standard métriques, PromQL \\
+kube-state-metrics & v2.10.1 & État objets en métriques & Source alertes HPA/OOM \\
+AlertManager & v0.27.0 & Groupement/routage alertes & Routage standard écosystème \\
+Grafana & 11.1.0 & Dashboards provisionnés sidecar & Dashboards-as-code versionnés \\
+kiwigrid sidecar & 1.27.6 & Chargement dashboards ConfigMap & Provisionnement auto \\
+Elasticsearch & 8.14.0 & Stockage/recherche logs & Plein-texte, référence ELK \\
+Filebeat & 8.14.0 DaemonSet & Collecte logs nœuds/Pods & Autodiscovery K8s standard \\
+Logstash & 8.14.0 & Enrichissement, drop healthchecks & Transformation events \\
+Kibana & 8.14.0 & Exploration logs & UI recherche standard ELK \\
+Apache Bench & ab -c80 -n4000 & Génération charge HPA & Zéro dépendance \\
+k6 & action v0.3.1 & Test charge scripté nocturne & Scénarios JS versionnés (à écrire) \\
+jq/curl & --- & Manipulation JSON scripts & Bases scripting exploitation \\
+\bottomrule
+\end{longtable}
+}
+
+% ------------------------------------------------------------
+\section{Limites connues et axes d'amélioration}
+% ------------------------------------------------------------
+
+Lecture honnête du code actuel :
+\begin{itemize}[itemsep=2pt]
+  \item \texttt{tests/k6/load-test.js} n'existe pas, le job nocturne échoue systématiquement : priorité n°1 ;
+  \item job deploy lit needs.build.outputs.image (une chaîne pour 3 lignes de matrice, dernière gagnante) : limitation documentée inline ;
+  \item trivy-scan résout les images par tag github.ref\_name et non par digest malgré l'intention affichée ;
+  \item Vault reste en dev mode (in-memory, auto-unseal, token root partagé) : raft/TLS/injector préparés mais non câblés côté Pods ;
+  \item overlay dev patche réplicas à 1 sans retirer les HPA (min 2) : conflit latent ;
+  \item AppProject ArgoCD conserve destinations istio-system/flagger-system héritées de la stack canary supprimée ;
+  \item Filebeat commenté comme envoyant vers Logstash:5044 alors qu'il écrit directement Elasticsearch ;
+  \item corruption cosmétique d'accents dans quelques chaînes de validate-platform.sh (logique intacte) ;
+  \item checksum manifest Tigera non vérifié (TODO inline) ; host\_key\_checking=False assumé lab.
+\end{itemize}
+
+Chaque point est borné et actionnable : aucun ne compromet l'architecture d'ensemble ; plusieurs sont déjà documentés inline dans le code concerné.
+
+% ------------------------------------------------------------
+
+\cleardoublepage
+% ============================================================
+%  Conclusion générale
+% ============================================================
+\chapter*{Conclusion générale et perspectives}
+\addcontentsline{toc}{chapter}{Conclusion générale et perspectives}
+\markboth{Conclusion générale et perspectives}{Conclusion générale et perspectives}
+
+\section*{Bilan du travail réalisé}
+
+DevOps Central Platform démontre qu'une chaîne DevOps professionnelle complète peut tenir dans un homelab : Terraform provisionne, cloud-init durcit, Ansible installe, Docker empaquette, Kubernetes orchestre, GitHub Actions vérifie et pousse, Trivy/Gitleaks/pip-audit filtrent la supply chain, Vault distribue les secrets en fail-closed, ArgoCD maintient Git comme unique source de vérité, Prometheus/Grafana/ELK rendent le tout observable et les SLO le rendent contractuel.
+
+Trois enseignements traversent ce rapport : \textbf{chaque outil a été choisi pour une raison précise}, opposable aux alternatives ; \textbf{la sécurité est transversale, pas additive} (boot, manifests, CI, applicatif, admission) ; \textbf{l'honnêteté technique fait partie du design} : limites listées, incidents avec leurs alertes, TODO inline.
+
+\section*{Apport personnel}
+
+Au-delà des livrables techniques, ce projet a constitué une mise en situation d'ingénierie complète : arbitrer entre solutions concurrentes, assumer ces arbitrages par écrit, puis les confronter à l'exécution réelle : qui a régulièrement invalidé les hypothèses initiales (dimensionnement mémoire, temporisation des addons, stratégie de secrets). Ce travail a consolidé des compétences transversales : lecture de documentation de référence, diagnostic méthodique en situation d'incident, rédaction d'une documentation d'exploitation destinée à un tiers.
+
+\section*{Limites du travail}
+
+HashiCorp Vault fonctionne en mode \emph{dev}, non persistant : convient à une démonstration mais pas à une configuration de production. Les politiques Kyverno restent en mode \emph{Audit}. Le test de charge k6 est prévu par le pipeline mais son script n'est pas encore écrit. La plateforme s'exécute sur un homelab à ressources contraintes : les chiffres de performance ne sont pas transposables tels quels à une infrastructure de production.
+
+\section*{Perspectives d'évolution}
+
+Quatre axes prolongent naturellement ce travail : \textbf{sécurisation des secrets} (Vault en mode production, stockage persistant, auth Kubernetes par ServiceAccount, rotation automatisée) ; \textbf{politiques en mode bloquant} (Kyverno en \texttt{Enforce} après observation) ; \textbf{consolidation CI} (test de charge k6, digest plutôt que tag pour Trivy, OIDC pour le backend Terraform) ; \textbf{enrichissement applicatif} (PostgreSQL réel, vérification JWT effective). À plus long terme : extension multi-cluster, déploiement progressif (canary/blue-green) via ArgoCD Rollouts, et traçage distribué en complément des métriques et logs.
+
+\cleardoublepage
+
+% ============================================================
+%  Bibliographie / Webographie
+% ============================================================
+\begin{thebibliography}{99}
+\addcontentsline{toc}{chapter}{Bibliographie}
+\markboth{Bibliographie}{Bibliographie}
+
+\bibitem{kim2016} G. Kim, J. Humble, P. Debois, J. Willis,
+\emph{The DevOps Handbook: How to Create World-Class Agility, Reliability, and Security in Technology Organizations},
+IT Revolution Press, 2016.
+
+\bibitem{humble2010} J. Humble, D. Farley,
+\emph{Continuous Delivery: Reliable Software Releases through Build, Test, and Deployment Automation},
+Addison-Wesley, 2010.
+
+\bibitem{beyer2016} B. Beyer, C. Jones, J. Petoff, N. R. Murphy,
+\emph{Site Reliability Engineering: How Google Runs Production Systems},
+O'Reilly Media, 2016.
+
+\bibitem{burns2019} B. Burns, J. Beda, K. Hightower,
+\emph{Kubernetes: Up and Running}, 2\textsuperscript{e} édition, O'Reilly Media, 2019.
+
+\bibitem{brikman2022} Y. Brikman,
+\emph{Terraform: Up and Running: Writing Infrastructure as Code}, 3\textsuperscript{e} édition,
+O'Reilly Media, 2022.
+
+\bibitem{morris2020} K. Morris,
+\emph{Infrastructure as Code: Dynamic Systems for the Cloud Age}, 2\textsuperscript{e} édition,
+O'Reilly Media, 2020.
+
+\bibitem{turnbull2018} J. Turnbull,
+\emph{Monitoring with Prometheus}, Turnbull Press, 2018.
+
+\bibitem{k8sdoc} The Kubernetes Authors, \emph{Kubernetes Documentation},
+\url{https://kubernetes.io/docs/}, consulté en 2026.
+
+\bibitem{kubeadm} The Kubernetes Authors,
+\emph{Creating a cluster with kubeadm},
+\url{https://kubernetes.io/docs/setup/production-environment/tools/kubeadm/}, consulté en 2026.
+
+\bibitem{psa} The Kubernetes Authors, \emph{Pod Security Admission},
+\url{https://kubernetes.io/docs/concepts/security/pod-security-admission/}, consulté en 2026.
+
+\bibitem{tfdoc} HashiCorp, \emph{Terraform Documentation},
+\url{https://developer.hashicorp.com/terraform/docs}, consulté en 2026.
+
+\bibitem{vaultdoc} HashiCorp, \emph{Vault Documentation},
+\url{https://developer.hashicorp.com/vault/docs}, consulté en 2026.
+
+\bibitem{ansibledoc} Red Hat, \emph{Ansible Documentation},
+\url{https://docs.ansible.com/}, consulté en 2026.
+
+\bibitem{dockerdoc} Docker Inc., \emph{Dockerfile best practices},
+\url{https://docs.docker.com/build/building/best-practices/}, consulté en 2026.
+
+\bibitem{calicodoc} Tigera, \emph{Calico Documentation},
+\url{https://docs.tigera.io/calico/latest/about/}, consulté en 2026.
+
+\bibitem{argocd} Argo Project, \emph{Argo CD: Declarative GitOps CD for Kubernetes},
+\url{https://argo-cd.readthedocs.io/}, consulté en 2026.
+
+\bibitem{gitopsprinciples} OpenGitOps Working Group (CNCF),
+\emph{GitOps Principles v1.0}, \url{https://opengitops.dev/}, consulté en 2026.
+
+\bibitem{promdoc} Prometheus Authors, \emph{Prometheus Documentation},
+\url{https://prometheus.io/docs/}, consulté en 2026.
+
+\bibitem{elasticdoc} Elastic, \emph{Elastic Stack Documentation},
+\url{https://www.elastic.co/guide/}, consulté en 2026.
+
+\bibitem{fastapi} S. Ramírez, \emph{FastAPI Documentation},
+\url{https://fastapi.tiangolo.com/}, consulté en 2026.
+
+\bibitem{trivy} Aqua Security, \emph{Trivy Documentation},
+\url{https://aquasecurity.github.io/trivy/}, consulté en 2026.
+
+\bibitem{owasp} OWASP Foundation, \emph{OWASP Top 10 (2021)},
+\url{https://owasp.org/Top10/}, consulté en 2026.
+
+\bibitem{nist} NIST, \emph{Application Container Security Guide},
+Special Publication 800-190, 2017.
+
+\bibitem{cis} Center for Internet Security,
+\emph{CIS Kubernetes Benchmark}, \url{https://www.cisecurity.org/benchmark/kubernetes},
+consulté en 2026.
+
+\end{thebibliography}
+
+\cleardoublepage
+
+\appendix
+\renewcommand{\chaptername}{Annexe}
+\renewcommand{\cftchappresnum}{Annexe }
+\addtolength{\cftchapnumwidth}{3.2em}
+
+% ------------------------------------------------------------
+
+\end{document}

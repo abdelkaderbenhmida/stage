@@ -1,4 +1,22 @@
 ---
+- name: Wait for cloud-init to finish before touching apt
+  # cloud-init runs its own package_update_upgrade_install module at boot in
+  # the background. Connecting and running apt tasks before it finishes races
+  # it for the dpkg frontend lock — first-boot provisioning failed here with
+  # "Unable to acquire the dpkg frontend lock" on the very first Docker apt
+  # install. `cloud-init status --wait` blocks until it is fully done.
+  hosts: all
+  become: true
+  gather_facts: false
+  tasks:
+    - name: cloud-init status --wait
+      ansible.builtin.command: cloud-init status --wait
+      changed_when: false
+      register: cloudinit_wait
+      retries: 3
+      delay: 10
+      until: cloudinit_wait.rc == 0
+
 - name: Apply Docker and containerd on all nodes
   hosts: all
   become: true
@@ -44,4 +62,17 @@
       when: reset_confirmed | default(false) | bool
   tags:
     - reset
+    - never
+
+- name: Restrict devops sudo access to running-state posture
+  # NOT applied by a plain `ansible-playbook playbook.yml` run: docker/k8s_common
+  # need broad apt sudo, so any later rerun against an already-hardened node
+  # (e.g. adding a worker, re-applying a role) would lock itself out before
+  # this fix. Run explicitly once the cluster is stable: --tags harden.
+  hosts: all
+  become: true
+  roles:
+    - harden_sudo
+  tags:
+    - harden
     - never

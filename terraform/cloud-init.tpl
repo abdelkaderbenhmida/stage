@@ -12,7 +12,15 @@ users:
     shell: /bin/bash
     # Restricted sudo: kubeadm/kubelet/containerd commands. Password-required
     # for privilege escalation — NOPASSWD removed per security audit.
-    sudo: ALL=(ALL) PASSWD: /usr/bin/kubeadm, /usr/bin/kubelet, /usr/bin/systemctl restart kubelet, /usr/bin/systemctl restart containerd, /usr/bin/systemctl restart docker
+    # La valeur contient « : » : sans guillemets, YAML la lit comme une
+    # imbrication et rejette tout le user-data (cloud-init ignore alors
+    # l'ensemble du fichier, utilisateur et cle SSH compris).
+    # Fenetre de provisionnement. Les roles Ansible installent des paquets et
+    # ecrivent dans /etc : la regle restreinte d origine (kubeadm, kubelet et
+    # trois systemctl restart, mot de passe requis) les faisait echouer des la
+    # premiere tache. On provisionne large, puis le playbook repose la regle
+    # restreinte en fin de course.
+    sudo: "ALL=(ALL) NOPASSWD:ALL"
     lock_passwd: false        # password auth disabled above; account still usable via key.
     ssh_authorized_keys:
       - ${ssh_public_key}

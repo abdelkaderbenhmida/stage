@@ -44,7 +44,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
@@ -66,7 +66,7 @@ jobs:
           done
 
       - name: Validate Terraform format
-        uses: hashicorp/setup-terraform@v3
+        uses: hashicorp/setup-terraform@v4
         with:
           terraform_version: ${{ env.TERRAFORM_VERSION }}
       - run: terraform fmt -check -recursive terraform/
@@ -90,7 +90,18 @@ jobs:
             -kubernetes-version 1.28.0 \
             -schema-location 'https://raw.githubusercontent.com/yannh/kubernetes-json-schema/master/master-standalone/{{.ResourceKind}}.json' \
             < <(find k8s/ -name '*.yaml' ! -name '*values*.yaml' ! -name 'Chart.yaml' ! -name 'crds.yaml' -exec cat {} +) || true
-          pip install conftest 2>/dev/null && conftest test k8s/ --policy k8s/policies/conftest/ 2>/dev/null || echo "conftest not installed — policy-as-code in audit mode"
+
+          # conftest is a Go binary, not a pip package — install the release
+          # binary like kubeconform above. Target only rendered YAML
+          # manifests (same filter as kubeconform): k8s/vault/vault-policy.hcl
+          # is a Vault ACL template with `${svc}` placeholders meant to be
+          # substituted at `vault policy write` time, not a K8s manifest —
+          # conftest's HCL parser chokes on the unescaped `${}` there.
+          curl -sSL -o /tmp/conftest.tar.gz \
+            https://github.com/open-policy-agent/conftest/releases/download/v0.69.0/conftest_0.69.0_Linux_x86_64.tar.gz
+          tar -xzf /tmp/conftest.tar.gz -C /tmp conftest
+          find k8s/ -name '*.yaml' ! -name '*values*.yaml' ! -name 'Chart.yaml' ! -name 'crds.yaml' -print0 | \
+            xargs -0 /tmp/conftest test --policy k8s/policies/conftest/
 
   # ──────────────────────────────────────────────
   # Step 2: Gitleaks — Secret scanning (BLOCKING)
@@ -107,7 +118,7 @@ jobs:
           fetch-depth: 0  # full history for comprehensive scan
 
       - name: Run Gitleaks
-        uses: gitleaks/gitleaks-action@v2
+        uses: gitleaks/gitleaks-action@v3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITLEAKS_ENABLE_COMMENTS: true
@@ -124,7 +135,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5 # v5
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
@@ -167,7 +178,7 @@ jobs:
 
       - name: Upload build logs as artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: build-logs-${{ github.run_id }}
           path: /tmp/*.log
@@ -191,10 +202,10 @@ jobs:
       - uses: actions/checkout@v5
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Log in to registry
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -202,7 +213,7 @@ jobs:
 
       - name: Extract metadata (tags + labels, NO mutable :latest by default)
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/${{ matrix.service }}
           tags: |
@@ -212,7 +223,7 @@ jobs:
             type=semver,pattern={{version}}
 
       - name: Build and push (digest-pinned output via metadata)
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v7
         id: build
         with:
           context: app/  # context is app/ so shared/ is visible — see app/*/Dockerfile.
@@ -264,7 +275,7 @@ jobs:
           echo "Scanning target image: $IMAGE"
 
       - name: Log in to registry
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -307,7 +318,7 @@ jobs:
         continue-on-error: true
 
       - name: Upload SBOM artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: sbom-${{ matrix.service }}
           path: sbom-${{ matrix.service }}.json
@@ -329,7 +340,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - uses: hashicorp/setup-terraform@v3
+      - uses: hashicorp/setup-terraform@v4
         with:
           terraform_version: ${{ matrix.version }}
 
@@ -440,7 +451,7 @@ jobs:
           BASE_URL: ${{ vars.K6_BASE_URL || 'http://users-service.devops-platform.svc.cluster.local:80' }}
 
       - name: Upload k6 results
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: k6-results
           path: /tmp/k6-results.json

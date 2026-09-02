@@ -124,7 +124,6 @@
   retries: 3
   delay: 10
   until: calico_wait.rc == 0
-  changed_when: false
   ignore_errors: false  # fail-closed: broken Calico ⇒ broken cluster, abort.
   tags: master
 

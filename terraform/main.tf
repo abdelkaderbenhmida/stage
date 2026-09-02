@@ -11,6 +11,11 @@ terraform {
       source  = "hashicorp/local"
       version = "~> 2.5"
     }
+
+    null = {
+      source  = "hashicorp/null"
+      version = "~> 3.2"
+    }
   }
 }
 
@@ -175,6 +180,11 @@ resource "terraform_data" "ssh_key_guard" {
 resource "libvirt_domain" "node" {
   for_each = local.nodes
 
+  # Force volume resize (see null_resource.fix_volume_capacity below) to
+  # complete before the domain boots — resizing a qcow2 already open by a
+  # running VM fails with "Failed to get write lock".
+  depends_on = [null_resource.fix_volume_capacity]
+
   name        = each.key
   type        = "kvm"
   memory      = var.vm_memory_mb
@@ -264,4 +274,29 @@ resource "local_file" "ansible_inventory" {
     workers     = local.worker_nodes
     ssh_user    = var.ssh_user
   })
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Workaround: dmacvicar/libvirt 0.9.8 ignores the requested `capacity` when a
+# libvirt_volume is created via `create.content.url` (clone-from-image) — the
+# resulting volume silently ends up the size of the *source* image (~2.2 GiB
+# here) instead of `disk_size_gb`. Terraform's own state reports the requested
+# capacity correctly; only the real libvirt volume is wrong, so `terraform
+# plan` never flags a drift. Verified against provider changelog/issues:
+# unresolved as of 0.9.8. Until fixed upstream, resize the real volume
+# out-of-band right after creation and let cloud-init's growpart module
+# (already in cloud-init.tpl) extend the partition on next boot.
+resource "null_resource" "fix_volume_capacity" {
+  for_each = local.nodes
+
+  triggers = {
+    volume_id = libvirt_volume.node[each.key].id
+    size_gb   = var.disk_size_gb
+  }
+
+  provisioner "local-exec" {
+    command = "virsh vol-resize --pool ${var.storage_pool} ${each.key}.qcow2 ${var.disk_size_gb}G"
+  }
+
+  depends_on = [libvirt_volume.node]
 }

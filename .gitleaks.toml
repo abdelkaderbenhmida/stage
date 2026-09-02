@@ -23,10 +23,26 @@ paths = [
     # storing verbatim source snippets pasted for reading. Per-file review
     # required when adding here; keep narrow.
     '''files\.md/.*\.txt$''',
+    # Historical-only path. `controlplane/` belonged to an earlier, unrelated
+    # project that lived in this repository before it was rewritten; the
+    # directory no longer exists in any tracked tree. Its `tests/` fixtures
+    # used obviously fake tokens (Stripe/GitHub/GitLab test strings) that
+    # gitleaks still finds when CI scans full history (`fetch-depth: 0`).
+    # Nothing can be added under this path today, so the allowlist cannot
+    # mask a live secret. Historical commits carrying these fixtures:
+    # 342b24760fc3590c247725a4d89daab8c6586766,
+    # 4fbb8aba08463dd9d8a7e95c0d3b0771b2376175,
+    # f09990fd1658f690a216cdd3618799d2c0a8d88b.
+    '''controlplane/tests/.*\.py$''',
 ]
 # Allowlisted placeholder STRINGS that are not real secrets. Deliberately
 # narrow — each pattern must be unlikely to appear in a leaked secret.
 regexes = [
     '''REPLACE_ME_WITH_A_REAL_SECRET''',
     '''YOUR_SECRET_HERE''',
+]
+commits = [
+    "342b24760fc3590c247725a4d89daab8c6586766",
+    "4fbb8aba08463dd9d8a7e95c0d3b0771b2376175",
+    "f09990fd1658f690a216cdd3618799d2c0a8d88b",
 ]

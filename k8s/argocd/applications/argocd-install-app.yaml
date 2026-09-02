@@ -30,6 +30,12 @@ spec:
       - CreateNamespace=true
       - ApplyOutOfSyncOnly=true
       - ServerSideApply=true
+      # applicationsets.argoproj.io alone exceeds the 262144-byte
+      # last-applied-configuration annotation limit even with
+      # ServerSideApply on this ArgoCD version — same class of failure as
+      # the Calico CRDs in the Ansible k8s_master role. Replace=true skips
+      # the three-way merge/annotation path for this Application's syncs.
+      - Replace=true
     retry:
       limit: 5
       backoff:

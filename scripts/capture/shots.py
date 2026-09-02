@@ -389,7 +389,7 @@ SHOTS.update({
 "reseau-libvirt": ("devops@homelab",
   "virsh net-list --all; echo; virsh net-dumpxml devops-platform-net"),
 "vms-topologie": ("devops@homelab",
-  "for d in master-01 worker-01; do virsh dominfo $d | grep -E 'Nom|Name|Etat|State|CPU|Used memory|Max memory'; echo; done"),
+  "for d in master-01 worker-01 worker-02; do virsh dominfo $d | grep -E 'Nom|Name|Etat|State|CPU|Used memory|Max memory'; echo; done"),
 
 # ---------- cloud-init ----------
 "cloudinit-userdata": (H, "sed -n '1,30p' terraform/cloud-init.tpl"),

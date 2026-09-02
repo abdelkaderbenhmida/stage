@@ -1,0 +1,64 @@
+# Generateur de charge execute dans le cluster : il attaque le Service, donc le
+# trafic est reparti sur toutes les repliques (un port-forward, lui, epingle un
+# seul pod et fausse la moyenne CPU vue par le HPA).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: charge-users
+  namespace: devops-platform
+  labels: {app.kubernetes.io/name: charge-users, app.kubernetes.io/part-of: devops-platform}
+spec:
+  replicas: 4
+  selector: {matchLabels: {app.kubernetes.io/name: charge-users}}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: charge-users, app.kubernetes.io/part-of: devops-platform}
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: ab
+          image: httpd:2.4-alpine
+          command: ["sh", "-c"]
+          args:
+            - |
+              # ab garde les connexions ouvertes : bien plus de requetes par
+              # cycle CPU qu'une boucle de processus curl.
+              while true; do
+                ab -k -c 40 -n 200000 \
+                   http://users-service.devops-platform.svc.cluster.local/users >/dev/null 2>&1
+              done
+          resources:
+            requests: {cpu: 100m, memory: 48Mi}
+            limits: {cpu: 800m, memory: 96Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: ["ALL"]}
+---
+# Autorisation temporaire : le generateur doit pouvoir sortir vers le Service
+# users-service et vers le DNS du cluster. Supprimee avec le reste de la demo.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-charge-users
+  namespace: devops-platform
+  labels: {app.kubernetes.io/name: charge-users}
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: charge-users}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: users-service}
+      ports:
+        - {protocol: TCP, port: 8000}
+    - to:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: kube-system}
+      ports:
+        - {protocol: UDP, port: 53}
+        - {protocol: TCP, port: 53}

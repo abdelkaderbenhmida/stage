@@ -1,7 +1,6 @@
 import importlib
 import os
 import sys
-import pytest
 from fastapi.testclient import TestClient
 
 os.environ["ENVIRONMENT"] = "dev"
@@ -39,4 +38,3 @@ def test_users_service():
     res_users = client.get("/users")
     assert res_users.status_code == 200
     assert len(res_users.json()) >= 2
-

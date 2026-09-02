@@ -69,6 +69,9 @@ spec:
             - name: grafana-secrets
               mountPath: /etc/grafana-secrets
               readOnly: true
+            - name: grafana-data
+              mountPath: /var/lib/grafana
+              readOnly: false
           resources:
             requests:
               cpu: 50m
@@ -80,7 +83,9 @@ spec:
             allowPrivilegeEscalation: false
             capabilities:
               drop: [ALL]
-            readOnlyRootFilesystem: false
+            readOnlyRootFilesystem: true  # grafana.db (sqlite) + plugins need
+            # a writable /var/lib/grafana — given its own emptyDir below,
+            # separate from the dashboards subpath mount.
           readinessProbe:
             httpGet:
               path: /api/health
@@ -132,6 +137,8 @@ spec:
           configMap:
             name: grafana-dashboards-provider
         - name: dashboards
+          emptyDir: {}
+        - name: grafana-data
           emptyDir: {}
         - name: grafana-secrets
           secret:

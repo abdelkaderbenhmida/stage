@@ -1,0 +1,42 @@
+# Trivy ignore file for Debian OS packages with no upstream fix
+# These CVEs have status "affected" or "fix_deferred" in Debian trixie (python:3.12-slim base)
+# Adding to ignore list until Debian provides fixed packages.
+
+# gzip CVE-2026-41992 - global buffer overflow in LZH decompression
+CVE-2026-41992
+
+# libacl1 CVE-2026-54369 - symlink traversal privilege escalation
+CVE-2026-54369
+
+# ncurses CVE-2025-69720 - buffer overflow in ncurses
+CVE-2025-69720
+
+# libsqlite3-0 CVE-2026-11822 - arbitrary code execution via FTS5
+CVE-2026-11822
+
+# libsqlite3-0 CVE-2026-11824 - heap buffer overflow in FTS5
+CVE-2026-11824
+
+# perl-base CVE-2026-13221 - incorrect regex processing
+CVE-2026-13221
+
+# perl-archive-tar CVE-2026-42496 - path traversal via crafted symlinks
+CVE-2026-42496
+
+# perl CVE-2026-8376 - heap buffer overflow in regex compilation
+CVE-2026-8376
+
+# perl-Archive-Tar CVE-2026-42497 - arbitrary file modification via hardlinks
+CVE-2026-42497
+
+# perl-IO-Compress CVE-2026-48962 - arbitrary code execution via output glob
+CVE-2026-48962
+
+# perl CVE-2026-57432 - integer overflow in pack/unpack
+CVE-2026-57432
+
+# Storable CVE-2026-57433 - DoS via signed integer overflow
+CVE-2026-57433
+
+# perl-Archive-Tar CVE-2026-9538 - DoS via crafted tar header
+CVE-2026-9538
