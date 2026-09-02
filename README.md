@@ -344,7 +344,7 @@ on scrape configuration.
 
 ## API reference
 
-All endpoints are under `/api/v1`. 118 endpoints; grouped by router:
+All endpoints are under `/api/v1`. 119 endpoints; grouped by router:
 
 | Router | Endpoints |
 | --- | --- |
@@ -359,7 +359,7 @@ All endpoints are under `/api/v1`. 118 endpoints; grouped by router:
 | **logs** | `GET /logs` (project id passed as a query parameter) |
 | **catalogue** | `GET /catalogue`, `GET /my/apps` (every service the caller owns, with its live pod count) |
 | **webhooks** | `POST /webhooks/{provider}` |
-| **platform** (admin) | 62 endpoints: `/overview`, `/health`, `/services`, `/apps`, `/ci`, `/helm`, `/argocd`, `/config`, `/ship/*`, and the `/live/*` family covering pods, logs, alerts, drift, Vault, ArgoCD, CI and scripts, plus `/users/{id}/role` to hand platform ownership to another account |
+| **platform** (admin) | 63 endpoints: `/overview`, `/health`, `/services`, `/apps`, `/ci`, `/helm`, `/argocd`, `/config`, `/ship/*`, and the `/live/*` family covering pods, logs, alerts, drift, Vault, ArgoCD, CI and scripts, plus `/users/{id}/role` to hand platform ownership to another account |
 
 Job logs stream over a short-lived token so a long-running log stream does not require
 sending the access token in a query string. The stream token is a distinct JWT type
