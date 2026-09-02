@@ -80,7 +80,20 @@ def project_logs(
         response.raise_for_status()
         payload = response.json()
     except httpx.HTTPError:
-        raise HTTPException(status_code=502, detail="Log backend unavailable.") from None
+        # Name the backend and the way to get one. Loki is not part of the
+        # default install path — k8s/monitoring/loki/ exists but only
+        # scripts/local-observability.sh applies it — so this is the expected
+        # state on a fresh cluster, not a transient outage, and a bare
+        # "unavailable" sends the reader looking for the wrong problem.
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                f"Log backend unavailable: could not reach Loki at {settings.loki_url}. "
+                "Loki is not installed by the default path — "
+                "scripts/local-observability.sh deploys k8s/monitoring/loki/ and holds a "
+                "port-forward, or set LOKI_URL to a reachable Loki."
+            ),
+        ) from None
 
     lines = []
     for stream in payload.get("data", {}).get("result", []):

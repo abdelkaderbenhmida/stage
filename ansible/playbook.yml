@@ -1,4 +1,17 @@
 ---
+- name: Wait for nodes to accept SSH connections
+  # terraform apply returning only means libvirt started the domain, not
+  # that the guest finished booting — cloud-init still has to create the
+  # user and install the SSH key. wait_for_connection blocks here instead
+  # of racing straight into the docker/k8s roles below.
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Wait for SSH
+      ansible.builtin.wait_for_connection:
+        timeout: 240
+        sleep: 5
+
 - name: Apply Docker and containerd on all nodes
   hosts: all
   become: true

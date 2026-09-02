@@ -81,13 +81,21 @@ def _build_egress_manifests(namespace: str, labels: dict) -> list[dict]:
     ]
 
 
-def build_manifests(spec: InfraSpec, namespace: str) -> list[dict]:
+def build_manifests(spec: InfraSpec, namespace: str, expires_at: str | None = None) -> list[dict]:
     """Return the manifest documents defining an isolated tenant namespace.
 
     ``namespace`` is the collision-proof cluster identity (see
     ``core.validation.k8s_namespace``) — never ``spec.project``, which is
     only the human-chosen display name and is unique per *team*, not
     globally: two teams can each name a project "staging".
+
+    ``expires_at`` is a Unix epoch-seconds string mirroring ``Project.
+    expires_at`` (label values may not contain ``:``, ruling out ISO 8601).
+    The app-level TTL reaper (``workers.tasks.reap_expired_projects``)
+    remains the source of truth — it is the only thing that flips
+    ``Project.status`` and creates the destroy ``Job`` — this label only
+    lets a cluster-side Kyverno ClusterCleanupPolicy (``k8s/policies/``)
+    catch a namespace the reaper somehow missed.
     """
     vcpu, memory_mb, disk_gb = _totals(spec)
 
@@ -96,6 +104,8 @@ def build_manifests(spec: InfraSpec, namespace: str) -> list[dict]:
         "platform.devops/project": spec.project,
         "platform.devops/mode": "namespace",
     }
+    if expires_at:
+        labels["platform.devops/expires-at"] = expires_at
 
     manifests = [
         {
@@ -333,13 +343,15 @@ def _full_tier_manifests(namespace: str, labels: dict) -> list[dict]:
     ]
 
 
-def render_namespace(spec: InfraSpec, namespace: str, workspace: Path) -> Path:
+def render_namespace(
+    spec: InfraSpec, namespace: str, workspace: Path, expires_at: str | None = None
+) -> Path:
     """Write the namespace manifests into the workspace and return the path."""
     workspace.mkdir(parents=True, exist_ok=True)
     path = workspace / "namespace.yaml"
     path.write_text(
         yaml.safe_dump_all(
-            build_manifests(spec, namespace), sort_keys=False, default_flow_style=False
+            build_manifests(spec, namespace, expires_at), sort_keys=False, default_flow_style=False
         )
     )
     return path

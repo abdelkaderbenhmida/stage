@@ -347,13 +347,10 @@ def provision_task(
         db.commit()
 
         # terraform apply returning only means libvirt started the domain,
-        # not that the guest finished booting and cloud-init applied the SSH
-        # key — racing straight into ansible-playbook here made every VM-mode
-        # provision fail with "Permission denied (publickey)" or plain
-        # unreachable, indistinguishable from a real misconfiguration.
-        _append_log(job_id, "Waiting for nodes to accept SSH connections...")
-        _wait_for_ssh(job_id, list(node_ips.values()))
-
+        # not that the guest finished booting — the playbook's own leading
+        # "Wait for nodes to accept SSH connections" play
+        # (ansible/playbook.yml) blocks on wait_for_connection before the
+        # docker/k8s roles run.
         _step(job_id, 4, 4, "ansible-playbook configure")
         key = user_ssh_private_key(uuid.UUID(user_id))
         # sshd starts long before cloud-init finishes creating the user and
@@ -429,7 +426,8 @@ def _provision_namespace(
     project = db.get(Project, uuid.UUID(project_id))
     ns = k8s_namespace(project.id)
     _step(job_id, 1, 2, "rendering namespace, quota, limits and network policy")
-    manifest = render_namespace(spec, ns, ws)
+    expires_at = str(int(project.expires_at.timestamp())) if project.expires_at else None
+    manifest = render_namespace(spec, ns, ws, expires_at)
 
     _step(job_id, 2, 2, "applying to the shared cluster")
     kubectl_apply([manifest], project, on_line)
@@ -485,6 +483,32 @@ def _install_tenant_pipeline(job_id: str, project: Project, on_line=None) -> Non
         _append_log(job_id, f"WARNING: could not install the Tekton pipeline: {exc}")
 
     _install_registry_credentials_secret(job_id, project, on_line)
+    _install_tenant_dashboard(job_id, project, on_line)
+
+
+def _install_tenant_dashboard(job_id: str, project: Project, on_line=None) -> None:
+    """Install this tenant's own, namespace-scoped Tekton Dashboard.
+
+    One Deployment per tenant, not one shared Dashboard: the upstream
+    Dashboard has no per-request RBAC of its own, so a cluster-wide instance
+    would show every tenant's PipelineRuns and pod logs to every tenant.
+    k8s/tekton/dashboard.yaml's ServiceAccount can only read inside its own
+    namespace, and force_namespace puts this tenant's copy there.
+
+    Applied on every provision like _install_tenant_pipeline beside it, so
+    flipping TEKTON_ENABLED on later does not require re-provisioning.
+    Best-effort: a failure here loses only the read-only UI, not the deploy
+    path itself.
+    """
+    try:
+        manifest = Path(__file__).resolve().parents[2] / "k8s" / "tekton" / "dashboard.yaml"
+        if not manifest.is_file():
+            _append_log(job_id, "WARNING: k8s/tekton/dashboard.yaml not found — no Tekton dashboard")
+            return
+        kubectl_apply([manifest], project, on_line, force_namespace=True)
+        _append_log(job_id, "Tekton dashboard installed for this namespace.")
+    except Exception as exc:  # noqa: BLE001
+        _append_log(job_id, f"WARNING: could not install the Tekton dashboard: {exc}")
 
 
 def _install_registry_credentials_secret(job_id: str, project: Project, on_line=None) -> None:
@@ -2484,27 +2508,6 @@ def _port_open(host: str, port: int, timeout: float = 2) -> bool:
             return True
     except OSError:
         return False
-
-
-def _wait_for_ssh(job_id: str, ips: list[str], timeout_seconds: int = 240, poll_seconds: float = 5) -> None:
-    """Block until every node accepts TCP connections on :22.
-
-    A libvirt domain reporting "running" only means the guest started
-    booting — cloud-init still has to run (create the user, install the SSH
-    key, bring up networking) before anything can SSH in. Raises on timeout
-    rather than letting the caller hit a confusing ansible failure.
-    """
-    deadline = time.monotonic() + timeout_seconds
-    pending = set(ips)
-    while pending and time.monotonic() < deadline:
-        pending = {ip for ip in pending if not _port_open(ip, 22, timeout=3)}
-        if pending:
-            time.sleep(poll_seconds)
-    if pending:
-        raise RuntimeError(
-            f"Timed out after {timeout_seconds}s waiting for SSH on: {', '.join(sorted(pending))} "
-            "— the VM may still be booting, or cloud-init failed."
-        )
 
 
 # ---------------------------------------------------------------------------

@@ -1,0 +1,159 @@
+# Tekton Dashboard, one private copy per tenant namespace.
+#
+# The upstream Dashboard has no per-request RBAC of its own: it runs as one
+# backend under one ServiceAccount and shows whatever that ServiceAccount can
+# see. A single cluster-wide Dashboard would therefore show every tenant's
+# PipelineRuns and pod logs to every tenant — the same class of leak
+# core/repositories/ exists to prevent everywhere else in this platform.
+#
+# The fix is the same one k8s/tekton/pipeline.yaml already uses: no
+# cluster-scoped object, one Role/RoleBinding/Deployment per namespace,
+# applied by controlplane/workers/tasks.py alongside the Pipeline install.
+# The ServiceAccount below can list/watch/get only inside its own namespace,
+# so even a Dashboard misconfiguration can't surface another team's builds.
+#
+# Objects here carry no metadata.namespace, same reason as pipeline.yaml:
+# this file is force-applied with `kubectl apply -n <tenant-ns>` from
+# controlplane/workers/tasks.py, so one static file serves every tenant.
+#
+# Tekton itself (CRDs + controller) is upstream and not vendored here — see
+# the "Install" section of README.md. Pin the Dashboard image tag to a
+# release that matches the Tekton Pipelines version installed cluster-wide;
+# check https://github.com/tektoncd/dashboard/releases for the pairing.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dashboard-info
+  labels:
+    app.kubernetes.io/part-of: devops-platform
+    app.kubernetes.io/component: tekton-dashboard
+data:
+  # Read by the Dashboard's own About page (INSTALLED_NAMESPACE below points
+  # it at this namespace's copy, not the shared one in tekton-pipelines).
+  # Without this the UI works but shows "Error getting data: Could not find:
+  # dashboardNamespace, dashboardVersion" on every page — reproduced live,
+  # the RBAC below only ever grants reads inside the tenant's own namespace,
+  # and upstream's own copy of this ConfigMap sits in tekton-pipelines.
+  # Bump this string together with the image tag below.
+  version: v0.63.1
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: tekton-dashboard
+  labels:
+    app.kubernetes.io/part-of: devops-platform
+    app.kubernetes.io/component: tekton-dashboard
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: tekton-dashboard-read
+  labels:
+    app.kubernetes.io/part-of: devops-platform
+    app.kubernetes.io/component: tekton-dashboard
+rules:
+  # Read-only, and only the object kinds the Dashboard UI actually renders.
+  # No create/update/delete verbs anywhere in this Role: the Dashboard
+  # backend is deployed with --read-only=true below as a second layer, but
+  # RBAC is the one that still holds if that flag is ever dropped.
+  - apiGroups: ["tekton.dev"]
+    resources: ["pipelines", "pipelineruns", "tasks", "taskruns"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "events", "configmaps"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: tekton-dashboard-read
+  labels:
+    app.kubernetes.io/part-of: devops-platform
+    app.kubernetes.io/component: tekton-dashboard
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: tekton-dashboard-read
+subjects:
+  - kind: ServiceAccount
+    name: tekton-dashboard
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tekton-dashboard
+  labels:
+    app.kubernetes.io/part-of: devops-platform
+    app.kubernetes.io/component: tekton-dashboard
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: tekton-dashboard
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: tekton-dashboard
+    spec:
+      serviceAccountName: tekton-dashboard
+      automountServiceAccountToken: true
+      containers:
+        - name: dashboard
+          # Pin matches upstream's own dashboard/latest/release.yaml at the
+          # time this was written. Re-check that file when bumping, since
+          # ghcr.io publishes each release under a version-specific image
+          # name (the digit suffix below), not a stable `dashboard:vX.Y.Z`.
+          image: ghcr.io/tektoncd/dashboard/dashboard-9623576a202fe86c8b7d1bc489905f86:v0.63.1@sha256:16eca97b649f6f27dfbab2be167be0afc34bab43af9d3304f64bf7f04d44e606
+          # No shell splicing of tenant-controlled data here — the namespace
+          # comes from the downward API, never from a param or a branch name.
+          # `--namespaces` (plural) is the real flag; `--pipelines-namespace`
+          # still has to point at the cluster-wide Tekton install, which is
+          # not this tenant's own namespace. INSTALLED_NAMESPACE is also what
+          # the binary itself reads to find its own dashboard-info ConfigMap
+          # (the one defined above) for the About page.
+          args:
+            - --namespaces=$(INSTALLED_NAMESPACE)
+            - --pipelines-namespace=tekton-pipelines
+            - --read-only=true
+            - --port=9097
+            - --logout-url=
+          env:
+            - name: INSTALLED_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          ports:
+            - name: http
+              containerPort: 9097
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: "10m"
+              memory: "64Mi"
+            limits:
+              cpu: "200m"
+              memory: "256Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: tekton-dashboard
+  labels:
+    app.kubernetes.io/part-of: devops-platform
+    app.kubernetes.io/component: tekton-dashboard
+spec:
+  selector:
+    app.kubernetes.io/component: tekton-dashboard
+  ports:
+    - name: http
+      port: 9097
+      targetPort: 9097

@@ -117,9 +117,6 @@ def stub_runners(monkeypatch):
     # `docker push`; without stubbing it the task fails long before reaching
     # the trivy gate and rollout logic these tests are actually asserting on.
     monkeypatch.setattr(tasks, "run_sandbox", _ok)
-    # provision_task blocks on a real TCP wait for guest SSH (:22); the
-    # stubbed nodes' IPs are unreachable in tests, so skip the wait.
-    monkeypatch.setattr(tasks, "_wait_for_ssh", lambda *a, **k: None)
     return tasks
 
 
@@ -579,6 +576,30 @@ def test_install_registry_credentials_secret_creates_a_usable_dockerconfig(proje
     assert secret["type"] == "kubernetes.io/dockerconfigjson"
     dockerconfig = json.loads(base64.b64decode(secret["data"][".dockerconfigjson"]))
     assert "auths" in dockerconfig
+
+
+def test_install_tenant_dashboard_applies_the_manifest_force_namespaced(project, monkeypatch):
+    """_install_tenant_dashboard must reuse the same force_namespace path as
+    _install_tenant_pipeline: k8s/tekton/dashboard.yaml carries no
+    metadata.namespace (one static file serves every tenant), so applying it
+    without `-n <tenant ns>` would land every tenant's "private" Dashboard in
+    the same shared namespace, exactly the bug
+    test_kubectl_apply_scopes_every_object_to_the_tenant_namespace caught for
+    the Pipeline install."""
+    import uuid as _uuid
+
+    calls = []
+    monkeypatch.setattr(
+        tasks,
+        "kubectl_apply",
+        lambda paths, project, on_line=None, force_namespace=False: calls.append(
+            (paths[0].name, force_namespace)
+        ),
+    )
+
+    tasks._install_tenant_dashboard(str(_uuid.uuid4()), project)
+
+    assert calls == [("dashboard.yaml", True)]
 
 
 def test_undeploy_task_deletes_manifests(session, project, user, stub_runners, monkeypatch):

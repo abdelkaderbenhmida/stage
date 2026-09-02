@@ -1153,9 +1153,18 @@ async function renderProjectWorkloads(id) {
           box.innerHTML = `<div class="empty">Nothing running yet in <span class="mono">${esc(data.namespace)}</span> — deploy a service to see it here.</div>`;
           return;
         }
+        // Provisioning puts platform-owned objects in the tenant's namespace
+        // (the per-tenant Tekton Dashboard). Before the first deploy it is the
+        // only row, so an unlabelled table reads as "your app is up" to
+        // someone whose deploy was blocked. Mark them, and say so when the
+        // tenant has nothing of their own here yet.
+        const ownDeployments = data.deployments.filter((d) => d.owner !== "platform");
+        const noneOwn = ownDeployments.length === 0 && data.deployments.length > 0;
         const deployRows = data.deployments.map((d) => `
           <tr>
-            <td class="mono">${esc(d.name)}</td>
+            <td class="mono">${esc(d.name)}${d.owner === "platform"
+              ? ` <span class="tag muted small" title="Installed by the platform in your namespace, not deployed by you.">platform</span>`
+              : ""}</td>
             <td>${pill(d.healthy ? "healthy" : "degraded")}</td>
             <td>${d.ready}/${d.desired} ready</td>
             <td class="mono small">${esc((d.images[0] || "").split("/").pop())}</td>
@@ -1167,6 +1176,7 @@ async function renderProjectWorkloads(id) {
             <td>${p.restarts} restarts</td>
           </tr>`).join("");
         box.innerHTML = `
+          ${noneOwn ? `<div class="empty" style="margin-bottom:.6rem">None of your own services are running here yet — the workloads below are installed by the platform.</div>` : ""}
           <table class="table"><thead><tr>
             <th>Deployment</th><th>Health</th><th>Replicas</th><th>Image</th>
           </tr></thead><tbody>${deployRows}</tbody></table>
@@ -1425,7 +1435,15 @@ async function renderProjectMonitoring(id) {
       try {
         const data = await api(`/projects/${id}/metrics?since_minutes=${minutes}`);
         if (!data.backend_available) {
-          box.innerHTML = `<div class="empty">Metrics backend unavailable.</div>`;
+          // Naming the cause and the fix, the way the Pipeline tab names
+          // TEKTON_ENABLED: "unavailable" alone reads as an unfinished
+          // feature, when it is almost always PROMETHEUS_URL still pointing
+          // at the in-cluster address from a control plane running on the host.
+          box.innerHTML = `<div class="empty">Metrics backend unavailable — the control plane could not reach
+            <span class="mono">PROMETHEUS_URL</span>.<br>
+            If Prometheus runs inside the cluster and the control plane does not, that address
+            has to be reachable from here: <span class="mono">scripts/local-observability.sh</span>
+            holds a port-forward and sets it up.</div>`;
           return;
         }
         const anyData = data.panels.some((p) => p.series.length);

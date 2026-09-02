@@ -1,0 +1,47 @@
+# Backstop only — NOT the source of truth for project expiry.
+#
+# controlplane.workers.tasks.reap_expired_projects is what actually expires a
+# project: it flips Project.status to "destroying", creates the destroy Job,
+# and writes the audit log row. This policy only deletes the Namespace itself
+# if it is still around well past its labelled expiry — the case where the
+# reaper failed to run (worker down, DB unreachable) and the namespace was
+# left billing compute nobody is using. It intentionally does not touch
+# anything in the control-plane database.
+#
+# Requires the Kyverno CleanupController (installed alongside Kyverno since
+# v1.9): kubectl apply -f k8s/policies/
+#
+# UNVERIFIED: the `conditions` JMESPath below (time_now_utc() arithmetic
+# against the epoch-seconds label) is a best-effort draft, not tested against
+# a live CleanupController. Validate with `kyverno test` / a dry run and a
+# namespace carrying a deliberately-past expires-at label before relying on
+# this in production — get the comparison wrong and it either never fires
+# (silent no-op, harmless) or fires early (deletes a live namespace, not
+# harmless). Confirm the former is broken, not the latter, before enabling.
+---
+apiVersion: kyverno.io/v2beta1
+kind: ClusterCleanupPolicy
+metadata:
+  name: expired-namespace-backstop
+  annotations:
+    description: |
+      Deletes tenant namespaces whose platform.devops/expires-at label (Unix
+      epoch seconds, set by renderers/namespace.py) is more than 24h in the
+      past — a generous grace period so this only fires after the app-level
+      reaper has clearly failed to run, never as a race against it.
+spec:
+  match:
+    any:
+      - resources:
+          kinds:
+            - Namespace
+          selector:
+            matchLabels:
+              app.kubernetes.io/managed-by: devops-central-platform
+              platform.devops/mode: namespace
+  conditions:
+    all:
+      - key: "{{ target.metadata.labels.\"platform.devops/expires-at\" || '0' }}"
+        operator: LessThan
+        value: "{{ time_now_utc() - `86400` }}"
+  schedule: "0 * * * *"

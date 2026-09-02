@@ -2089,6 +2089,17 @@ def namespace_workloads(namespace: str) -> dict[str, Any]:
             "healthy": bool(desired) and ready == desired,
             "images": [c.get("image", "") for c in containers],
             "created_at": d["metadata"].get("creationTimestamp"),
+            # Provisioning installs platform-owned objects into the tenant's
+            # own namespace — the per-tenant Tekton Dashboard is one, and on a
+            # namespace where nothing has deployed yet it is the ONLY one. Left
+            # unmarked it reads as "your app is running and healthy" to someone
+            # whose deployment was in fact blocked. The label is already on the
+            # object; the tenant view just has to carry it through.
+            "owner": (
+                "platform"
+                if d["metadata"].get("labels", {}).get("app.kubernetes.io/part-of") == "devops-platform"
+                else "tenant"
+            ),
         })
 
     services = []
@@ -2495,8 +2506,68 @@ def drift_report(namespaces: list[str] | None = None) -> dict[str, Any]:
     return {"reachable": True, "namespaces": namespaces, "objects": objects, "counts": counts}
 
 
+def _resolve_service(namespace: str, candidates: list[str], selector: str = "") -> str | None:
+    """Return the first of ``candidates`` that actually exists in ``namespace``.
+
+    The same component carries different Service names depending on how it was
+    installed: the Prometheus Operator creates ``alertmanager-operated`` and
+    ``prometheus-operated``, while the community Helm charts create
+    ``prometheus-alertmanager`` and ``prometheus-server``. Hardcoding either
+    convention makes the console report a healthy component as unreachable on
+    every install that used the other one — which is exactly what happened
+    here, and the message ("services ... not found") reads like an outage
+    rather than a naming mismatch.
+
+    ``selector`` is tried first when given, because a label survives a rename;
+    the explicit name list is the fallback for charts that do not set the
+    conventional labels.
+    """
+    if selector:
+        res = _run(
+            ["kubectl", "get", "svc", "-n", namespace, "-l", selector,
+             "-o", "jsonpath={.items[*].metadata.name}"],
+            timeout=KUBECTL_TIMEOUT,
+        )
+        if res["ok"]:
+            # Prefer a non-headless Service: a headless one has no ClusterIP,
+            # so the API-server proxy and port-forward both fail against it.
+            found = [n for n in res["stdout"].split() if not n.endswith("-headless")]
+            if found:
+                return found[0]
+
+    res = _run(
+        ["kubectl", "get", "svc", "-n", namespace, "-o", "jsonpath={.items[*].metadata.name}"],
+        timeout=KUBECTL_TIMEOUT,
+    )
+    if not res["ok"]:
+        return None
+    present = set(res["stdout"].split())
+    for name in candidates:
+        if name in present:
+            return name
+    return None
+
+
+# Both naming conventions, most specific first. See _resolve_service.
+ALERTMANAGER_SERVICES = ["alertmanager-operated", "prometheus-alertmanager", "alertmanager"]
+PROMETHEUS_SERVICES = ["prometheus-operated", "prometheus-server", "prometheus"]
+
+
 def alerts_firing() -> dict[str, Any]:
-    raw_path = "/api/v1/namespaces/monitoring/services/alertmanager-operated:9093/proxy/api/v2/alerts"
+    service = _resolve_service(
+        "monitoring", ALERTMANAGER_SERVICES, selector="app.kubernetes.io/name=alertmanager"
+    )
+    if not service:
+        return {
+            "reachable": False,
+            "error": (
+                "no Alertmanager Service found in namespace 'monitoring' (looked for "
+                + ", ".join(ALERTMANAGER_SERVICES)
+                + " and label app.kubernetes.io/name=alertmanager)"
+            ),
+            "alerts": [],
+        }
+    raw_path = f"/api/v1/namespaces/monitoring/services/{service}:9093/proxy/api/v2/alerts"
     res = _run(["kubectl", "get", "--raw", raw_path], timeout=KUBECTL_TIMEOUT)
     if not res["ok"]:
         return {"reachable": False, "error": res["stderr"], "alerts": []}
@@ -2542,8 +2613,13 @@ def alerts_firing() -> dict[str, Any]:
 DASHBOARDS = {
     "argocd": {"namespace": "argocd", "service": "svc/argocd-server", "remote_port": 80, "label": "ArgoCD"},
     "grafana": {"namespace": "monitoring", "service": "svc/grafana", "remote_port": 3000, "label": "Grafana"},
-    "prometheus": {"namespace": "monitoring", "service": "svc/prometheus", "remote_port": 9090, "label": "Prometheus"},
-    "alertmanager": {"namespace": "monitoring", "service": "svc/alertmanager", "remote_port": 9093, "label": "Alertmanager"},
+    # Prometheus and Alertmanager are resolved at open time rather than named
+    # here: the Service name depends on the install method (see
+    # _resolve_service). "service" stays as the last-resort fallback.
+    "prometheus": {"namespace": "monitoring", "service": "svc/prometheus-server", "remote_port": 9090, "label": "Prometheus",
+                   "candidates": PROMETHEUS_SERVICES, "selector": "app.kubernetes.io/name=prometheus"},
+    "alertmanager": {"namespace": "monitoring", "service": "svc/prometheus-alertmanager", "remote_port": 9093, "label": "Alertmanager",
+                     "candidates": ALERTMANAGER_SERVICES, "selector": "app.kubernetes.io/name=alertmanager"},
     "vault": {"namespace": "vault", "service": "svc/vault-service", "remote_port": 8200, "label": "Vault"},
     "kibana": {"namespace": "monitoring", "service": "svc/kibana", "remote_port": 5601, "label": "Kibana"},
 }
@@ -2622,9 +2698,17 @@ def open_dashboard(tool: str) -> dict[str, Any]:
             "message": f"{cfg['label']} already forwarded",
         }
 
+    # Resolve the Service now if this tool ships under more than one name, so
+    # the forward targets what is installed rather than what we guessed.
+    target = cfg["service"]
+    if cfg.get("candidates"):
+        resolved = _resolve_service(cfg["namespace"], cfg["candidates"], cfg.get("selector", ""))
+        if resolved:
+            target = f"svc/{resolved}"
+
     local_port = 18000 + (abs(hash(tool)) % 900)
     proc = subprocess.Popen(
-        ["kubectl", "port-forward", "-n", cfg["namespace"], cfg["service"], f"{local_port}:{cfg['remote_port']}"],
+        ["kubectl", "port-forward", "-n", cfg["namespace"], target, f"{local_port}:{cfg['remote_port']}"],
         stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
     )
     import time
