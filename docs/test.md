@@ -4,14 +4,14 @@ Complete sequence to test every tool in the platform end-to-end.
 
 > **Prerequisites:** Docker, kubectl, terraform, ansible, helm, jq, python3, pip3, ruff, yamllint, gitleaks.
 >
-> **Context:** Run from `/home/gadour/Desktop/stage`.
+> **Context:** Run from the repo root (path below is a placeholder — adjust to your clone location).
 
 ---
 
 ## 0. Quick pre-flight (all tools before anything else)
 
 ```bash
-cd /home/gadour/Desktop/stage
+cd <path-to-repo>
 
 # Check which tools are installed
 for t in terraform ansible docker kubectl helm jq yamllint ruff python3 pip3 trivy gitleaks pre-commit k6 vault kubeconform conftest yq; do
@@ -85,7 +85,7 @@ pip-audit -r app/shared/requirements.txt -r app/users-service/requirements.txt -
 > ⚠️ **`terraform apply`** requires libvirt daemon running + Ubuntu cloud image at `/var/lib/libvirt/images/`. See Phase 3.
 
 ```bash
-cd /home/gadour/Desktop/stage/terraform
+cd <path-to-repo>/terraform
 ```
 
 ```bash
@@ -110,7 +110,7 @@ terraform show plan.out 2>/dev/null || echo "Plan saved to plan.out"
 ```
 
 ```bash
-cd /home/gadour/Desktop/stage
+cd <path-to-repo>
 ```
 
 ---
@@ -124,7 +124,7 @@ cd /home/gadour/Desktop/stage
 > - Ubuntu cloud image at `/var/lib/libvirt/images/ubuntu-22.04-server-cloudimg-amd64.img`
 
 ```bash
-cd /home/gadour/Desktop/stage/terraform
+cd <path-to-repo>/terraform
 ```
 
 ```bash
@@ -150,7 +150,7 @@ virsh list --all
 ```
 
 ```bash
-cd /home/gadour/Desktop/stage
+cd <path-to-repo>
 ```
 
 ```bash
@@ -217,7 +217,7 @@ ansible-playbook ansible/playbook.yml --tags reset -e reset_confirmed=true
 ## Phase 5 — Docker (build images + runtime smoke)
 
 ```bash
-cd /home/gadour/Desktop/stage
+cd <path-to-repo>
 ```
 
 ```bash
