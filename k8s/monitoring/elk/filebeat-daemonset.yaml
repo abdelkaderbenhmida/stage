@@ -12,7 +12,8 @@
 #
 # Relaxing `monitoring` instead would weaken Prometheus, Grafana, Kibana and
 # Elasticsearch to accommodate one workload; `logging` confines the exemption
-# to the pods that need it (see k8s/monitoring/loki/namespace.yaml).
+# to the pods that need it (see k8s/monitoring/loki/namespace.yaml, which
+# defines the namespace itself — shared with promtail).
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -330,9 +331,6 @@ spec:
             - name: varlog
               mountPath: /var/log
               readOnly: true
-            - name: varlibdockercontainers
-              mountPath: /var/lib/docker/containers
-              readOnly: true
             - name: data
               mountPath: /var/lib/filebeat-data
       volumes:
@@ -344,10 +342,12 @@ spec:
           hostPath:
             path: /var/log
             type: Directory
-        - name: varlibdockercontainers
-          hostPath:
-            path: /var/lib/docker/containers
-            type: Directory
+            # The log input reads /var/log/containers/*.log, which are
+            # symlinks into /var/log/pods/ — already covered by this mount.
+            # A separate /var/lib/docker/containers hostPath was also
+            # mounted here, but this cluster runs containerd, not Docker,
+            # so that path never exists and permanently blocked the pod
+            # from starting ("hostPath type check failed").
         # Remembers how far each file has been read, so a restart does not
         # re-ship every line already in Elasticsearch — the same reason
         # promtail keeps its positions file on a hostPath.
